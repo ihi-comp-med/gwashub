@@ -1,0 +1,11 @@
+name: hello_world
+title: Hello world
+description: >
+  Example consortium step. Prints "hello world" to the console and the step log, and saves a picture
+  of a cat saying hello world. Leaves the data unchanged.
+command: [python, hello_world.py]
+image: gwashub/base
+default_on_fail: continue
+resources: []
+params:
+  greeting: hello world

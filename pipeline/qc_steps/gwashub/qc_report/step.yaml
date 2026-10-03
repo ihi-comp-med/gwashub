@@ -1,0 +1,12 @@
+name: qc_report
+title: QC report
+description: Roll up every step's verdict, metrics and plots into one HTML report.
+  Keep last.
+command:
+- python
+- qc_report.py
+image: gwashub/base
+default_on_fail: flag
+always_run: true
+resources: []
+params: {}

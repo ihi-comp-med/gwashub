@@ -1,0 +1,15 @@
+# Runtime only (requirements.txt at the repo root adds the test tools)
+numpy
+pandas
+scipy
+matplotlib
+pyyaml
+fastapi
+uvicorn[standard]
+sqlalchemy
+python-multipart
+boto3
+httpx
+pyjwt[crypto]
+psycopg[binary]
+alembic

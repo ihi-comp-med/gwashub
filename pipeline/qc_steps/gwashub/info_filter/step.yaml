@@ -1,0 +1,11 @@
+name: info_filter
+title: Imputation INFO filter
+description: Drop poorly imputed variants.
+command:
+- python
+- info_filter.py
+image: gwashub/base
+default_on_fail: flag
+resources: []
+params:
+  info_threshold: 0.8

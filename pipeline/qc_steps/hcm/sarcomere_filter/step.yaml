@@ -1,0 +1,9 @@
+name: sarcomere_filter
+title: Sarcomere-variant filter
+description: >
+  Removes variants inside the sarcomere gene regions listed in the project resource
+  sarcomere_genes_grch38.bed (for sarcomere-negative analyses). Example consortium step, in R.
+command: [Rscript, sarcomere_filter.R]
+image: gwashub/base-r
+default_on_fail: flag
+resources: [sarcomere_genes_grch38.bed]

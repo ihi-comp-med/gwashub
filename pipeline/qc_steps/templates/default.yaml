@@ -1,0 +1,13 @@
+name: default
+title: Default QC
+description: The GWASHub default offering.
+steps:
+- step: gwashub/row_check
+- step: gwashub/harmonise_columns
+- step: gwashub/value_ranges
+- step: gwashub/alleles
+- step: gwashub/liftover
+- step: gwashub/reference_check
+- step: gwashub/stats_summary
+- step: gwashub/plots
+- step: gwashub/qc_report

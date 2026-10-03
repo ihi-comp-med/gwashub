@@ -1,0 +1,13 @@
+name: row_check
+title: Row check
+description: File parses; mapped columns exist and look numeric. Rewrites the upload
+  as a plain TSV.
+command:
+- python
+- row_check.py
+image: gwashub/base
+default_on_fail: block
+resources: []
+params:
+  min_numeric_fraction: 0.9
+  min_rows: 1000

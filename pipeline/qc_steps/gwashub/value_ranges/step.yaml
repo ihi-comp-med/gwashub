@@ -1,0 +1,13 @@
+name: value_ranges
+title: Value ranges
+description: Drop missing/out-of-range values and duplicate variants; detect −log10(P)
+  files.
+command:
+- python
+- value_ranges.py
+image: gwashub/base
+default_on_fail: block
+resources: []
+params:
+  warn_drop_fraction: 0.005
+  fail_drop_fraction: 0.2

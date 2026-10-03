@@ -1,0 +1,14 @@
+name: liftover
+title: Liftover
+description: Lift GRCh37 positions to GRCh38 with a chain file; reverse-complement
+  alleles on strand flips.
+command:
+- python
+- liftover.py
+image: gwashub/base
+default_on_fail: flag
+resources:
+- hg19ToHg38.over.chain.gz
+params:
+  warn_unmapped_fraction: 0.01
+  fail_unmapped_fraction: 0.1

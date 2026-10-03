@@ -1,0 +1,10 @@
+.venv
+local
+**/__pycache__
+**/node_modules
+web/.nuxt
+web/.output
+web/.data
+infra
+docs
+images/*/README*

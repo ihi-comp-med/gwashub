@@ -1,0 +1,13 @@
+name: stats_summary
+title: Summary statistics
+description: Genomic inflation (λGC), Z vs P consistency, lead loci.
+command:
+- python
+- stats_summary.py
+image: gwashub/base
+default_on_fail: flag
+resources: []
+params:
+  warn_lambda: 1.1
+  fail_lambda: 1.5
+  clump_kb: 500

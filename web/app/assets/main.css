@@ -1,0 +1,52 @@
+:root {
+  /* HERMES palette: navy #303880 from the consortium logo, cool neutrals around it. */
+  --gh-bg: #f5f6fa;
+  --gh-surface: #ffffff;
+  --gh-border: #e2e5ef;
+  --gh-text: #1b1f3a;
+  --gh-muted: #5d6480;
+  --gh-accent: #303880;
+  --gh-accent-soft: #eef0f8;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: var(--gh-bg);
+  color: var(--gh-text);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--gh-accent); text-underline-offset: 2px; }
+h1, h2, h3, .page-title { letter-spacing: -0.01em; }
+/* Flatter, crisper cards than the Aura default. */
+.p-card { box-shadow: 0 1px 2px rgba(27, 31, 58, .05); border: 1px solid var(--gh-border); border-radius: 12px; }
+.p-card .p-card-title { font-size: 1.05rem; font-weight: 600; }
+.p-card .p-card-subtitle { font-size: 0.85rem; }
+.p-datatable .p-datatable-thead > tr > th { font-size: 0.78rem; text-transform: uppercase; letter-spacing: .04em; color: var(--gh-muted); background: transparent; }
+.container { max-width: 1280px; margin: 0 auto; padding: 0 16px; }
+.page { padding: 32px 0 64px; }
+.page-title { font-size: 1.55rem; font-weight: 700; margin: 0 0 4px; }
+.page-sub { color: var(--gh-muted); margin: 0 0 24px; }
+.grid { display: grid; gap: 16px; }
+.grid-3 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.grid-2 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.spacer { flex: 1; }
+.muted { color: var(--gh-muted); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; }
+.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.field label { font-weight: 500; font-size: 0.9rem; }
+.stat { font-size: 1.6rem; font-weight: 700; }
+.stat-label { color: var(--gh-muted); font-size: 0.85rem; }
+.mock-banner {
+  background: var(--gh-accent); color: #d9ddef; text-align: center; font-size: 0.72rem; padding: 3px 16px; letter-spacing: .02em;
+}
+/* Dataset drawer is teleported to <body>, so it's styled globally. The extra .p-drawer-right beats
+   PrimeVue's own `.p-drawer-right .p-drawer { width: 20rem }`, which loads after this file in the built site. */
+.p-drawer-right .p-drawer.ds-drawer { width: 80vw; }
+@media (max-width: 900px) { .p-drawer-right .p-drawer.ds-drawer { width: 100vw; } }
+.p-dialog.csd { width: min(780px, calc(100vw - 32px)); }
+.p-dialog.code-dialog { width: min(1180px, calc(100vw - 32px)); height: min(760px, calc(100vh - 48px)); }
+.p-dialog.code-dialog.p-dialog-maximized { width: 100vw; height: 100vh; }
+.p-dialog.code-dialog .cd-content { flex: 1; min-height: 0; display: flex; flex-direction: column; padding-bottom: 16px; }
+.p-dialog.code-dialog .cd-content > * { flex: 1; min-height: 0; }

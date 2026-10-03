@@ -1,0 +1,208 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  GWASHub interim single-server deployment: one EC2 instance running the app container behind Caddy
+  (HTTPS), data on an encrypted EBS volume. Deployed by devtools/aws_deploy.sh. See docs/AWS_MINIMAL.md;
+  the full design in docs/AWS_DEPLOYMENT.md replaces this.
+
+Parameters:
+  ImageUri:
+    Type: String
+    Description: The app image in ECR (set by devtools/aws_deploy.sh)
+  DomainName:
+    Type: String
+    Default: ""
+    Description: Optional host name (e.g. gwashub.example.org) whose DNS A record points at the Elastic IP. Empty = <ip>.sslip.io
+  InstanceType:
+    Type: String
+    Default: t4g.large
+    Description: Graviton (arm64); the image is built for linux/arm64 to match
+  DataVolumeSize:
+    Type: Number
+    Default: 100
+    Description: GiB for uploads, QC outputs and the database
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+
+Conditions:
+  HasDomain: !Not [!Equals [!Ref DomainName, ""]]
+
+Resources:
+  # ---------- network: one public subnet, nothing else ----------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.40.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags: [{ Key: Name, Value: gwashub }]
+  Igw:
+    Type: AWS::EC2::InternetGateway
+  IgwAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: { VpcId: !Ref Vpc, InternetGatewayId: !Ref Igw }
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.40.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true  # internet on first boot, before the Elastic IP is attached
+      Tags: [{ Key: Name, Value: gwashub-public }]
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: { VpcId: !Ref Vpc }
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IgwAttach
+    Properties: { RouteTableId: !Ref RouteTable, DestinationCidrBlock: 0.0.0.0/0, GatewayId: !Ref Igw }
+  SubnetRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref Subnet, RouteTableId: !Ref RouteTable }
+  WebSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: GWASHub web (HTTP for certificate issuance and redirect, HTTPS). No SSH; use SSM Session Manager.
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }
+
+  # ---------- config the instance reads ----------
+  SessionSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: GWASHub session-cookie signing key (GWASHUB_SECRET)
+      GenerateSecretString: { PasswordLength: 48, ExcludePunctuation: true }
+  ImageParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /gwashub/image
+      Type: String
+      Value: !Ref ImageUri
+  Logs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /gwashub/app
+      RetentionInDays: 90
+
+  # ---------- instance ----------
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: [{ Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole }]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+      Policies:
+        - PolicyName: gwashub-app
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: secretsmanager:GetSecretValue, Resource: !Ref SessionSecret }
+              - { Effect: Allow, Action: ssm:GetParameter, Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/gwashub/image" }
+              - { Effect: Allow, Action: [logs:CreateLogStream, logs:PutLogEvents], Resource: !Sub "${Logs.Arn}:*" }
+  Profile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: { Roles: [!Ref Role] }
+  Eip:
+    Type: AWS::EC2::EIP
+    DependsOn: IgwAttach
+    Properties: { Domain: vpc }
+  DataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      AvailabilityZone: !GetAtt Subnet.AvailabilityZone
+      Size: !Ref DataVolumeSize
+      VolumeType: gp3
+      Encrypted: true
+      Tags: [{ Key: Name, Value: gwashub-data }]
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref Profile
+      SubnetId: !Ref Subnet
+      SecurityGroupIds: [!Ref WebSg]
+      MetadataOptions: { HttpTokens: required, HttpEndpoint: enabled }
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: { VolumeSize: 30, VolumeType: gp3, Encrypted: true }
+      Tags: [{ Key: Name, Value: gwashub }]
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -euxo pipefail
+            for i in 1 2 3 4 5; do dnf install -y docker && break; sleep 15; done
+            systemctl enable --now docker
+
+            # Data volume: wait for it to attach, format only if empty, mount at /data.
+            ROOT=$(lsblk -no PKNAME "$(findmnt -no SOURCE /)")
+            for i in $(seq 1 60); do
+              DEV=$(lsblk -dpno NAME,TYPE | awk '$2=="disk"{print $1}' | grep -v "/dev/$ROOT" | head -1 || true)
+              [ -n "$DEV" ] && break; sleep 5
+            done
+            blkid "$DEV" || mkfs.xfs "$DEV"
+            mkdir -p /data
+            UUID=$(blkid -s UUID -o value "$DEV")
+            grep -q "$UUID" /etc/fstab || echo "UUID=$UUID /data xfs defaults,nofail 0 2" >> /etc/fstab
+            mount -a
+            mkdir -p /data/gwashub /data/caddy /etc/gwashub
+            chown 1000:1000 /data/gwashub
+
+            cat > /etc/gwashub/Caddyfile <<'CADDY'
+            ${Host} {
+              encode gzip
+              reverse_proxy app:8000
+              header Strict-Transport-Security "max-age=31536000"
+            }
+            CADDY
+
+            cat > /usr/local/bin/gwashub-update <<'UPDATE'
+            #!/bin/bash
+            # Pull the image named in /gwashub/image and (re)start the app; start Caddy if needed.
+            set -euo pipefail
+            exec 9>/var/lock/gwashub-update; flock 9
+            IMAGE=$(aws ssm get-parameter --region ${AWS::Region} --name /gwashub/image --query Parameter.Value --output text)
+            aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin "${!IMAGE%%/*}"
+            docker pull "$IMAGE"
+            umask 077
+            echo "GWASHUB_SECRET=$(aws secretsmanager get-secret-value --region ${AWS::Region} --secret-id ${SessionSecret} --query SecretString --output text)" > /etc/gwashub/app.env
+            docker network inspect gwashub >/dev/null 2>&1 || docker network create gwashub
+            docker rm -f app >/dev/null 2>&1 || true
+            docker run -d --name app --restart unless-stopped --network gwashub \
+              -v /data/gwashub:/data --env-file /etc/gwashub/app.env -e GWASHUB_WORKERS=2 \
+              --log-driver awslogs --log-opt awslogs-region=${AWS::Region} --log-opt awslogs-group=${Logs} --log-opt awslogs-stream=app \
+              "$IMAGE"
+            docker inspect caddy >/dev/null 2>&1 || docker run -d --name caddy --restart unless-stopped --network gwashub \
+              -p 80:80 -p 443:443 -v /data/caddy:/data -v /etc/gwashub/Caddyfile:/etc/caddy/Caddyfile:ro \
+              --log-driver awslogs --log-opt awslogs-region=${AWS::Region} --log-opt awslogs-group=${Logs} --log-opt awslogs-stream=caddy \
+              caddy:2
+            docker image prune -f >/dev/null
+            echo "Running $IMAGE"
+            UPDATE
+            chmod 755 /usr/local/bin/gwashub-update
+            /usr/local/bin/gwashub-update
+          - Host: !If [HasDomain, !Ref DomainName, !Join ["", [!Join ["-", !Split [".", !Ref Eip]], ".sslip.io"]]]
+  DataAttach:
+    Type: AWS::EC2::VolumeAttachment
+    Properties: { InstanceId: !Ref Instance, VolumeId: !Ref DataVolume, Device: /dev/sdf }
+  EipAssoc:
+    Type: AWS::EC2::EIPAssociation
+    Properties: { InstanceId: !Ref Instance, AllocationId: !GetAtt Eip.AllocationId }
+
+Outputs:
+  Url:
+    Value: !Sub
+      - "https://${Host}"
+      - Host: !If [HasDomain, !Ref DomainName, !Join ["", [!Join ["-", !Split [".", !Ref Eip]], ".sslip.io"]]]
+  PublicIp:
+    Value: !Ref Eip
+  InstanceId:
+    Value: !Ref Instance

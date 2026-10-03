@@ -1,0 +1,10 @@
+name: plots
+title: Manhattan & QQ plots
+description: Manhattan and QQ plots, plus data for interactive plots.
+command:
+- python
+- plots.py
+image: gwashub/base
+default_on_fail: continue
+resources: []
+params: {}

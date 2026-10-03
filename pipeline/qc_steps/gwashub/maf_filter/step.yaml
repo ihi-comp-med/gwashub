@@ -1,0 +1,11 @@
+name: maf_filter
+title: MAF filter
+description: Drop variants below a minor-allele-frequency threshold.
+command:
+- python
+- maf_filter.py
+image: gwashub/base
+default_on_fail: flag
+resources: []
+params:
+  maf_threshold: 0.01

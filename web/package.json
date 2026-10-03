@@ -1,0 +1,19 @@
+{
+  "name": "gwashub-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare"
+  },
+  "dependencies": {
+    "@primeuix/themes": "^2.0.3",
+    "@primevue/nuxt-module": "^4.5.5",
+    "nuxt": "^4.5.2",
+    "primeicons": "^7.0.0",
+    "primevue": "^4.5.5"
+  }
+}

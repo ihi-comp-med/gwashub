@@ -1,0 +1,17 @@
+# Local development (API + runner + steps + tests)
+numpy
+pandas
+scipy
+matplotlib
+pyyaml
+fastapi
+uvicorn[standard]
+sqlalchemy
+python-multipart
+httpx
+pytest
+boto3
+pyjwt[crypto]
+psycopg[binary]
+alembic
+moto[s3]

@@ -1,0 +1,14 @@
+name: reference_check
+title: Reference check
+description: Align alleles to the reference panel (effect allele = ALT); resolve palindromic
+  SNPs; detect swapped alleles and wrong builds.
+command:
+- python
+- reference_check.py
+image: gwashub/base
+default_on_fail: block
+resources:
+- ref_panel_grch38.tsv.gz
+params:
+  palindromic_max_maf: 0.4
+  warn_eaf_correlation: 0.8
