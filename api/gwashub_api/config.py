@@ -5,7 +5,7 @@ from functools import lru_cache
 from urllib.parse import quote
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-AUTH_MODES = ("dev", "password", "cognito")
+AUTH_MODES = ("dev", "cognito")
 
 
 def _db_url(data_dir: str) -> str:
@@ -32,8 +32,8 @@ class Settings:
         self.max_workers = int(env("GWASHUB_WORKERS", "3"))
         self.cors_origins = env("GWASHUB_CORS", "http://localhost:3000").split(",")
         self.inline_jobs = env("GWASHUB_INLINE_JOBS") == "1"  # tests: run jobs synchronously
-        # "dev": pick any user, no password (local only). "password": email + password (interim server).
-        # "cognito": Amazon Cognito hosted sign-in (AWS). Dev endpoints exist only in "dev".
+        # "dev": pick any user, no password (local only). "cognito": Amazon Cognito hosted sign-in (AWS).
+        # Dev endpoints exist only in "dev".
         self.auth_mode = env("GWASHUB_AUTH", "dev")
         self.session_hours = float(env("GWASHUB_SESSION_HOURS", "12"))
         # Built website (nuxt generate output) to serve from the API; unset in local dev (Nuxt serves it)

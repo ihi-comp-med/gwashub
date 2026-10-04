@@ -19,7 +19,7 @@ qc_steps, images, analyses), `infra/` (AWS CDK) and a git-ignored `local/` for g
 | Web wired to the API | ✅ every page; mock data removed |
 | Meta-analysis tab | ✅ builder (datasets + settings + project defaults), results page (Manhattan, QQ, lead loci, forest plots) |
 | End-to-end demo via HTTP (`devtools/e2e.py`) | ✅ |
-| Interim AWS pilot (one EC2 server, password sign-in): `infra/minimal.yaml`, `devtools/aws_deploy.sh` | ✅ was live at an sslip.io address; superseded, still running until you delete it (`docs/AWS_MINIMAL.md`) |
+| Interim AWS pilot (one EC2 server, password sign-in) | ✅ ran on 2026-10-03; deleted once the full deployment was live, together with its template, script and password sign-in |
 | Full AWS deployment (CDK in `infra/`): S3 direct uploads, Postgres, Cognito (MFA), Fargate API + worker, Batch jobs per image group, CloudFront | ✅ **live in gwashub-dev**, checked end to end (uploads, QC on Batch incl. an R step in its own image, sign-in); see `docs/AWS_FULL.md` |
 
 **Tests: 81 passing** (`.venv/bin/python -m pytest`): QC steps 26, runner and grouping 11, meta-analysis 5,
@@ -59,7 +59,7 @@ Meta-analyses vs the simulated truth:
 
 ## Decisions made (please review)
 
-1. **Copied, not imported with history.** `scripts/default/{row_check,qc_report}.py` → `pipeline/steps/`
+1. **Copied, not imported with history.** `scripts/default/{row_check,qc_report}.py` → `pipeline/steps/` (now `pipeline/qc_steps/gwashub/`)
    (row_check now parses any delimiter/gzip; its range checks moved to `value_ranges`).
    `orchestrator/` → `pipeline/runner/` (rewritten). `s3io.py` kept with its tests in `pipeline/runner/aws/`
    (`repo_fetch.py` was later removed with the git-repo custom steps). Dropped: `aws_wrapper.py`, `resources.py`, `manifest.py` (`extends` format),
@@ -84,8 +84,9 @@ Meta-analyses vs the simulated truth:
 10. **Upload options** (your request): per project, reviewers set the phenotypes, allowed ancestries
     and expected sex strata (Pipeline settings tab); the upload form only offers those and the API
     rejects anything else. Removing a phenotype keeps existing datasets.
-11. **Sign-in:** local is passwordless (pick a user); the interim server used passwords; AWS uses Cognito
-    (invite-only, MFA for everyone). In every mode the session is an HMAC-signed cookie with a 12-hour expiry.
+11. **Sign-in:** local is passwordless (pick a user); AWS uses Cognito (invite-only, MFA for everyone). In
+    both the session is an HMAC-signed cookie with a 12-hour expiry. (The interim server's password mode was
+    removed with it.)
 12. The HERMES logo is in `web/public/brand/`, shown on the front page ("A HERMES Consortium
     resource") with a footer credit. **Check the link**: I used https://hermesconsortium.org.
 
@@ -150,7 +151,6 @@ Meta-analyses vs the simulated truth:
 - Project pages blank for non-members → explicit message.
 - Logo served as HTML by the dev server (public file added after start) → bound src + restart.
 - AWS: the dataset panel was narrow only in the built site (PrimeVue's CSS loaded after ours).
-- AWS: first-boot race on the interim server (no internet before the Elastic IP was attached).
 - AWS: containers couldn't write `/tmp` with a read-only root filesystem (rolled back; deferred).
 - AWS: the worker crashed on SQS errors (now retries); the "latest run" check used a stale list.
 

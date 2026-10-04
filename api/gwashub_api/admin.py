@@ -1,9 +1,7 @@
 """Admin commands (run where the app runs: inside the container, or on AWS with devtools/aws_admin.sh).
 
     python -m gwashub_api.admin users
-    python -m gwashub_api.admin invite EMAIL "Full Name" [--institution X] [--admin]     # Cognito mode
-    python -m gwashub_api.admin add-user EMAIL "Full Name" [--institution X] [--admin]   # password mode
-    python -m gwashub_api.admin set-password EMAIL                                       # password mode
+    python -m gwashub_api.admin invite EMAIL "Full Name" [--institution X] [--admin] [--resend]
     python -m gwashub_api.admin add-member EMAIL PROJECT_ID uploader|reviewer
     python -m gwashub_api.admin remove-member EMAIL PROJECT_ID
     python -m gwashub_api.admin add-project ID "Name" SHORT --phenotype "All-cause HF" [--phenotype ...]
@@ -11,10 +9,10 @@
 
 `invite` creates the GWASHub user and, in Cognito mode, the Cognito account: Cognito emails a
 temporary password, and the person sets their own password and authenticator app at first sign-in.
-Passwords (password mode) are read from a prompt, or GWASHUB_NEW_PASSWORD for scripts.
+Reviewers can do the same for their project from the website; platform admins (--admin) can also
+create projects there.
 """
 import argparse
-import getpass
 import os
 import sys
 
@@ -22,19 +20,9 @@ from sqlalchemy import select
 
 from gwashub_api import services
 from gwashub_api.accounts import cognito_invite
-from gwashub_api.auth import hash_password
 from gwashub_api.config import settings
 from gwashub_api.db import SessionLocal, create_all
 from gwashub_api.models import Membership, Project, User
-
-
-def read_password() -> str:
-    pw = os.environ.get("GWASHUB_NEW_PASSWORD") or getpass.getpass("New password: ")
-    if len(pw) < 12:
-        sys.exit("Password must be at least 12 characters")
-    if "GWASHUB_NEW_PASSWORD" not in os.environ and getpass.getpass("Repeat password: ") != pw:
-        sys.exit("Passwords don't match")
-    return pw
 
 
 def find_user(db, email: str) -> User:
@@ -76,7 +64,7 @@ def readonly_user():
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m gwashub_api.admin")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("users", help="list users, their roles and whether a password is set")
+    sub.add_parser("users", help="list users, their roles and whether they have signed in with Cognito")
     i = sub.add_parser("invite", help="create a user and (Cognito mode) email them an invitation")
     i.add_argument("email")
     i.add_argument("name")
@@ -93,13 +81,6 @@ def main(argv=None):
     pr.add_argument("--phenotype", action="append", required=True)
     pr.add_argument("--description", default="")
     sub.add_parser("db-readonly-user", help="Postgres: create or update the read-only user (password from Secrets Manager)")
-    a = sub.add_parser("add-user", help="create a user and set their password")
-    a.add_argument("email")
-    a.add_argument("name")
-    a.add_argument("--institution", default="")
-    a.add_argument("--admin", action="store_true")
-    p = sub.add_parser("set-password", help="set or reset a user's password")
-    p.add_argument("email")
     m = sub.add_parser("add-member", help="give a user a role in a project")
     m.add_argument("email")
     m.add_argument("project")
@@ -114,7 +95,7 @@ def main(argv=None):
         if args.cmd == "users":
             for u in db.scalars(select(User).order_by(User.id)):
                 roles = ", ".join(f"{x.project_id}:{x.role}" for x in db.scalars(select(Membership).where(Membership.user_id == u.id)))
-                print(f"{u.email:35} {'password set' if u.password_hash else 'no password':13} {roles}")
+                print(f"{u.email:35} {'admin' if u.is_admin else '':6} {'signed in' if u.cognito_sub else 'not yet':10} {roles}")
         elif args.cmd == "invite":
             email = args.email.strip().lower()
             user = db.scalar(select(User).where(User.email == email))
@@ -143,19 +124,6 @@ def main(argv=None):
             services.ensure_project_pipeline(db, p)
             db.commit()
             print(f"Created project {args.id}; add people with add-member")
-        elif args.cmd == "add-user":
-            email = args.email.strip().lower()
-            if db.scalar(select(User).where(User.email == email)):
-                sys.exit(f"User {email} already exists (use set-password)")
-            db.add(User(email=email, name=args.name, institution=args.institution, is_admin=args.admin,
-                        password_hash=hash_password(read_password())))
-            db.commit()
-            print(f"Created {email}")
-        elif args.cmd == "set-password":
-            user = find_user(db, args.email)
-            user.password_hash = hash_password(read_password())
-            db.commit()
-            print(f"Password set for {user.email}")
         elif args.cmd == "add-member":
             user = find_user(db, args.email)
             if not db.get(Project, args.project):

@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gwashub_api import jobs
-from gwashub_api.auth import COOKIE, check_password, set_session
+from gwashub_api.auth import COOKIE, set_session
 from gwashub_api.config import settings
 from gwashub_api.db import create_all, get_db
 from gwashub_api.models import Membership, User
@@ -36,7 +36,6 @@ for r in (projects.router, datasets.router, pipeline.router, meta.router, cognit
 
 class Login(BaseModel):
     email: str
-    password: str = ""
 
 
 def dev_mode() -> bool:
@@ -51,16 +50,13 @@ def auth_mode():
 
 @app.post("/api/auth/login")
 def login(body: Login, response: Response, db: Session = Depends(get_db)):
-    """Dev mode: sign in as an existing user by email. Password mode: email + password.
-    Cognito mode signs in through GET /api/auth/login (routers/cognito.py) instead."""
-    if settings().auth_mode == "cognito":
+    """Dev mode only: sign in as an existing user by email. Cognito mode signs in through
+    GET /api/auth/login (routers/cognito.py) instead."""
+    if not dev_mode():
         raise HTTPException(404, "Not Found")
     user = db.scalar(select(User).where(User.email == body.email.strip().lower()))
-    if dev_mode():
-        if not user:
-            raise HTTPException(404, "No user with that email (local mode: see the seeded users on the login page)")
-    elif not user or not check_password(body.password, user.password_hash):
-        raise HTTPException(401, "Wrong email or password")
+    if not user:
+        raise HTTPException(404, "No user with that email (local mode: see the seeded users on the login page)")
     set_session(response, user.id)
     projects_ = [m.project_id for m in db.scalars(select(Membership).where(Membership.user_id == user.id))]
     return {"id": user.id, "name": user.name, "email": user.email, "projects": projects_}

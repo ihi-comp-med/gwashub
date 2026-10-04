@@ -14,7 +14,6 @@ pick-a-user sign-in) and **on AWS** (S3, Postgres, AWS Batch, Cognito sign-in wi
 | `docs/AWS_DEPLOYMENT.md` | The design and reasoning behind the AWS setup (production checklist, costs) |
 | `docs/AWS_ACCOUNT_SETUP.md` | Step-by-step guide to the AWS Organization and accounts |
 | `docs/PLAN.md` | The original plan |
-| `docs/AWS_MINIMAL.md` | The interim single-server pilot (superseded by the full deployment) |
 
 ## Quick start (local)
 
@@ -49,10 +48,10 @@ pipeline/            compute that runs as jobs
   images/              images steps run in, by owner: gwashub/base (Python), gwashub/base-r (R)
   analyses/            meta_analysis/ (inverse-variance fixed / DerSimonian-Laird random effects)
   tests/               runner, image grouping, liftover chain, meta-analysis, S3 tests
-images/app/          the site image (API, worker, built website)
+images/app/          the site image (API and worker)
 infra/               AWS CDK app: Network, Data and App stacks (docs/AWS_FULL.md)
 devtools/            dev.sh, synth.py (synthetic data), seed.py, e2e.py, run_demo.py; AWS: aws_cdk_deploy.sh,
-                     aws_admin.sh, aws_db_tunnel.sh, aws_bookmarks.py; interim server: aws_deploy.sh
+                     aws_admin.sh, aws_db_tunnel.sh, aws_bookmarks.py
 docs/                plan, progress, AWS guides, original qc-pipeline README
 local/               git-ignored: synthetic/ (fake data + resources), app/ (dev DB, uploads, runs), runs/
 ```

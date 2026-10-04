@@ -11,8 +11,8 @@ export function useAuth() {
     checked.value = true
     return me.value
   }
-  async function login(email: string, password = '') {
-    const r = await api<{ projects: string[] }>('/auth/login', { method: 'POST', body: { email, password } })
+  async function login(email: string) {
+    const r = await api<{ projects: string[] }>('/auth/login', { method: 'POST', body: { email } })
     checked.value = false
     await load()
     navigateTo(r.projects.length === 1 ? `/projects/${r.projects[0]}` : '/projects')

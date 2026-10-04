@@ -1,8 +1,8 @@
 # GWASHub on AWS: the full deployment
 
 How the AWS version of GWASHub is built, deployed and run. The design and its reasoning are in
-`docs/AWS_DEPLOYMENT.md`; this file is the practical guide. It replaces the interim single server
-(`docs/AWS_MINIMAL.md`).
+`docs/AWS_DEPLOYMENT.md`; this file is the practical guide. (An interim single-server pilot ran on
+2026-10-03 and was deleted once this deployment was live.)
 
 ## What runs where
 
@@ -61,10 +61,40 @@ every page ("Development build" in dev, none in prod). **dev** (gwashub-dev, 203
 the lean setup: one NAT gateway, single-AZ `db.t4g.small`, one API task. **prod** (gwashub-prod,
 269626333085) has Multi-AZ `db.t4g.medium`, two NAT gateways, two API tasks and longer backups.
 
+## One-off setup on your Mac
+
+1. **AWS CLI v2.32 or later** (`brew install awscli`; it has `aws login`, which reuses your console sign-in,
+   so no access keys are stored), **Docker Desktop**, and for database browsing the **Session Manager
+   plugin** (`brew install --cask session-manager-plugin`).
+2. If your shell aliases `aws` to something else (this Mac's `~/.zshrc` aliases it to an SSH command),
+   rename the alias or type `/opt/homebrew/bin/aws`. The scripts run in bash and aren't affected.
+3. Profiles in `~/.aws/config` (each environment's account is entered with the role Organizations created in it):
+   ```ini
+   [profile gwashub-mgmt]
+   region = eu-west-2
+
+   [profile gwashub-dev]
+   region = eu-west-2
+   role_arn = arn:aws:iam::203248996074:role/OrganizationAccountAccessRole
+   source_profile = gwashub-mgmt
+   role_session_name = gwashub-deploy
+
+   [profile gwashub-prod]
+   region = eu-west-2
+   role_arn = arn:aws:iam::269626333085:role/OrganizationAccountAccessRole
+   source_profile = gwashub-mgmt
+   role_session_name = gwashub-deploy
+   ```
+4. Sign in (again whenever it expires, after a few hours), with the **browser in the management
+   account**, not switched into dev or prod (`aws login` copies the browser's current session):
+   ```bash
+   aws login --profile gwashub-mgmt --region eu-west-2
+   aws sts get-caller-identity --profile gwashub-dev     # should show account 203248996074
+   ```
+
 ## Deploying
 
-Needs Docker running, and the AWS CLI signed in (`aws login --profile gwashub-mgmt`, see
-`docs/AWS_MINIMAL.md` for the profile setup; prod needs a `gwashub-prod` profile like the dev one).
+Needs Docker running and the AWS CLI signed in (above).
 
 ```bash
 ./devtools/aws_cdk_deploy.sh dev     # website build, image build + push, cdk deploy of all three stacks
@@ -109,16 +139,49 @@ remove their project memberships.
 
 ### Browsing the database from PyCharm
 
+The database has no public address, so you open a private tunnel from your Mac and point PyCharm at it.
+The tunnel goes through a small jump host (`gwashub-dev-db-jump`, t4g.nano, no open ports) using AWS
+Session Manager and your AWS sign-in. You connect as `gwashub_readonly`, which can read everything and
+change nothing.
+
+One-off: `brew install --cask session-manager-plugin` (in a normal Terminal; it asks for your Mac password).
+
+**1. Open the tunnel** (in Terminal; leave it running while you use PyCharm):
+
 ```bash
-./devtools/aws_db_tunnel.sh dev        # keeps localhost:5433 → the database open until Ctrl+C; prints the password
+/opt/homebrew/bin/aws login --profile gwashub-mgmt --region eu-west-2   # if your sign-in has expired
+cd ~/git/gwashub
+./devtools/aws_db_tunnel.sh dev        # prints the password, then "Waiting for connections..."
 ```
 
-In PyCharm (Professional): Database → + → Data Source → PostgreSQL, host `localhost`, port `5433`,
-database `gwashub`, user `gwashub_readonly`, SSL mode `require`. The tunnel goes through a small jump
-host (`gwashub-dev-db-jump`, t4g.nano, no open ports) with Session Manager, so it needs
-`brew install --cask session-manager-plugin` and your AWS sign-in. The `gwashub_readonly` user can only
-read; it's (re)created with `./devtools/aws_admin.sh dev db-readonly-user`, password in Secrets Manager
-`gwashub/dev/db-readonly`.
+**2. Connect PyCharm** (Professional; Community has no Database window, use DBeaver or TablePlus instead):
+Database window → **+ → Data Source → PostgreSQL** (plain PostgreSQL, not "AWS JDBC Wrapper").
+
+| Tab | Setting |
+|---|---|
+| General | Host `localhost`, port **`5433`**, user `gwashub_readonly`, password (from the script), database `gwashub` |
+| SSH/SSL | **Use SSL** ticked, mode **Require**; *Use SSH tunnel* unticked (the script is the tunnel) |
+
+Download the driver if offered, **Test Connection**, then expand **gwashub → schemas → public → tables**
+(if no tables show, tick the `public` schema in the data source's Schemas setting). The Terminal prints
+"Connection accepted" each time PyCharm connects. `user` is a reserved word in Postgres: write `"user"` in SQL.
+
+**Lost the password?** It's in Secrets Manager, `gwashub/dev/db-readonly` (console: Retrieve secret value), or:
+`/opt/homebrew/bin/aws secretsmanager get-secret-value --secret-id gwashub/dev/db-readonly --profile gwashub-dev --region eu-west-2 --query SecretString --output text`
+
+**If it doesn't connect:**
+
+| Symptom | Cause and fix |
+|---|---|
+| PyCharm: "Connection to localhost:5433 refused" | The tunnel isn't running: start it (step 1) and wait for "Waiting for connections..." |
+| PyCharm: refused on **5432** | Port must be 5433 |
+| Script: "session has expired" / "Unable to locate credentials" | Run the `aws login` line |
+| Script: `AccessDenied ... OrganizationAccountAccessRole` after `aws login` asked to overwrite the profile with an account **203248996074** session | `aws login` copies the browser's current session, and the browser was switched into gwashub-dev. Switch the browser **back** to the management account, run `aws login` again and accept the **367722595572** session |
+| Script: "Install the Session Manager plugin first" | `brew install --cask session-manager-plugin` |
+| PyCharm: "password authentication failed" | Re-copy the password (see above) |
+| `aws` runs SSH instead of the AWS CLI | Your shell aliases `aws`; use `/opt/homebrew/bin/aws` (the scripts aren't affected) |
+
+The read-only user is (re)created with `./devtools/aws_admin.sh dev db-readonly-user`.
 
 ### Where to look in the console (account gwashub-dev, London)
 

@@ -282,30 +282,24 @@ def test_study_metadata_upload_edit_and_audit(client, synth_small):
     assert client.patch(f"/api/datasets/{up['id']}", json={"cohort": "BBJ (v2)"}).json()["changed"] == ["cohort"]
 
 
-def test_password_mode_login_and_no_dev_endpoints(client, monkeypatch):
-    from gwashub_api import admin
-    from gwashub_api.config import settings
-    monkeypatch.setenv("GWASHUB_NEW_PASSWORD", "correct horse battery")
-    admin.main(["set-password", "jonas@example.org"])
-    monkeypatch.setattr(settings(), "auth_mode", "password")
-    client.cookies.clear()
-    assert client.get("/api/auth/mode").json()["mode"] == "password"
-    assert client.get("/api/auth/users").status_code == 404
-    assert client.post("/api/auth/login", json={"email": "jonas@example.org"}).status_code == 401
-    assert client.post("/api/auth/login", json={"email": "jonas@example.org", "password": "wrong password!"}).status_code == 401
-    assert client.post("/api/auth/login", json={"email": "ama@example.org", "password": "correct horse battery"}).status_code == 401  # no password set
-    r = client.post("/api/auth/login", json={"email": "jonas@example.org", "password": "correct horse battery"})
-    assert r.status_code == 200 and "secure" in r.headers["set-cookie"].lower()
-
-
-def test_password_mode_requires_a_real_secret(monkeypatch):
-    from gwashub_api.config import Settings
-    monkeypatch.setenv("GWASHUB_AUTH", "password")
+def test_cognito_mode_requires_a_real_secret_and_hides_dev_login(client, monkeypatch):
+    from gwashub_api.config import Settings, settings
+    monkeypatch.setenv("GWASHUB_AUTH", "cognito")
+    for k, v in {"GWASHUB_COGNITO_DOMAIN": "https://x.auth.eu-west-2.amazoncognito.com", "GWASHUB_COGNITO_USER_POOL_ID": "eu-west-2_X",
+                 "GWASHUB_COGNITO_CLIENT_ID": "c", "GWASHUB_COGNITO_CLIENT_SECRET": "s"}.items():
+        monkeypatch.setenv(k, v)
     monkeypatch.delenv("GWASHUB_SECRET", raising=False)
     with pytest.raises(RuntimeError):
         Settings()
     monkeypatch.setenv("GWASHUB_SECRET", "x" * 40)
-    assert Settings().auth_mode == "password"
+    assert Settings().auth_mode == "cognito"
+    monkeypatch.setenv("GWASHUB_AUTH", "password")  # the interim server's mode is gone
+    with pytest.raises(RuntimeError):
+        Settings()
+    monkeypatch.setattr(settings(), "auth_mode", "cognito")
+    client.cookies.clear()
+    assert client.get("/api/auth/users").status_code == 404
+    assert client.post("/api/auth/login", json={"email": "jonas@example.org"}).status_code == 404
 
 
 def test_change_build_reruns_qc(client, synth_small):

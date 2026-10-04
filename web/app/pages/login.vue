@@ -1,10 +1,10 @@
 <script setup lang="ts">
-// Dev mode: no passwords, pick a seeded user. Password mode (interim server): email + password.
-// Cognito mode (AWS): a button to the hosted sign-in page (password + authenticator app).
+// Dev mode (local): no passwords, pick a seeded user. Cognito mode (AWS): a button to the hosted
+// sign-in page (password + authenticator app).
 const { login } = useAuth()
 const toast = useToast()
 const route = useRoute()
-const { data: mode, error } = useApiGet<{ mode: 'dev' | 'password' | 'cognito' }>('/auth/mode')
+const { data: mode, error } = useApiGet<{ mode: 'dev' | 'cognito' }>('/auth/mode')
 const dev = computed(() => mode.value?.mode === 'dev')
 const cognito = computed(() => mode.value?.mode === 'cognito')
 const SIGNIN_ERRORS: Record<string, string> = {
@@ -16,9 +16,8 @@ const SIGNIN_ERRORS: Record<string, string> = {
 const signinError = computed(() => SIGNIN_ERRORS[String(route.query.error ?? '')] ?? '')
 const { data: users } = useApiGet<any[]>(() => dev.value ? '/auth/users' : null)
 const email = ref('')
-const password = ref('')
-async function signIn(e: string, pw = '') {
-  try { await login(e, pw) }
+async function signIn(e: string) {
+  try { await login(e) }
   catch (err: any) { toast.add({ severity: 'error', summary: 'Sign-in failed', detail: err.message, life: 4000 }) }
 }
 </script>
@@ -30,7 +29,6 @@ async function signIn(e: string, pw = '') {
       <template #subtitle>
         <span v-if="dev">Local development mode: choose a demo user. No password is needed.</span>
         <span v-else-if="cognito">Sign in with your email, password and authenticator app. New here? Use the invitation email from your project admin.</span>
-        <span v-else-if="mode">Sign in with the email and password your project admin gave you.</span>
       </template>
       <template #content>
         <Message v-if="error" severity="error" :closable="false" class="mb">
@@ -39,11 +37,6 @@ async function signIn(e: string, pw = '') {
         </Message>
         <Message v-if="signinError" severity="warn" :closable="false" class="mb">{{ signinError }}</Message>
         <a v-if="cognito" href="/api/auth/login" class="p-button signin"><i class="pi pi-sign-in" />&nbsp;Sign in</a>
-        <form v-else-if="mode && !dev" class="pw" @submit.prevent="signIn(email, password)">
-          <InputText v-model="email" type="email" placeholder="Email" autocomplete="username" />
-          <InputText v-model="password" type="password" placeholder="Password" autocomplete="current-password" />
-          <Button type="submit" label="Sign in" :disabled="!email || !password" />
-        </form>
         <template v-if="dev">
         <ul class="users">
           <li v-for="u in users || []" :key="u.email">
@@ -78,6 +71,5 @@ async function signIn(e: string, pw = '') {
 .small { font-size: 0.8rem; }
 .other { margin-top: 16px; flex-wrap: nowrap; }
 .grow { flex: 1; }
-.pw { display: flex; flex-direction: column; gap: 12px; }
 .signin { text-decoration: none; justify-content: center; width: 100%; }
 </style>

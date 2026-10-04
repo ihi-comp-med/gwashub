@@ -17,7 +17,6 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(200))
     institution: Mapped[str] = mapped_column(String(200), default="")
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
-    password_hash: Mapped[str] = mapped_column(String(300), default="")  # password sign-in mode only
     cognito_sub: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)  # set at first Cognito sign-in
 
 

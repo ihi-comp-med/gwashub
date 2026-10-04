@@ -1,16 +1,14 @@
 """Authentication + server-side permission checks.
 
 Dev mode (GWASHUB_AUTH=dev, local only): POST /api/auth/login {email} signs you in as an existing
-user (no password). Password mode (GWASHUB_AUTH=password, the interim server): the login also needs
-the user's password, set with `python -m gwashub_api.admin`. Cognito mode (AWS): sign-in happens on
-the Cognito hosted pages (see cognito.py) and the API only learns who you are from a verified ID token.
+user (no password). Cognito mode (AWS): sign-in happens on the Cognito hosted pages (see
+routers/cognito.py) and the API only learns who you are from a verified ID token.
 
 In every mode the session is an HMAC-signed cookie holding the user id and an expiry time. Project
 roles live in the GWASHub database, so the permission helpers below are the same in every mode.
 """
 import hashlib
 import hmac
-import secrets
 import time
 
 from fastapi import Cookie, Depends, HTTPException
@@ -47,20 +45,6 @@ def verify(token: str | None) -> int | None:
 def set_session(response, user_id: int):
     response.set_cookie(COOKIE, sign(user_id), httponly=True, samesite="lax", secure=settings().auth_mode != "dev",
                         max_age=int(settings().session_hours * 3600), path="/")
-
-
-def hash_password(password: str) -> str:
-    salt = secrets.token_hex(16)
-    digest = hashlib.scrypt(password.encode(), salt=salt.encode(), n=2**14, r=8, p=1).hex()
-    return f"scrypt${salt}${digest}"
-
-
-def check_password(password: str, stored: str) -> bool:
-    if not stored.startswith("scrypt$"):
-        return False
-    _, salt, digest = stored.split("$", 2)
-    got = hashlib.scrypt(password.encode(), salt=salt.encode(), n=2**14, r=8, p=1).hex()
-    return hmac.compare_digest(got, digest)
 
 
 def current_user(gh_session: str | None = Cookie(default=None), db: Session = Depends(get_db)) -> User:

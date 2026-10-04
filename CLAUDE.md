@@ -24,9 +24,9 @@ Read before substantial work:
 | `pipeline/images/` | Images steps run in, by owner: `gwashub/base` (Python), `gwashub/base-r` (R); consortium images build `FROM` these |
 | `pipeline/analyses/` | `meta_analysis/` (inverse-variance fixed / DerSimonian-Laird random effects) |
 | `pipeline/tests/` | Runner, grouping, liftover-chain, meta-analysis, S3 tests |
-| `images/app/` | The site image (API, worker, built website) |
+| `images/app/` | The site image (API and worker) |
 | `infra/` | AWS CDK app (Network, Data, App stacks); see `docs/AWS_FULL.md` |
-| `devtools/` | `dev.sh`, `synth.py` (synthetic data), `seed.py`, `e2e.py`, `run_demo.py`; AWS: `aws_cdk_deploy.sh` (deploy), `aws_admin.sh` (admin commands), `aws_db_tunnel.sh`, `aws_bookmarks.py`; `aws_deploy.sh` (interim server) |
+| `devtools/` | `dev.sh`, `synth.py` (synthetic data), `seed.py`, `e2e.py`, `run_demo.py`; AWS: `aws_cdk_deploy.sh` (deploy), `aws_admin.sh` (admin commands), `aws_db_tunnel.sh`, `aws_bookmarks.py` |
 | `docs/` | Plan, progress, AWS guides, original qc-pipeline README |
 | `local/` | Git-ignored local state: `synthetic/` (fake data + resources), `app/` (dev DB, uploads, run outputs), `runs/` (CLI runs) |
 
@@ -50,7 +50,7 @@ copyright notice for any code ported from them). Useful there: liftover worker
   datasets; reviewers do everything else in their project, including managing members; platform admins
   (`is_admin`) can also create projects; non-members get 404.
 - **Local vs AWS** is configuration only (`config.py`): storage local/S3, database SQLite/Postgres
-  (Alembic migrations in `api/migrations`), jobs threads/Batch, sign-in dev/password/Cognito.
+  (Alembic migrations in `api/migrations`), jobs threads/Batch, sign-in dev (pick a user)/Cognito.
 - **Study metadata** fields are defined once in `api/gwashub_api/metadata_schema.py` and drive the
   upload form, the dataset viewer and validation.
 - **Reproducibility:** pipeline versions pin resource versions; each run records the pipeline version
