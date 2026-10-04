@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 import re
 
-from gwashub_api import services
+from gwashub_api import metadata_schema, services
 from gwashub_api.accounts import InviteError, find_or_invite
 from gwashub_api.auth import current_user, membership, require_member
 from gwashub_api.db import get_db
@@ -49,6 +49,8 @@ def get_project(project_id: str, user: User = Depends(current_user), db: Session
     pv = current_pipeline(db, project_id)
     return {
         "id": p.id, "name": p.name, "short": p.short, "description": p.description, "phenotypes": p.phenotypes,
+        "phenotype_descriptions": p.phenotype_descriptions or {}, "metadata_config": services.metadata_config(p),
+        "is_admin": user.is_admin,
         "ancestries": p.ancestries, "sexes": p.sexes,
         "created_at": p.created_at, "role": m.role, "counts": counts(db, p.id),
         "members": [{"id": x.user.id, "name": x.user.name, "institution": x.user.institution, "role": x.role,
@@ -65,7 +67,8 @@ ALL_SEXES = ["Combined", "Female", "Male"]
 
 
 class UploadOptions(BaseModel):
-    phenotypes: list[str]
+    phenotypes: list[str]  # codes
+    phenotype_descriptions: dict[str, str] | None = None  # code -> description
     ancestries: list[str]
     sexes: list[str]
 
@@ -85,13 +88,40 @@ def put_upload_options(project_id: str, body: UploadOptions, user: User = Depend
     if not body.ancestries or not body.sexes:
         raise HTTPException(422, "Allow at least one ancestry and one sex stratum")
     p = m.project
+    if body.phenotype_descriptions is not None:
+        descs = {k: str(v).strip() for k, v in body.phenotype_descriptions.items() if k in phenos and str(v).strip()}
+        if any(len(v) > 300 for v in descs.values()):
+            raise HTTPException(422, "Phenotype descriptions must be 300 characters or fewer")
+        p.phenotype_descriptions = descs
+    else:
+        p.phenotype_descriptions = {k: v for k, v in (p.phenotype_descriptions or {}).items() if k in phenos}
     p.phenotypes = phenos
     p.ancestries = [a for a in ALL_ANCESTRIES if a in body.ancestries]
     p.sexes = [s for s in ALL_SEXES if s in body.sexes]
     db.commit()
     in_use = {ph for (ph,) in db.execute(select(Dataset.phenotype).where(Dataset.project_id == project_id))}
-    return {"phenotypes": p.phenotypes, "ancestries": p.ancestries, "sexes": p.sexes,
-            "removed_but_in_use": sorted(in_use - set(phenos))}
+    return {"phenotypes": p.phenotypes, "phenotype_descriptions": p.phenotype_descriptions, "ancestries": p.ancestries,
+            "sexes": p.sexes, "removed_but_in_use": sorted(in_use - set(phenos))}
+
+
+# ---------- metadata fields shown per project ----------
+
+class MetadataConfig(BaseModel):
+    shown: list[str]
+    required: list[str] = []
+
+
+@router.put("/projects/{project_id}/metadata-config")
+def put_metadata_config(project_id: str, body: MetadataConfig, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Which metadata fields this project shows, and which must be filled in at upload. Platform admins set
+    it up; the project's reviewers can change it. Existing datasets missing a newly required field are
+    shown as "metadata incomplete"; nothing is blocked."""
+    m = require_member(db, user, project_id)
+    if m.role != "reviewer" and not user.is_admin:
+        raise HTTPException(403, "Only reviewers can change which metadata fields are collected")
+    m.project.metadata_config = metadata_schema.validate_config(body.model_dump())
+    db.commit()
+    return m.project.metadata_config
 
 
 @router.get("/projects/{project_id}/summary")
@@ -182,12 +212,16 @@ def remove_member(project_id: str, user_id: int, user: User = Depends(current_us
 
 # ---------- projects (platform admins create them) ----------
 
+METADATA_PRESETS = {"default": None, "all": lambda: {"shown": list(metadata_schema.UNITS), "required": []}}
+
+
 class ProjectIn(BaseModel):
     id: str
     name: str
     short: str
     description: str = ""
     phenotypes: list[str]
+    metadata_preset: str = "default"  # "default" (the HERMES set) or "all" (every field, HERMES and SGC)
 
 
 @router.post("/projects", status_code=201)
@@ -206,7 +240,11 @@ def create_project(body: ProjectIn, user: User = Depends(current_user), db: Sess
         raise HTTPException(422, "Give a name (up to 300 characters) and a short name (up to 50)")
     if not phenos:
         raise HTTPException(422, "Add at least one phenotype")
-    p = Project(id=pid, name=name, short=short, description=body.description.strip(), phenotypes=phenos)
+    if body.metadata_preset not in METADATA_PRESETS:
+        raise HTTPException(422, "metadata_preset must be default or all")
+    preset = METADATA_PRESETS[body.metadata_preset]
+    p = Project(id=pid, name=name, short=short, description=body.description.strip(), phenotypes=phenos,
+                metadata_config=preset() if preset else None)
     db.add(p)
     db.flush()
     db.add(Membership(user_id=user.id, project_id=pid, role="reviewer"))

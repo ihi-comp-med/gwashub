@@ -14,11 +14,48 @@ watch(project, (p) => {
   if (!p.ancestries.includes(details.ancestry)) details.ancestry = p.ancestries[0] ?? ''
   if (!p.sexes.includes(details.sex)) details.sex = p.sexes[0] ?? ''
 }, { immediate: true })
-const detailsOk = computed(() => !!(details.cohort && details.phenotype && details.n_cases && details.n_controls))
+const detailsOk = computed(() => !!(details.cohort.trim() && details.phenotype && details.n_cases && details.n_controls))
+const phenoOptions = computed(() => (project.value?.phenotypes ?? []).map((p: string) => ({ value: p, label: project.value.phenotype_descriptions?.[p] ? `${p} · ${project.value.phenotype_descriptions[p]}` : p })))
 
-// Step 2: study metadata, optionally copied from one of your earlier uploads.
+// Cohort: pick an existing one or type a new name (warned if it looks like an existing cohort).
+const { data: cohorts } = useApiGet<any[]>(() => `/projects/${pid.value}/cohorts`)
+const cohortNames = computed(() => (cohorts.value ?? []).map(c => c.name))
+const cohortSuggestions = ref<string[]>([])
+async function suggestCohorts(q: string) {
+  const text = (q ?? '').toLowerCase()
+  const matches = cohortNames.value.filter(n => n.toLowerCase().includes(text))
+  // Also offer near matches (typos, spacing), so an existing cohort is easy to pick.
+  const near = text.trim() ? (await api<any[]>(`/projects/${pid.value}/cohorts/similar`, { query: { name: q } }).catch(() => [])).map(c => c.name) : []
+  cohortSuggestions.value = [...new Set([...matches, ...near])]
+}
+const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '')
+const chosenCohort = computed(() => (cohorts.value ?? []).find(c => norm(c.name) === norm(details.cohort)) ?? null)
+const similar = ref<any[]>([])
+let simTimer: ReturnType<typeof setTimeout> | undefined
+watch(() => details.cohort, (name) => {
+  clearTimeout(simTimer)
+  similar.value = []
+  if (!name.trim() || chosenCohort.value) return
+  simTimer = setTimeout(async () => {
+    similar.value = await api<any[]>(`/projects/${pid.value}/cohorts/similar`, { query: { name } }).catch(() => [])
+  }, 300)
+})
+
+// Step 2: study metadata. Cohort-level fields start from the chosen cohort's values; for a new cohort
+// they're saved with it. Optionally copy from one of your earlier uploads.
 const studyMeta = ref<Record<string, any>>({})
-const { fieldCount } = useMetadataSchema()
+const { schema: metaSchema, missingRequired } = useMetadataSchema()
+const cohortKeys = computed(() => new Set((metaSchema.value ?? []).filter((sec: any) => sec.level === 'cohort').flatMap((sec: any) => sec.fields.map((f: any) => f.key))))
+const metaConfig = computed(() => project.value?.metadata_config ?? null)
+const missing = computed(() => missingRequired(studyMeta.value, metaConfig.value))
+let prefilledFor: number | null | undefined
+watch(step, (s) => {
+  // Entering the metadata step: start from the cohort's values (once per chosen cohort).
+  if (s !== '2' || prefilledFor === (chosenCohort.value?.id ?? null)) return
+  prefilledFor = chosenCohort.value?.id ?? null
+  const datasetPart = Object.fromEntries(Object.entries(studyMeta.value).filter(([k]) => !cohortKeys.value.has(k)))
+  studyMeta.value = { ...(chosenCohort.value?.meta ?? {}), ...datasetPart }
+})
 const { data: myDatasets } = useApiGet<any[]>(() => `/projects/${pid.value}/datasets`)
 const previous = computed(() => (myDatasets.value ?? []).filter(d => d.can_open && d.metadata_complete?.filled)
   .map(d => ({ id: d.id, label: `${d.cohort} · ${d.phenotype} · ${d.ancestry} · ${d.sex} (${d.metadata_complete.filled} fields)` })))
@@ -70,60 +107,21 @@ const unmappedColumns = computed(() => (suggestion.value?.columns ?? []).filter(
 // Step 4: upload in parts (straight to S3 on AWS), then QC starts and we go to the dataset.
 const progress = ref(0)
 const submitting = ref(false)
-const PARALLEL = 4
-const RETRIES = 3
-
-function putPart(url: string, blob: Blob, onBytes: (n: number) => void): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest()
-    xhr.open('PUT', url)
-    if (url.startsWith('/')) xhr.withCredentials = true
-    let sent = 0
-    xhr.upload.onprogress = (e) => { onBytes(e.loaded - sent); sent = e.loaded }
-    xhr.onload = () => {
-      const etag = xhr.getResponseHeader('ETag')
-      if (xhr.status >= 200 && xhr.status < 300 && etag) resolve(etag)
-      else { onBytes(-sent); reject(new Error(`part upload failed (${xhr.status})`)) }
-    }
-    xhr.onerror = () => { onBytes(-sent); reject(new Error('network error')) }
-    xhr.send(blob)
-  })
-}
-
 async function submit() {
   const f = file.value!
   submitting.value = true
   progress.value = 0
   let datasetId: number | null = null
   try {
-    const meta = { ...details, study_meta: studyMeta.value, column_mapping: Object.fromEntries(Object.entries(mapping).filter(([, v]) => v)) }
+    const meta = { ...details, cohort: details.cohort.trim(), cohort_id: chosenCohort.value?.id ?? null, study_meta: studyMeta.value,
+      column_mapping: Object.fromEntries(Object.entries(mapping).filter(([, v]) => v)) }
     const start = await api<{ id: number, part_size: number, parts: number }>(`/projects/${pid.value}/uploads`,
       { method: 'POST', body: { meta, file_name: f.name, file_size: f.size } })
     datasetId = start.id
-    let done = 0
-    const bump = (n: number) => { done += n; progress.value = Math.min(99, Math.round(100 * done / f.size)) }
-    const etags: { n: number, etag: string }[] = []
-    const queue = Array.from({ length: start.parts }, (_, i) => i + 1)
-    async function worker() {
-      while (queue.length) {
-        const batch = queue.splice(0, 1)
-        const n = batch[0]!
-        const blob = f.slice((n - 1) * start.part_size, n * start.part_size)
-        for (let attempt = 1; ; attempt++) {
-          try {
-            // Ask for each URL just before use: presigned URLs expire after 15 minutes.
-            const { urls } = await api<{ urls: Record<string, string> }>(`/datasets/${start.id}/upload/urls`, { method: 'POST', body: { parts: [n] } })
-            etags.push({ n, etag: await putPart(urls[String(n)]!, blob, bump) })
-            break
-          }
-          catch (e) {
-            if (attempt >= RETRIES) throw e
-            await new Promise(r => setTimeout(r, 1000 * attempt))
-          }
-        }
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(PARALLEL, start.parts) }, worker))
+    const etags = await uploadInParts(f, {
+      partSize: start.part_size, parts: start.parts, onProgress: (x) => { progress.value = Math.round(99 * x) },
+      urlFor: async n => (await api<{ urls: Record<string, string> }>(`/datasets/${start.id}/upload/urls`, { method: 'POST', body: { parts: [n] } })).urls[String(n)]!,
+    })
     await api(`/datasets/${start.id}/upload/complete`, { method: 'POST', body: { parts: etags } })
     progress.value = 100
     toast.add({ severity: 'success', summary: 'Uploaded: QC started', detail: `${details.cohort} is being processed.`, life: 3500 })
@@ -158,8 +156,16 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
             <StepPanels>
               <StepPanel v-slot="{ activateCallback }" value="1">
                 <div class="grid grid-2">
-                  <div class="field"><label for="u-cohort">Cohort</label><InputText id="u-cohort" v-model="details.cohort" placeholder="e.g. UK Biobank" /></div>
-                  <div class="field"><label>Phenotype</label><Select v-model="details.phenotype" :options="project.phenotypes" /></div>
+                  <div class="field"><label for="u-cohort">Cohort</label>
+                    <AutoComplete v-model="details.cohort" input-id="u-cohort" :suggestions="cohortSuggestions" dropdown fluid
+                                  placeholder="Choose a cohort, or type a new name" @complete="e => suggestCohorts(e.query)" />
+                    <small v-if="chosenCohort" class="muted"><i class="pi pi-check-circle ok" /> Existing cohort: its study, genotyping and imputation details are filled in for you.</small>
+                    <small v-else-if="details.cohort.trim()" class="muted"><i class="pi pi-plus-circle" /> New cohort: it will be added to this project.</small>
+                    <Message v-if="similar.length && !chosenCohort" severity="warn" size="small" :closable="false" class="sim">
+                      Is it one of these? {{ similar.map(s => s.name).join(', ') }}. Pick it from the list to avoid a duplicate cohort.
+                    </Message>
+                  </div>
+                  <div class="field"><label>Phenotype</label><Select v-model="details.phenotype" :options="phenoOptions" option-label="label" option-value="value" /></div>
                   <div class="field"><label>Ancestry</label><Select v-model="details.ancestry" :options="project.ancestries" /></div>
                   <div class="field"><label>Sex</label><SelectButton v-model="details.sex" :options="project.sexes" :allow-empty="false" /></div>
                   <div class="field"><label>Genome build</label><Select v-model="details.build" :options="['GRCh37', 'GRCh38']" /></div>
@@ -173,15 +179,18 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
 
               <StepPanel v-slot="{ activateCallback }" value="2">
                 <div class="row copy">
-                  <span class="muted">All optional; you can complete or correct these later from the dataset viewer.</span>
+                  <span class="muted">{{ metaConfig?.required?.length ? 'Fields marked * are required by this project; the rest can be completed later from the dataset viewer.' : 'All optional; you can complete or correct these later from the dataset viewer.' }}
+                    <template v-if="chosenCohort"> Cohort details come from {{ chosenCohort.name }}; a change here applies to this dataset only.</template>
+                    <template v-else-if="details.cohort.trim()"> Cohort details are saved with {{ details.cohort.trim() }} and reused for its future datasets.</template></span>
                   <span class="spacer" />
                   <Select v-if="previous.length" v-model="copyFrom" :options="previous" option-label="label" option-value="id" placeholder="Copy from a previous upload" show-clear
                           class="copysel" @change="copyMeta" />
                 </div>
-                <MetadataForm v-model="studyMeta" />
+                <MetadataForm v-model="studyMeta" :config="metaConfig" :inherited="chosenCohort?.meta ?? null" />
+                <Message v-if="missing.length" severity="warn" size="small" :closable="false">Still needed: {{ missing.join(', ') }}.</Message>
                 <div class="row end">
                   <Button label="Back" severity="secondary" text @click="activateCallback('1')" />
-                  <Button label="Next" icon="pi pi-arrow-right" icon-pos="right" @click="activateCallback('3')" />
+                  <Button label="Next" icon="pi pi-arrow-right" icon-pos="right" :disabled="missing.length > 0" @click="activateCallback('3')" />
                 </div>
               </StepPanel>
 
@@ -254,7 +263,7 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
                         <dt>Effect</dt><dd>{{ details.effect_type === 'or' ? 'Odds ratios → log-odds' : 'BETA' }}</dd>
                         <dt>File</dt><dd class="mono">{{ file?.name }} ({{ fmtSize(file?.size) }})</dd>
                         <dt>Columns</dt><dd>{{ Object.values(mapping).filter(Boolean).length }} mapped</dd>
-                        <dt>Study metadata</dt><dd>{{ Object.keys(studyMeta).length }} of {{ fieldCount }} fields</dd>
+                        <dt>Study metadata</dt><dd>{{ Object.keys(studyMeta).length }} fields<span v-if="!chosenCohort"> · new cohort {{ details.cohort.trim() }}</span></dd>
                       </dl>
                     </template>
                   </Card>
@@ -275,6 +284,8 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
 </template>
 
 <style scoped>
+.ok { color: #15803d; }
+.sim { margin-top: 6px; }
 .h2 { font-size: 1.25rem; margin: 0 0 4px; }
 .end { justify-content: flex-end; margin-top: 16px; }
 .tight { gap: 12px; }

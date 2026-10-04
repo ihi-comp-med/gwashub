@@ -68,8 +68,9 @@ function toggle(id: string) {
   s.has(id) ? s.delete(id) : s.add(id)
   expanded.value = s
 }
+const { data: defaults } = useApiGet<{ template: string[] }>('/steps/default')
 function resetTemplate() {
-  entries.value = toEntries(['row_check', 'harmonise_columns', 'value_ranges', 'alleles', 'liftover', 'reference_check', 'stats_summary', 'plots', 'qc_report'].map(n => ({ step: `gwashub/${n}` })))
+  if (defaults.value) entries.value = toEntries(defaults.value.template.map(k => ({ step: k })))
 }
 function discard() { if (pl.value) entries.value = toEntries(pl.value.steps) }
 
@@ -124,13 +125,12 @@ const hostOf = (u: string) => u.replace(/^https?:\/\//, '').split('/')[0]
 const uploadOpen = ref(false)
 async function onResourceSaved(r: any) {
   await refresh()
-  toast.add({ severity: 'success', summary: r.version > 1 ? `New version v${r.version}` : 'Resource added', detail: `${r.key} is now available to steps in this project.`, life: 3500 })
+  toast.add({ severity: 'success', summary: r.version > 1 ? `New version v${r.version}` : 'Resource added',
+    detail: `${r.key} is now available to steps ${r.scope === 'shared' ? 'in every project' : 'in this project'}.`, life: 3500 })
 }
 const codeOpen = ref(false)
 const codeKey = ref<string | null>(null)
 function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen.value = true } }
-const paramValue = (e: Entry, k: string) => e.params[k] ?? stepOf(e.step)?.params?.[k]
-function setParam(e: Entry, k: string, v: any) { e.params = { ...e.params, [k]: v } }
 </script>
 
 <template>
@@ -141,6 +141,7 @@ function setParam(e: Entry, k: string, v: any) { e.params = { ...e.params, [k]: 
         Only project reviewers can change these settings. You're viewing them read-only.
       </Message>
       <UploadOptions :project="project" class="mb" @saved="refreshProject" />
+      <MetadataConfig :project="project" class="mb" @saved="refreshProject" />
 
       <div class="layout">
         <div class="main">
@@ -203,16 +204,10 @@ function setParam(e: Entry, k: string, v: any) { e.params = { ...e.params, [k]: 
                         <Tag v-for="k in stepOf(e.step).resources" :key="k" :value="k" :severity="resourceKeys.has(k) ? 'secondary' : 'danger'" class="mono rtag" />
                       </dd>
                     </dl>
-                    <div v-if="Object.keys(stepOf(e.step).params ?? {}).length" class="params">
+                    <div v-if="stepOf(e.step).param_schema?.length" class="params">
                       <div class="ph muted">Parameters <span class="small">(defaults from step.yaml; changes are saved with the pipeline)</span></div>
-                      <div v-for="(def, k) in stepOf(e.step).params" :key="k" class="param">
-                        <label class="mono small">{{ k }}</label>
-                        <ToggleSwitch v-if="typeof def === 'boolean'" :model-value="paramValue(e, String(k))" :disabled="!isReviewer" @update:model-value="v => setParam(e, String(k), v)" />
-                        <InputNumber v-else-if="typeof def === 'number'" :model-value="paramValue(e, String(k))" :disabled="!isReviewer" :min-fraction-digits="0" :max-fraction-digits="8" size="small"
-                                     @update:model-value="v => setParam(e, String(k), v)" />
-                        <InputText v-else :model-value="String(paramValue(e, String(k)))" :disabled="!isReviewer" size="small" @update:model-value="v => setParam(e, String(k), v)" />
-                        <span v-if="e.params[k] != null && e.params[k] !== def" class="muted small">default {{ def }}</span>
-                      </div>
+                      <ParamForm :schema="stepOf(e.step).param_schema" :model-value="e.params" :disabled="!isReviewer" :id-prefix="e.uid" compact
+                                 @update:model-value="v => e.params = v" />
                     </div>
                   </div>
                 </li>
@@ -270,11 +265,11 @@ function setParam(e: Entry, k: string, v: any) { e.params = { ...e.params, [k]: 
                 </Column>
               </DataTable>
               <div class="row add">
-                <template v-if="isReviewer">
+                <template v-if="project.is_admin">
                   <Button label="Add resource" icon="pi pi-upload" size="small" outlined @click="uploadOpen = true" />
-                  <span class="muted small">Project resources are visible to every step in {{ project.short }}. Shared GWASHub resources are managed by platform admins.</span>
+                  <span class="muted small">For {{ project.short }} only, or shared with every project.</span>
                 </template>
-                <span v-else class="muted small">Only reviewers can add resources; ask one of the project's reviewers.</span>
+                <span v-else class="muted small">Resources are added by platform admins, usually with the step that needs them (see Contribute a custom step).</span>
               </div>
             </template>
           </Card>
@@ -301,7 +296,7 @@ function setParam(e: Entry, k: string, v: any) { e.params = { ...e.params, [k]: 
                   <div class="row nowrap"><Tag :value="s.owner" severity="secondary" class="otag" /><strong>{{ s.title }}</strong><span class="spacer" />
                     <Button icon="pi pi-code" text rounded size="small" aria-label="View code" @click="viewCode(s.key)" />
                   </div>
-                  <div class="mono muted small">{{ s.script }} · {{ s.image }}</div>
+                  <div class="mono muted small path" :title="s.script">{{ s.script.split('/').pop() }} · {{ s.image }}</div>
                 </li>
               </ul>
               <Button label="How to contribute a step" icon="pi pi-github" size="small" outlined class="mt" @click="contributeOpen = true" />
@@ -311,7 +306,7 @@ function setParam(e: Entry, k: string, v: any) { e.params = { ...e.params, [k]: 
       </div>
     </div>
     <ContributeDialog v-model:visible="contributeOpen" :images="images" :contributing-url="pl?.contributing_url" />
-    <ResourceUploadDialog v-model:visible="uploadOpen" :project-id="pid" :existing="pl?.resources ?? []" @saved="onResourceSaved" />
+    <ResourceUploadDialog v-model:visible="uploadOpen" :project-id="pid" :project-short="project.short" :existing="pl?.resources ?? []" @saved="onResourceSaved" />
     <CodeViewer v-model:visible="codeOpen" :project-id="pid" :step-key="codeKey" />
   </div>
   <ProjectError v-if="!project" :error="projectError" />
@@ -326,6 +321,7 @@ function setParam(e: Entry, k: string, v: any) { e.params = { ...e.params, [k]: 
 .jobsplit { display: flex; align-items: center; gap: 6px; padding: 2px 0 6px 34px; }
 .otag { font-size: 0.7rem; padding: 1px 6px; }
 .mt { margin-top: 12px; }
+.path { overflow-wrap: anywhere; }
 .nowrap { flex-wrap: nowrap; gap: 8px; }
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
 @media (max-width: 1060px) { .layout { grid-template-columns: 1fr; } }
@@ -348,8 +344,6 @@ function setParam(e: Entry, k: string, v: any) { e.params = { ...e.params, [k]: 
 .kv dd { margin: 0; word-break: break-all; }
 .rtag { font-size: 0.7rem; margin: 0 4px 4px 0; }
 .params { border-top: 1px dashed var(--gh-border); padding-top: 8px; margin-top: 4px; display: flex; flex-direction: column; gap: 6px; }
-.param { display: grid; grid-template-columns: 220px 160px auto; gap: 10px; align-items: center; }
-.param :deep(input) { width: 150px; }
 .add { margin-top: 12px; gap: 8px; }
 .save-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
 .save-row :deep(.p-button) { white-space: nowrap; flex-shrink: 0; }

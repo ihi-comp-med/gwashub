@@ -29,10 +29,18 @@ def test_default_pipeline_end_to_end(synth_small, tmp_path):
     assert {"chr", "pos", "ea", "oa", "beta", "se", "p"} <= set(out.columns)
     assert len(out) > 0.9 * entry["rows"]
     assert (tmp_path / res["outputs"]["qc_report"]).exists()
-    assert (tmp_path / "steps" / "08_plots" / "manhattan.png").exists()
+    plots = next(s["dir"] for s in res["steps"] if s["key"] == "gwashub/plots")
+    assert (tmp_path / plots / "manhattan.png").exists()
     # Every step only saw its declared resources.
     assert os.listdir(tmp_path / "resources" / "05") == ["hg19ToHg38.over.chain.gz"]
     assert os.listdir(tmp_path / "resources" / "01") == []
+    # The runner profiles the upload and the cleaned file whatever the pipeline, and counts rows per step.
+    before, after = res["profile"]["input"], res["profile"]["output"]
+    assert before["rows"] == entry["rows"] and after["rows"] == len(out)
+    assert {"beta", "se", "p"} <= set(before["columns"]) and after["columns"]["p"]["max"] <= 1
+    assert res["steps"][0]["rows_before"] == entry["rows"]
+    assert all(s["rows_before"] == prev["rows_after"] for prev, s in zip(res["steps"], res["steps"][1:]))
+    assert json.loads((tmp_path / "profile_input.json").read_text()) == before
 
 
 def test_or_dataset_is_converted(synth_small, tmp_path):
@@ -41,6 +49,8 @@ def test_or_dataset_is_converted(synth_small, tmp_path):
     assert res["status"] == "completed"
     harm = next(s for s in res["steps"] if s["key"] == "gwashub/harmonise_columns")
     assert harm["metrics"]["or_to_beta"] > 0
+    # Uploaded values are profiled as received: odds ratios are positive, BETA after QC is not.
+    assert res["profile"]["input"]["columns"]["beta"]["min"] > 0 and res["profile"]["output"]["columns"]["beta"]["min"] < 0
 
 
 def test_block_stops_pipeline_but_report_still_runs(synth_small, tmp_path):

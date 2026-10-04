@@ -210,20 +210,21 @@ def _parts_dir(loc: str, upload_id: str) -> str:
     return os.path.join(settings().data_dir, "tmp", "multipart", upload_id)
 
 
-def local_part_token(dataset_id: int, upload_id: str, part: int, expires: int) -> str:
-    msg = f"{dataset_id}:{upload_id}:{part}:{expires}".encode()
+def local_part_token(owner: str, upload_id: str, part: int, expires: int) -> str:
+    msg = f"{owner}:{upload_id}:{part}:{expires}".encode()
     return hmac.new(settings().secret.encode(), msg, hashlib.sha256).hexdigest()
 
 
-def part_url(loc: str, upload_id: str, part: int, dataset_id: int) -> str:
+def part_url(loc: str, upload_id: str, part: int, owner: str) -> str:
+    """owner: what the upload is for ("ds<id>" for a dataset, "res" for a resource); part of the local signature."""
     """Where the browser PUTs one part. S3: a presigned UploadPart URL. Local: a signed API URL."""
     if is_s3(loc):
         bucket, k = split_s3(loc)
         return _s3().generate_presigned_url("upload_part", Params={"Bucket": bucket, "Key": k, "UploadId": upload_id,
                                                                    "PartNumber": part}, ExpiresIn=settings().presign_seconds)
     expires = int(time.time()) + settings().presign_seconds
-    token = local_part_token(dataset_id, upload_id, part, expires)
-    return f"/api/uploads/local/{dataset_id}/{upload_id}/{part}?expires={expires}&token={token}"
+    token = local_part_token(owner, upload_id, part, expires)
+    return f"/api/uploads/local/{owner}/{upload_id}/{part}?expires={expires}&token={token}"
 
 
 def save_local_part(loc: str, upload_id: str, part: int, fileobj) -> str:

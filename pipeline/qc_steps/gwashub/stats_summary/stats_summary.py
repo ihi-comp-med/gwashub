@@ -1,12 +1,13 @@
-"""Summary statistics: genomic inflation (lambda GC), Z vs P consistency, lead loci."""
+"""Summary statistics: genomic inflation (λGC, λ1000, λ at MAF ≥ 1%), Z vs P consistency, lead loci."""
 import os
 
 import numpy as np
+import pandas as pd
 from scipy import stats
 
 from _lib.common import artifact_dir, load_params, parse_args, read_working, step_params, write_log
 
-DEFAULTS = {"warn_lambda": 1.1, "fail_lambda": 1.5, "low_lambda": 0.9, "gws": 5e-8, "clump_kb": 500,
+DEFAULTS = {"warn_lambda": 1.1, "fail_lambda": 1.5, "low_lambda": 0.9, "gws": 5e-8, "suggestive": 1e-5, "clump_kb": 500,
             "warn_inconsistent_fraction": 0.01}
 
 
@@ -64,9 +65,28 @@ def main():
         messages.append(f"{frac_bad:.1%} of variants have P inconsistent with BETA/SE: check the SE column.")
     messages.append(f"{len(leads)} genome-wide significant loci (P < {opts['gws']:g}, {opts['clump_kb']} kb windows).")
 
-    write_log(args.log, "stats_summary", verdict,
-              {"lambda_gc": round(lam, 4), "n_variants": len(df), "n_genome_wide_sig": int((df["p"] < opts["gws"]).sum()),
-               "n_loci": len(leads), "z_p_inconsistent": inconsistent}, messages, artifacts)
+    metrics = {"lambda_gc": round(lam, 4), "n_variants": len(df), "n_genome_wide_sig": int((df["p"] < opts["gws"]).sum()),
+               "n_suggestive": int((df["p"] < opts["suggestive"]).sum()), "n_loci": len(leads), "z_p_inconsistent": inconsistent}
+    lam1000 = lambda_1000(lam, params.get("n_cases"), params.get("n_controls"))
+    if lam1000 is not None:
+        metrics["lambda_1000"] = round(lam1000, 4)
+    if "eaf" in df.columns:
+        eaf = pd.to_numeric(df["eaf"], errors="coerce")
+        common = (eaf.between(0.01, 0.99)).to_numpy()
+        if common.sum() >= 100:
+            metrics["lambda_maf01"] = round(float(np.median(chi2[common]) / stats.chi2.ppf(0.5, 1)), 4)
+    write_log(args.log, "stats_summary", verdict, metrics, messages, artifacts)
+
+
+def lambda_1000(lam, n_cases, n_controls):
+    """λ rescaled to a study of 1,000 cases and 1,000 controls (de Bakker et al. 2008); None without both counts."""
+    try:
+        cases, controls = float(n_cases), float(n_controls)
+    except (TypeError, ValueError):
+        return None
+    if cases <= 0 or controls <= 0:
+        return None
+    return 1 + (lam - 1) * (1 / cases + 1 / controls) / (1 / 1000 + 1 / 1000)
 
 
 if __name__ == "__main__":

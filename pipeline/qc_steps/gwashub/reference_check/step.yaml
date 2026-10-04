@@ -10,5 +10,7 @@ default_on_fail: block
 resources:
 - ref_panel_grch38.tsv.gz
 params:
-  palindromic_max_maf: 0.4
-  warn_eaf_correlation: 0.8
+  - {key: palindromic_max_maf, label: Palindromic SNPs resolvable below MAF, type: number, min: 0, max: 0.5, default: 0.4,
+     help: A/T and C/G SNPs are oriented by allele frequency only when their MAF is below this; others are removed}
+  - {key: warn_eaf_correlation, label: Warn below EAF correlation, type: number, min: 0, max: 1, default: 0.8,
+     help: Correlation between the dataset's and the reference's allele frequencies}

@@ -22,7 +22,7 @@ Read before substantial work:
 | `pipeline/runner/` | Runs a pipeline (one process per step); `jobspec.py` runs a job spec (locally or as a Batch job, `aws/batch_entry.py`). CLI: `python -m pipeline.runner run …` |
 | `pipeline/qc_steps/` | QC steps by owner: `gwashub/` (defaults), `<consortium>/` (added by pull request, see `CONTRIBUTING.md`); one folder per step (script, `step.yaml`, `test_<name>.py`); shared `_lib/`, `templates/`, `fixtures/` |
 | `pipeline/images/` | Images steps run in, by owner: `gwashub/base` (Python), `gwashub/base-r` (R); consortium images build `FROM` these |
-| `pipeline/analyses/` | `meta_analysis/` (inverse-variance fixed / DerSimonian-Laird random effects) |
+| `pipeline/analyses/` | `meta_analysis/<owner>/<method>/` (`analysis.yaml` + script): `gwashub/ivw` (default), `gwashub/gwama`, `gwashub/metal`, consortium methods by PR; shared `_metalib/` (inputs, `publish.py` post-processing) |
 | `pipeline/tests/` | Runner, grouping, liftover-chain, meta-analysis, S3 tests |
 | `images/app/` | The site image (API and worker) |
 | `infra/` | AWS CDK app (Network, Data, App stacks); see `docs/AWS_FULL.md` |
@@ -51,8 +51,14 @@ copyright notice for any code ported from them). Useful there: liftover worker
   (`is_admin`) can also create projects; non-members get 404.
 - **Local vs AWS** is configuration only (`config.py`): storage local/S3, database SQLite/Postgres
   (Alembic migrations in `api/migrations`), jobs threads/Batch, sign-in dev (pick a user)/Cognito.
-- **Study metadata** fields are defined once in `api/gwashub_api/metadata_schema.py` and drive the
-  upload form, the dataset viewer and validation.
+- **Meta-analysis methods:** `<command> --inputs --params --out --log`; write `meta_results.tsv.gz`
+  (`chr pos ea oa p n_studies` + `beta se` or `z`); GWASHub's `_metalib/publish.py` adds lead loci, forest data,
+  plots and summary. Each runs as one job in its own image. Any project can use any method.
+- **Typed params** (`pipeline/runner/params.py`): `params:` in step.yaml and analysis.yaml is a list of
+  `{key, label, type, default, min, max, options, help}`; the website draws forms from it and the API validates.
+- **Study metadata**: every field (HERMES and SGC) is defined once in `api/gwashub_api/metadata_schema.py`,
+  each section per cohort or per dataset; projects choose which are shown and required (Project.metadata_config).
+  Datasets inherit their **cohort's** values and may override them (`metadata_schema.effective`).
 - **Reproducibility:** pipeline versions pin resource versions; each run records the pipeline version
   and the image digests it used.
 

@@ -5,6 +5,7 @@ const route = useRoute()
 const base = computed(() => `/projects/${props.project.id}`)
 const tabs = computed(() => [
   { label: 'Overview', icon: 'pi pi-home', to: base.value },
+  { label: 'Cohorts', icon: 'pi pi-sitemap', to: `${base.value}/cohorts` },
   { label: 'Datasets', icon: 'pi pi-table', to: `${base.value}/datasets` },
   { label: 'Meta-analysis', icon: 'pi pi-chart-bar', to: `${base.value}/meta` },
 ])

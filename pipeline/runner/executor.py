@@ -8,6 +8,7 @@ Layout of a run directory:
     <out>/steps/<NN>_<name>/     step log, stdout/stderr, artifacts (GWASHUB_ARTIFACT_DIR)
     <out>/step_logs.jsonl        every step log so far (GWASHUB_STEP_LOGS, read by qc_report)
     <out>/gwas_qc.tsv            final working file
+    <out>/profile_input.json     column profile of the upload as received (_lib/profile.py)
     <out>/result.json            machine-readable roll-up
 
 The AWS Batch executor will stage the same layout (input/resources from S3) and run each
@@ -22,6 +23,15 @@ import tempfile
 import time
 
 ORDER = {"pass": 0, "warn": 1, "fail": 2}
+
+
+def _profiler():
+    """The shared profiling helpers (pipeline/qc_steps/_lib/profile.py), also used by qc_report."""
+    from pipeline.runner.catalog import QC_STEPS_DIR
+    if QC_STEPS_DIR not in sys.path:
+        sys.path.insert(0, QC_STEPS_DIR)
+    from _lib import profile
+    return profile
 
 
 class RunError(Exception):
@@ -46,14 +56,22 @@ def _valid_log(log):
     return isinstance(log, dict) and log.get("verdict") in ORDER
 
 
-def start_run(input_path, out_dir):
+def start_run(input_path, out_dir, run_params=None):
     """Create the run layout and the state that run_steps carries from step to step (and, on AWS,
-    from one Batch job to the next via state.json)."""
+    from one Batch job to the next via state.json). Profiles the upload first, whatever the pipeline,
+    so every run can show its numbers before and after QC."""
     out_dir = os.path.abspath(out_dir)
     os.makedirs(out_dir, exist_ok=True)
     shutil.copyfile(os.path.abspath(input_path), os.path.join(out_dir, "working.tsv"))
     open(os.path.join(out_dir, "step_logs.jsonl"), "w").close()
-    return {"status": "completed", "stop_reason": None, "results": [], "verdict_logs": [], "elapsed": 0.0}
+    try:
+        prof = _profiler().profile_upload(input_path, (run_params or {}).get("column_mapping"))
+    except Exception:  # an unreadable upload is row_check's to report
+        prof = None
+    with open(os.path.join(out_dir, "profile_input.json"), "w") as f:
+        json.dump(prof, f)
+    return {"status": "completed", "stop_reason": None, "results": [], "verdict_logs": [], "elapsed": 0.0,
+            "rows": prof["rows"] if prof else None, "profile_input": prof}
 
 
 def run_steps(resolved, state, run_params, resource_dir, out_dir, indexes=None, timeout=3600, on_step=None):
@@ -79,12 +97,13 @@ def run_steps(resolved, state, run_params, resource_dir, out_dir, indexes=None, 
                 results.append({**base, "state": "skipped"})
                 continue
 
-            # Stage only the resources this step declares.
+            # Stage only the resources this step declares (optional ones only if they exist).
             missing = []
-            for key in entry.step.resources:
+            for key in entry.step.all_resources:
                 src = os.path.join(resource_dir, key)
                 if not os.path.exists(src):
-                    missing.append(key)
+                    if key in entry.step.resources:
+                        missing.append(key)
                     continue
                 dst = os.path.join(res_dir, key)
                 if not os.path.exists(dst):
@@ -148,11 +167,12 @@ def run_steps(resolved, state, run_params, resource_dir, out_dir, indexes=None, 
                     on_step(entry.index, "error", res)
                 continue
 
-            log["_dir"] = f"steps/{tag}"
+            rows = _count_rows(working)
+            rows_before, state["rows"] = state.get("rows"), rows
+            log["_dir"], log["_rows"] = f"steps/{tag}", [rows_before, rows]  # read by qc_report
             with open(logs_path, "a") as f:
                 f.write(json.dumps(log) + "\n")
-            rows = _count_rows(working)
-            res = {**base, "state": log["verdict"], "verdict": log["verdict"], "metrics": log.get("metrics", {}),
+            res = {**base, "rows_before": rows_before, "state": log["verdict"], "verdict": log["verdict"], "metrics": log.get("metrics", {}),
                    "messages": log.get("messages", []), "artifacts": log.get("artifacts", []), "duration": duration,
                    "rows_after": rows, "exit_code": 0}
             results.append(res)
@@ -184,7 +204,13 @@ def finish_run(state, out_dir):
         "duration": round(state["elapsed"], 2),
         "steps": results,
         "outputs": {"gwas_qc": "gwas_qc.tsv", "qc_report": report, "rows": _count_rows(final)},
+        "profile": {"input": state.get("profile_input"), "output": None},
     }
+    if status == "completed":
+        try:
+            result["profile"]["output"] = _profiler().profile_working(final)
+        except Exception:
+            pass
     with open(os.path.join(out_dir, "result.json"), "w") as f:
         json.dump(result, f, indent=2, default=str)
     return result
@@ -195,7 +221,7 @@ def run_pipeline(resolved, input_path, run_params, resource_dir, out_dir, timeou
 
     on_step(index, state, log) is called as steps start/finish (for progress reporting).
     """
-    state = start_run(input_path, out_dir)
+    state = start_run(input_path, out_dir, run_params)
     run_steps(resolved, state, run_params, resource_dir, out_dir, timeout=timeout, on_step=on_step)
     return finish_run(state, out_dir)
 

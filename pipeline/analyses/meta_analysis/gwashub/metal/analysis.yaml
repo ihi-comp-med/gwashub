@@ -1,0 +1,16 @@
+name: metal
+title: METAL
+description: >
+  Runs METAL (2020-05-05 release; Willer, Li & Abecasis), the widely used meta-analysis program:
+  inverse-variance weighted (standard-error scheme) or sample-size weighted Z-scores, with
+  heterogeneity statistics and optional genomic control per dataset.
+reference: Willer CJ, Li Y & Abecasis GR (2010) METAL, Bioinformatics 26:2190
+command: [python, run_metal.py]
+image: gwashub/metal
+params:
+  - {key: scheme, label: Scheme, type: select, options: [stderr, samplesize], default: stderr,
+     help: "stderr: inverse-variance weighted effects. samplesize: Z-scores weighted by √N (no effect sizes)"}
+  - {key: min_studies, label: Minimum datasets per variant, type: integer, min: 1, default: 2}
+  - {key: maf_min, label: Minimum MAF, type: number, min: 0, max: 0.5, default: 0.01,
+     help: "Per dataset, variants below this minor allele frequency are left out before METAL runs (needs EAF)"}
+  - {key: genomic_control, label: Genomic control per dataset, type: boolean, default: false, help: "METAL's GENOMICCONTROL ON"}

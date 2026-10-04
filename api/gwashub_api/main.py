@@ -12,17 +12,22 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gwashub_api import jobs
+from gwashub_api import jobs, services
 from gwashub_api.auth import COOKIE, set_session
 from gwashub_api.config import settings
-from gwashub_api.db import create_all, get_db
+from gwashub_api.db import SessionLocal, create_all, get_db
 from gwashub_api.models import Membership, User
-from gwashub_api.routers import cognito, datasets, meta, pipeline, projects
+from gwashub_api.routers import cognito, cohorts, datasets, meta, pipeline, projects
 
 
 @asynccontextmanager
 async def lifespan(app):
     create_all()
+    _db = SessionLocal()
+    try:
+        services.link_cohorts(_db)  # datasets uploaded before cohorts were records
+    finally:
+        _db.close()
     jobs.recover()
     yield
 
@@ -30,7 +35,7 @@ async def lifespan(app):
 app = FastAPI(title="GWASHub API", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings().cors_origins, allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
-for r in (projects.router, datasets.router, pipeline.router, meta.router, cognito.router):
+for r in (projects.router, datasets.router, cohorts.router, pipeline.router, meta.router, cognito.router):
     app.include_router(r)
 
 

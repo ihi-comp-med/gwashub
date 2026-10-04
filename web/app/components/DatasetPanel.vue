@@ -112,7 +112,32 @@ const tab = ref('qc')
 const editing = ref(false)
 const form = reactive<any>({})
 const metaForm = ref<Record<string, any>>({})
-const { schema, fieldCount } = useMetadataSchema()
+const { schema } = useMetadataSchema()
+const { data: cohortList } = useApiGet<any[]>(() => visible.value ? `/projects/${props.project.id}/cohorts` : null)
+const cohortNames = computed(() => (cohortList.value ?? []).map((c: any) => c.name))
+const cohortSuggestions = ref<string[]>([])
+const phenoOptions = computed(() => (props.project.phenotypes ?? []).map((p: string) => ({ value: p, label: props.project.phenotype_descriptions?.[p] ? `${p} · ${props.project.phenotype_descriptions[p]}` : p })))
+// QC metrics for the table above the plots: the headline ones, plus LDSC detail when it ran.
+const qcRows = computed(() => {
+  const q = d.value?.qc ?? {}
+  const out: { label: string, value: string, help?: string }[] = []
+  for (const c of QC_COLUMNS) if (q[c.key] != null) out.push({ label: c.label, value: fmtNum(q[c.key]), help: c.help })
+  if (q.ldsc_intercept_se != null) out.push({ label: 'LDSC int. SE', value: fmtNum(q.ldsc_intercept_se) })
+  if (q.ldsc_ratio != null) out.push({ label: 'LDSC ratio', value: fmtNum(q.ldsc_ratio), help: '(intercept − 1) / (mean χ² − 1)' })
+  if (q.rows_out != null) out.push({ label: 'Rows out', value: fmtNum(q.rows_out), help: 'Rows in the cleaned file' })
+  return out
+})
+// Every numeric column as uploaded and after QC (the runner profiles both ends of every run).
+const PROFILE_STATS = ['n', 'missing', 'mean', 'median', 'sd', 'min', 'max'] as const
+const STAT_LABEL: Record<string, string> = { n: 'Values', missing: 'Missing', mean: 'Mean', median: 'Median', sd: 'SD', min: 'Min', max: 'Max' }
+const profile = computed(() => d.value?.run?.profile ?? null)
+const profileCols = computed(() => {
+  const p = profile.value
+  if (!p) return []
+  const keys = ['beta', 'se', 'p', 'eaf', 'n', 'info'].filter(c => p.input?.columns?.[c] || p.output?.columns?.[c])
+  return keys.map(c => ({ key: c, rows: [{ label: 'uploaded', s: p.input?.columns?.[c] }, { label: 'after QC', s: p.output?.columns?.[c] }] }))
+})
+const removed = (s: any) => s.rows_before != null && s.rows_after != null ? s.rows_before - s.rows_after : 0
 const metaLabels = computed<Record<string, string>>(() => {
   const out: Record<string, string> = {}
   for (const sec of schema.value ?? []) {
@@ -181,7 +206,8 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
       <Tabs v-model:value="tab">
         <TabList>
           <Tab value="qc">QC</Tab>
-          <Tab value="details">Details <span class="muted small">· metadata {{ d.metadata_complete.filled }}/{{ fieldCount || d.metadata_complete.total }}</span></Tab>
+          <Tab value="details">Details <span class="muted small">· metadata {{ d.metadata_complete.filled }}/{{ d.metadata_complete.total }}</span>
+            <i v-if="d.metadata_complete.missing_required?.length" v-tooltip.top="`Required: ${d.metadata_complete.missing_required.join(', ')}`" class="pi pi-exclamation-circle warnic" /></Tab>
         </TabList>
         <TabPanels>
           <TabPanel value="qc">
@@ -215,6 +241,7 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
                         <Button v-tooltip.top="'View code'" icon="pi pi-code" text rounded size="small" class="iconbtn" aria-label="View code" @click="viewCode(s.key)" />
                         <Button v-if="s.dir && !['queued', 'skipped', 'running'].includes(s.state)" v-tooltip.top="'View output'" icon="pi pi-desktop" text rounded size="small" class="iconbtn" aria-label="View output" @click="viewOutput(s)" />
                         <span class="spacer" />
+                        <span v-if="removed(s) > 0" class="small removed">−{{ removed(s).toLocaleString() }}</span>
                         <span v-if="s.rows_after != null" class="muted small">{{ s.rows_after.toLocaleString() }} rows</span>
                         <span class="muted small">{{ dur(s.duration) }}</span>
                         <Tag :value="s.state" :severity="STEP_META[s.state as StepState]?.severity" />
@@ -228,6 +255,37 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
                     </div>
                   </li>
                 </ol>
+              </section>
+
+              <section v-if="qcRows.length">
+                <h3>QC metrics</h3>
+                <table class="qct">
+                  <tbody>
+                    <tr v-for="r in qcRows" :key="r.label"><th v-tooltip.left="r.help">{{ r.label }}</th><td>{{ r.value }}</td></tr>
+                  </tbody>
+                </table>
+              </section>
+
+              <section v-if="profileCols.length">
+                <h3>Columns before and after QC
+                  <span class="muted">· {{ fmtNum(profile.input?.rows) }} rows uploaded<span v-if="profile.output">, {{ fmtNum(profile.output.rows) }} after QC</span></span>
+                </h3>
+                <div class="pwrap">
+                  <table class="pt">
+                    <thead><tr><th class="l">Column</th><th /><th v-for="k in PROFILE_STATS" :key="k">{{ STAT_LABEL[k] }}</th></tr></thead>
+                    <tbody>
+                      <template v-for="c in profileCols" :key="c.key">
+                        <tr v-for="(r, j) in c.rows" :key="r.label" :class="{ first: j === 0 }">
+                          <th>{{ j === 0 ? c.key.toUpperCase() : '' }}</th>
+                          <td class="muted lbl">{{ r.label }}</td>
+                          <template v-if="r.s"><td v-for="k in PROFILE_STATS" :key="k">{{ fmtNum(r.s[k]) }}</td></template>
+                          <td v-else :colspan="PROFILE_STATS.length" class="muted lbl">{{ r.label === 'after QC' && !profile.output ? 'QC did not finish' : 'not in file' }}</td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+                <small class="muted">Uploaded values are as received, so odds ratios appear before conversion to BETA.</small>
               </section>
 
               <section v-if="plotData">
@@ -264,8 +322,11 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
               </div>
 
               <div v-if="editing" class="core-edit">
-                <div class="field"><label for="e-cohort">Cohort</label><InputText id="e-cohort" v-model="form.cohort" /></div>
-                <div class="field"><label>Phenotype</label><Select v-model="form.phenotype" :options="project.phenotypes" /></div>
+                <div class="field"><label for="e-cohort">Cohort</label>
+                  <AutoComplete v-model="form.cohort" input-id="e-cohort" :suggestions="cohortSuggestions" dropdown fluid
+                                placeholder="Choose or type a new cohort" @complete="e => cohortSuggestions = cohortNames.filter(n => n.toLowerCase().includes((e.query ?? '').toLowerCase()))" />
+                  <small class="muted">Moving it to another cohort changes the metadata it inherits.</small></div>
+                <div class="field"><label>Phenotype</label><Select v-model="form.phenotype" :options="phenoOptions" option-label="label" option-value="value" /></div>
                 <div class="field"><label>Ancestry</label><Select v-model="form.ancestry" :options="project.ancestries" /></div>
                 <div class="field"><label>Sex</label><SelectButton v-model="form.sex" :options="project.sexes" :allow-empty="false" /></div>
                 <div class="field"><label>Cases</label><InputNumber v-model="form.n_cases" :min="1" /></div>
@@ -286,9 +347,14 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
                 <dt>Uploaded</dt><dd>{{ fmtDate(d.created_at) }} by {{ d.uploader }}</dd>
               </dl>
 
-              <div class="row"><h3 class="m0">Study metadata</h3><span class="muted small">{{ d.metadata_complete.filled }} of {{ fieldCount || d.metadata_complete.total }} fields</span></div>
-              <MetadataForm v-if="editing" v-model="metaForm" />
-              <MetadataForm v-else :model-value="d.study_meta" readonly />
+              <div class="row"><h3 class="m0">Study metadata</h3><span class="muted small">{{ d.metadata_complete.filled }} of {{ d.metadata_complete.total }} fields</span>
+                <NuxtLink :to="`/projects/${project.id}/cohorts?open=${d.cohort_id}`" class="small">Edit {{ d.cohort }}'s cohort metadata →</NuxtLink></div>
+              <Message v-if="d.metadata_complete.missing_required?.length" severity="warn" :closable="false" size="small">
+                Metadata incomplete: this project requires {{ d.metadata_complete.missing_required.join(', ') }}.
+              </Message>
+              <p class="muted small m0">Study, genotyping, imputation and QC details come from the cohort. Change one here only if this dataset differs (e.g. a different imputation panel); it then overrides the cohort's value for this dataset.</p>
+              <MetadataForm v-if="editing" v-model="metaForm" :config="d.metadata_config" :inherited="d.cohort_meta" />
+              <MetadataForm v-else :model-value="d.study_meta" :config="d.metadata_config" :inherited="d.cohort_meta" readonly />
 
               <div class="cols2">
                 <div>
@@ -375,5 +441,20 @@ h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: .05em; color:
 @media (max-width: 900px) { .plots { grid-template-columns: 1fr; } }
 .plot-card { border: 1px solid var(--gh-border); border-radius: 8px; padding: 12px; }
 .leads :deep(td) { font-size: 0.85rem; }
+.qct { border-collapse: collapse; font-size: 0.85rem; columns: 2; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.qct tbody { display: contents; }
+.qct tr { display: flex; justify-content: space-between; border-bottom: 1px solid var(--gh-border); padding: 5px 12px 5px 0; margin-right: 16px; }
+.qct th { font-weight: 500; color: var(--gh-muted); text-align: left; }
+.qct td { font-family: ui-monospace, Menlo, monospace; }
+.removed { color: #b45309; font-variant-numeric: tabular-nums; }
+.pwrap { overflow-x: auto; }
+.pt { border-collapse: collapse; font-size: 0.82rem; width: 100%; }
+.pt th, .pt td { padding: 4px 10px; text-align: right; white-space: nowrap; }
+.pt thead th { color: var(--gh-muted); font-weight: 500; border-bottom: 1px solid var(--gh-border); }
+.pt tbody th, .pt th.l { text-align: left; font-weight: 600; }
+.pt td { font-family: ui-monospace, Menlo, monospace; }
+.pt td.lbl { text-align: left; font-family: inherit; }
+.pt tr.first td, .pt tr.first th { border-top: 1px solid var(--gh-border); }
+.warnic { color: #b45309; font-size: 0.8rem; margin-left: 4px; }
 .loading { display: flex; justify-content: center; padding: 60px; }
 </style>

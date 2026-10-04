@@ -8,6 +8,6 @@ image: gwashub/base
 default_on_fail: flag
 resources: []
 params:
-  warn_lambda: 1.1
-  fail_lambda: 1.5
-  clump_kb: 500
+  - {key: warn_lambda, label: Warn above λGC, type: number, min: 1, max: 5, default: 1.1}
+  - {key: fail_lambda, label: Fail above λGC, type: number, min: 1, max: 5, default: 1.5}
+  - {key: clump_kb, label: Lead-locus window (kb), type: integer, min: 10, max: 10000, default: 500}

@@ -1,0 +1,19 @@
+name: ivw
+title: Inverse-variance (GWASHub)
+description: >
+  Inverse-variance weighted meta-analysis, fixed effects or DerSimonian-Laird random effects, with
+  Cochran's Q, I² and a METAL-style direction string. GWASHub's own implementation, validated against
+  simulated truth; the default.
+reference: Willer, Li & Abecasis 2010, Bioinformatics 26:2190 (method); DerSimonian & Laird 1986 (random effects)
+command: [python, ivw.py]
+image: gwashub/base
+params:
+  - {key: model, label: Model, type: select, options: [fixed, random], default: fixed,
+     help: "Random effects (DerSimonian-Laird) widen the standard error where datasets disagree"}
+  - {key: min_studies, label: Minimum datasets per variant, type: integer, min: 1, default: 2}
+  - {key: maf_min, label: Minimum MAF, type: number, min: 0, max: 0.5, default: 0.01,
+     help: "Per dataset, variants below this minor allele frequency are left out (needs EAF)"}
+  - {key: genomic_control, label: Genomic control per dataset, type: boolean, default: false,
+     help: "Inflate each dataset's standard errors by √λGC when λGC > 1"}
+  - {key: drop_palindromic, label: Drop palindromic SNPs, type: boolean, default: false,
+     help: "QC already resolved A/T and C/G SNPs; tick to leave them out anyway"}

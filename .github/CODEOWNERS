@@ -3,3 +3,4 @@
 /pipeline/qc_steps/hcm/             @gwashub/maintainers @gwashub/hcm-maintainers
 /pipeline/images/hcm/               @gwashub/maintainers @gwashub/hcm-maintainers
 /pipeline/qc_steps/custom_example/  @gwashub/maintainers
+/pipeline/analyses/meta_analysis/custom_example/  @gwashub/maintainers

@@ -2,10 +2,10 @@
 // Platform admins create projects. The creator becomes the first reviewer and can then invite people.
 const visible = defineModel<boolean>('visible', { default: false })
 const toast = useToast()
-const form = reactive({ id: '', name: '', short: '', description: '', phenotypes: [] as string[] })
+const form = reactive({ id: '', name: '', short: '', description: '', phenotypes: [] as string[], metadata_preset: 'default' })
 const idTouched = ref(false)
 const busy = ref(false)
-watch(visible, (v) => { if (v) { Object.assign(form, { id: '', name: '', short: '', description: '', phenotypes: [] }); idTouched.value = false } })
+watch(visible, (v) => { if (v) { Object.assign(form, { id: '', name: '', short: '', description: '', phenotypes: [], metadata_preset: 'default' }); idTouched.value = false } })
 watch(() => form.short, (s) => { if (!idTouched.value) form.id = s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) })
 const idOk = computed(() => /^[a-z][a-z0-9-]{1,39}$/.test(form.id))
 const newPheno = ref('')
@@ -50,6 +50,11 @@ async function submit() {
           <Button label="Add" icon="pi pi-plus" size="small" outlined :disabled="!newPheno.trim()" @click="addPheno" />
         </div>
         <small class="muted">What uploaders choose from. Reviewers can change these later under Upload options.</small>
+      </div>
+      <div class="field"><label>Study metadata fields</label>
+        <SelectButton v-model="form.metadata_preset" :options="[{ l: 'HERMES default set', v: 'default' }, { l: 'Every field (HERMES + SGC)', v: 'all' }]"
+                      option-label="l" option-value="v" :allow-empty="false" />
+        <small class="muted">A starting point: fields can be switched on or off, and marked required, later under Pipeline settings.</small>
       </div>
       <div class="row end">
         <Button label="Cancel" text severity="secondary" :disabled="busy" @click="visible = false" />

@@ -1,7 +1,8 @@
 """Step and image catalog, read from the repository.
 
-    pipeline/qc_steps/<owner>/<step>/step.yaml     → step key "<owner>/<step>"   (gwashub = the default steps)
-    pipeline/images/<owner>/<image>/Dockerfile     → image "<owner>/<image>"
+    pipeline/qc_steps/<owner>/<step>/step.yaml                       → step key "<owner>/<step>" (gwashub = defaults)
+    pipeline/analyses/meta_analysis/<owner>/<method>/analysis.yaml   → meta-analysis method "<owner>/<method>"
+    pipeline/images/<owner>/<image>/Dockerfile                       → image "<owner>/<image>"
 
 Consortia add steps and images by pull request (see CONTRIBUTING.md); folders starting with "_" and
 the shared `templates/` and `fixtures/` folders are not owners.
@@ -11,10 +12,13 @@ from dataclasses import dataclass, field
 
 import yaml
 
+from pipeline.runner import params as P
+
 PIPELINE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # pipeline/
 REPO_ROOT = os.path.dirname(PIPELINE_DIR)
 QC_STEPS_DIR = os.path.join(PIPELINE_DIR, "qc_steps")
 IMAGES_DIR = os.path.join(PIPELINE_DIR, "images")
+META_ANALYSIS_DIR = os.path.join(PIPELINE_DIR, "analyses", "meta_analysis")
 NOT_OWNERS = ("templates", "fixtures")
 VALID_ON_FAIL = ("block", "flag", "continue")
 
@@ -28,8 +32,10 @@ class StepDef:
     command: list  # e.g. ["python", "row_check.py"]
     image: str  # "<owner>/<image>", see pipeline/images
     default_on_fail: str = "flag"
-    resources: list = field(default_factory=list)
-    params: dict = field(default_factory=dict)
+    resources: list = field(default_factory=list)  # required: the run fails without them
+    optional_resources: list = field(default_factory=list)  # staged when available; the step copes without them
+    params: dict = field(default_factory=dict)  # key -> default
+    param_schema: list = field(default_factory=list)  # typed fields (pipeline/runner/params.py)
     source: dict = field(default_factory=dict)  # {"repo", "path"}
     pythonpath: list = field(default_factory=list)
     always_run: bool = False  # run even after the pipeline was blocked (e.g. the report)
@@ -37,6 +43,10 @@ class StepDef:
     @property
     def owner(self):
         return self.key.split("/", 1)[0]
+
+    @property
+    def all_resources(self):
+        return [*self.resources, *self.optional_resources]
 
     @property
     def script(self):
@@ -62,10 +72,12 @@ def load_steps(qc_steps_dir=QC_STEPS_DIR):
                 d = yaml.safe_load(f)
             key = f"{owner}/{d['name']}"
             workdir = os.path.join(qc_steps_dir, owner, name)
+            schema = P.normalise(d.get("params"))
             steps[key] = StepDef(
                 key=key, title=d["title"], description=d.get("description", ""), workdir=workdir,
                 command=list(d["command"]), image=d["image"], default_on_fail=d.get("default_on_fail", "flag"),
-                resources=list(d.get("resources") or []), params=dict(d.get("params") or {}),
+                resources=list(d.get("resources") or []), optional_resources=list(d.get("optional_resources") or []),
+                params=P.defaults(schema), param_schema=schema,
                 pythonpath=[qc_steps_dir], always_run=bool(d.get("always_run")),
                 source={"repo": "gwashub", "path": os.path.relpath(os.path.join(workdir, d["command"][-1]), REPO_ROOT)},
             )
@@ -87,10 +99,11 @@ def load_images(images_dir=IMAGES_DIR):
                 with open(os.path.join(folder, "image.yaml")) as f:
                     meta = yaml.safe_load(f) or {}
             with open(dockerfile) as f:
-                base = next((line.split()[1] for line in f if line.strip().upper().startswith("FROM ")), "")
+                froms = [line.split()[1] for line in f if line.strip().upper().startswith("FROM ")]
             ref = f"{owner}/{name}"
+            # A multi-stage Dockerfile builds in a throwaway stage; the image is FROM its last stage's base.
             images[ref] = {"ref": ref, "title": meta.get("title", ref), "description": meta.get("description", ""),
-                           "base": base, "dockerfile": os.path.relpath(dockerfile, REPO_ROOT)}
+                           "base": froms[-1] if froms else "", "froms": froms, "dockerfile": os.path.relpath(dockerfile, REPO_ROOT)}
     return images
 
 
@@ -103,10 +116,48 @@ def build_order(images: dict) -> list[str]:
             return
         if ref in seen:
             raise ValueError(f"image {ref} depends on itself")
-        parent = images[ref]["base"].split(":")[0].replace("gwashub-images/", "")
-        visit(parent, (*seen, ref))
+        for parent in images[ref].get("froms") or [images[ref]["base"]]:
+            visit(parent.split(":")[0], (*seen, ref))
         done.add(ref)
         order.append(ref)
     for ref in sorted(images):
         visit(ref)
     return order
+
+
+@dataclass
+class AnalysisDef:
+    """A meta-analysis method: pipeline/analyses/meta_analysis/<owner>/<method>/analysis.yaml."""
+    key: str
+    title: str
+    description: str
+    workdir: str
+    command: list
+    image: str
+    param_schema: list = field(default_factory=list)
+    reference: str = ""  # citation shown with the method
+    source: dict = field(default_factory=dict)
+
+    @property
+    def owner(self):
+        return self.key.split("/", 1)[0]
+
+
+def load_analyses(root=META_ANALYSIS_DIR):
+    """key -> AnalysisDef for every meta-analysis method of every owner."""
+    out = {}
+    for owner in _owners(root):
+        for name in sorted(os.listdir(os.path.join(root, owner))):
+            path = os.path.join(root, owner, name, "analysis.yaml")
+            if not os.path.exists(path):
+                continue
+            with open(path) as f:
+                d = yaml.safe_load(f)
+            key = f"{owner}/{d['name']}"
+            workdir = os.path.join(root, owner, name)
+            out[key] = AnalysisDef(
+                key=key, title=d["title"], description=d.get("description", ""), workdir=workdir,
+                command=list(d["command"]), image=d["image"], param_schema=P.normalise(d.get("params")),
+                reference=d.get("reference", ""),
+                source={"repo": "gwashub", "path": os.path.relpath(os.path.join(workdir, d["command"][-1]), REPO_ROOT)})
+    return out

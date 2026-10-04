@@ -17,6 +17,8 @@ function pickPoint(p: { chr: string, pos: number }) {
   const near = ma.value?.forest?.filter((f: any) => f.chr === p.chr).sort((a: any, b: any) => Math.abs(a.pos - p.pos) - Math.abs(b.pos - p.pos))[0]
   if (near && Math.abs(near.pos - p.pos) < 1_000_000) selectedLocus.value = near
 }
+const cnt = (v: any, minus = false) => v == null ? '–' : v === 0 && minus ? '0' : `${minus ? '−' : ''}${Number(v).toLocaleString()}`
+const hasCount = (k: string) => studies.value.some((s: any) => s[k] != null)
 const fileUrl = (name: string) => `/api/meta/${id.value}/files/${name}`
 const s = computed(() => ma.value?.summary ?? {})
 const studies = computed(() => s.value.studies ?? [])
@@ -28,10 +30,20 @@ async function remove() {
   }
   catch (e: any) { toast.add({ severity: 'error', summary: 'Delete failed', detail: e.message, life: 4000 }) }
 }
-const settingLabels: Record<string, string> = {
-  method: 'Method', min_studies: 'Min datasets per variant', maf_threshold: 'MAF filter', drop_palindromic: 'Drop palindromic',
-  genomic_control: 'Genomic control', gws: 'Significance threshold', clump_kb: 'Locus window (kb)', het_p_threshold: 'Heterogeneity flag P', include_statuses: 'Eligible statuses',
-}
+// Settings as labelled rows: the method's own parameters (from its analysis.yaml), then the common ones.
+const fmtVal = (v: any) => typeof v === 'boolean' ? (v ? 'yes' : 'no') : typeof v === 'number' && v !== 0 && Math.abs(v) < 1e-3 ? v.toExponential(0) : String(v ?? '–')
+const settingRows = computed(() => {
+  const v = ma.value
+  if (!v) return []
+  return [
+    ...(v.method?.params ?? []).map((f: any) => ({ label: f.label, value: fmtVal(v.settings.params?.[f.key] ?? f.default) })),
+    ...(v.common_params ?? []).map((f: any) => ({ label: f.label, value: fmtVal(v.settings.common?.[f.key] ?? f.default) })),
+    { label: 'Eligible QC statuses', value: (v.settings.include_statuses ?? []).join(', ') },
+  ]
+})
+const common = computed(() => ma.value?.settings?.common ?? {})
+const num = (x: any, d = 4) => x === '' || x == null || Number.isNaN(Number(x)) ? '–' : Number(x).toFixed(d)
+const modelText = computed(() => { const p = ma.value?.settings?.params ?? {}; return p.model ? `${p.model} effects` : p.scheme ? `${p.scheme} scheme` : p.weighting ? `${p.weighting} weighting` : '' })
 </script>
 
 <template>
@@ -43,10 +55,12 @@ const settingLabels: Record<string, string> = {
         <div class="row head">
           <div>
             <h2 class="h2">{{ ma.name }}</h2>
-            <p class="page-sub">{{ ma.n_datasets }} datasets · {{ ma.settings.method === 'random' ? 'random' : 'fixed' }} effects · run by {{ ma.created_by }} on {{ fmtDate(ma.created_at) }}</p>
+            <p class="page-sub">{{ ma.n_datasets }} datasets · {{ ma.method?.title }}<span v-if="modelText">, {{ modelText }}</span> · run by {{ ma.created_by }} on {{ fmtDate(ma.created_at) }}</p>
           </div>
           <span class="spacer" />
           <template v-if="ma.status === 'completed'">
+            <a :href="fileUrl('README.txt')" class="p-button p-button-text p-button-sm"><i class="pi pi-file" />&nbsp;README</a>
+            <a :href="fileUrl('datasets.tsv')" class="p-button p-button-outlined p-button-sm"><i class="pi pi-download" />&nbsp;Datasets</a>
             <a :href="fileUrl('lead_loci.tsv')" class="p-button p-button-outlined p-button-sm"><i class="pi pi-download" />&nbsp;Lead loci</a>
             <a v-if="isReviewer" :href="fileUrl('meta_results.tsv.gz')" class="p-button p-button-sm"><i class="pi pi-download" />&nbsp;Full results</a>
           </template>
@@ -77,24 +91,24 @@ const settingLabels: Record<string, string> = {
           <div class="loci">
             <Card>
               <template #title>Lead loci</template>
-              <template #subtitle>P &lt; {{ Number(ma.settings.gws).toExponential(0) }}, {{ ma.settings.clump_kb }} kb windows. Direction: one symbol per dataset, in input order (? = variant missing).</template>
+              <template #subtitle>P &lt; {{ Number(common.gws).toExponential(0) }}, {{ common.clump_kb }} kb windows. Direction: one symbol per dataset, in input order (? = variant missing).</template>
               <template #content>
                 <DataTable :value="ma.lead_loci" size="small" row-hover class="clickable" scrollable scroll-height="420px" @row-click="e => pickRow(e.data)"
                            :row-class="(r: any) => selectedLocus && selectedLocus.chr === String(r.chr) && selectedLocus.pos === Number(r.pos) ? 'sel' : ''">
                   <Column header="Variant"><template #body="{ data }"><span class="mono">{{ data.rsid || '–' }}</span></template></Column>
                   <Column header="Position"><template #body="{ data }"><span class="mono">{{ data.chr }}:{{ Number(data.pos).toLocaleString() }}</span></template></Column>
                   <Column header="EA/OA"><template #body="{ data }"><span class="mono">{{ data.ea }}/{{ data.oa }}</span></template></Column>
-                  <Column header="BETA"><template #body="{ data }">{{ Number(data.beta).toFixed(4) }}</template></Column>
-                  <Column header="SE"><template #body="{ data }">{{ Number(data.se).toFixed(4) }}</template></Column>
+                  <Column header="BETA"><template #body="{ data }">{{ num(data.beta) }}</template></Column>
+                  <Column header="SE"><template #body="{ data }">{{ num(data.se) }}</template></Column>
                   <Column header="P"><template #body="{ data }">{{ fmtP(Number(data.p)) }}</template></Column>
                   <Column header="Direction"><template #body="{ data }"><span class="mono dir">{{ data.direction }}</span></template></Column>
-                  <Column header="I²"><template #body="{ data }"><span :class="{ warnv: data.het_p !== '' && Number(data.het_p) < ma.settings.het_p_threshold }">{{ (Number(data.i2) * 100).toFixed(0) }}%</span></template></Column>
+                  <Column header="I²"><template #body="{ data }"><span :class="{ warnv: data.het_p !== '' && Number(data.het_p) < common.het_p_threshold }">{{ data.i2 === '' ? '–' : `${(Number(data.i2) * 100).toFixed(0)}%` }}</span></template></Column>
                 </DataTable>
               </template>
             </Card>
             <Card v-if="selectedLocus">
               <template #title>{{ selectedLocus.rsid }} <span class="muted small mono">chr{{ selectedLocus.chr }}:{{ selectedLocus.pos.toLocaleString() }} · {{ selectedLocus.ea }}/{{ selectedLocus.oa }}</span></template>
-              <template #subtitle>P = {{ fmtP(selectedLocus.p) }} · I² = {{ (selectedLocus.i2 * 100).toFixed(0) }}%<span v-if="selectedLocus.het_p != null"> · heterogeneity P = {{ fmtP(selectedLocus.het_p) }}</span></template>
+              <template #subtitle>P = {{ fmtP(selectedLocus.p) }} <span v-if="selectedLocus.i2 != null"> · I² = {{ (selectedLocus.i2 * 100).toFixed(0) }}%</span><span v-if="selectedLocus.het_p != null"> · heterogeneity P = {{ fmtP(selectedLocus.het_p) }}</span></template>
               <template #content><ForestPlot :locus="selectedLocus" /></template>
             </Card>
           </div>
@@ -102,12 +116,19 @@ const settingLabels: Record<string, string> = {
           <div class="grid two">
             <Card>
               <template #title>Datasets included</template>
+              <template #subtitle>In input order: # is the dataset's position in the direction column. Counts are variants.</template>
               <template #content>
-                <DataTable :value="studies" size="small">
+                <DataTable :value="studies" size="small" scrollable class="nowrap">
+                  <Column header="#"><template #body="{ index }">{{ index + 1 }}</template></Column>
                   <Column field="label" header="Dataset" />
-                  <Column header="Variants used"><template #body="{ data }">{{ data.variants_used?.toLocaleString() }}</template></Column>
+                  <Column header="In file"><template #body="{ data }">{{ cnt(data.variants_in) }}</template></Column>
+                  <Column v-if="hasCount('removed_missing_beta_se')" header="No BETA/SE"><template #body="{ data }">{{ cnt(data.removed_missing_beta_se, true) }}</template></Column>
+                  <Column v-if="hasCount('removed_maf')" header="Below MAF"><template #body="{ data }">{{ cnt(data.removed_maf, true) }}</template></Column>
+                  <Column v-if="hasCount('removed_palindromic')" header="Palindromic"><template #body="{ data }">{{ cnt(data.removed_palindromic, true) }}</template></Column>
+                  <Column header="Used"><template #body="{ data }">{{ cnt(data.variants_used) }}</template></Column>
+                  <Column v-if="hasCount('in_results')" header="In results"><template #body="{ data }">{{ cnt(data.in_results) }}</template></Column>
                   <Column header="λGC"><template #body="{ data }"><span :class="{ warnv: data.lambda_gc > 1.1 }">{{ data.lambda_gc?.toFixed(3) }}</span></template></Column>
-                  <Column header="GC applied"><template #body="{ data }">{{ data.gc_applied ? `× √${data.gc_applied}` : '–' }}</template></Column>
+                  <Column header="GC applied"><template #body="{ data }">{{ data.gc_applied ? `× √${Number(data.gc_applied).toFixed(3)}` : '–' }}</template></Column>
                 </DataTable>
               </template>
             </Card>
@@ -115,9 +136,9 @@ const settingLabels: Record<string, string> = {
               <template #title>Settings</template>
               <template #content>
                 <dl class="kv">
-                  <template v-for="(label, k) in settingLabels" :key="k">
-                    <dt>{{ label }}</dt><dd>{{ Array.isArray(ma.settings[k]) ? ma.settings[k].join(', ') : String(ma.settings[k]) }}</dd>
-                  </template>
+                  <dt>Method</dt><dd>{{ ma.method?.title }} <span class="muted mono small">{{ ma.method?.key }}</span></dd>
+                  <dt v-if="ma.method?.reference">Reference</dt><dd v-if="ma.method?.reference">{{ ma.method.reference }}</dd>
+                  <template v-for="r in settingRows" :key="r.label"><dt>{{ r.label }}</dt><dd>{{ r.value }}</dd></template>
                 </dl>
               </template>
             </Card>
@@ -140,7 +161,8 @@ const settingLabels: Record<string, string> = {
 .plots { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: start; margin-bottom: 16px; }
 .loci { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; align-items: start; margin-bottom: 16px; }
 @media (max-width: 1000px) { .plots, .loci { grid-template-columns: 1fr; } }
-.two { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
+.two { grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr); align-items: start; }
+@media (max-width: 1100px) { .two { grid-template-columns: 1fr; } }
 .dir { letter-spacing: 1px; }
 .warnv { color: #b45309; font-weight: 600; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; font-size: 0.88rem; }
@@ -149,4 +171,5 @@ const settingLabels: Record<string, string> = {
 .clickable :deep(tbody tr) { cursor: pointer; }
 :deep(tr.sel td) { background: #eef0f8 !important; }
 .clickable :deep(td) { white-space: nowrap; }
+.nowrap :deep(td), .nowrap :deep(th) { white-space: nowrap; }
 </style>

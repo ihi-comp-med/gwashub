@@ -83,8 +83,19 @@ def meta_spec(db, ma: MetaAnalysis) -> dict:
         if not run:
             raise RuntimeError(f"dataset {did} has no completed QC run")
         inputs.append({"id": ds.id, "label": f"{ds.cohort} · {ds.ancestry} · {ds.sex}", "loc": storage.join(run.run_dir, "gwas_qc.tsv"),
-                       "n_cases": ds.n_cases, "n_controls": ds.n_controls, "ancestry": ds.ancestry})
-    return {"kind": "meta", "meta_id": ma.id, "inputs": inputs, "params": ma.settings, "output": ma.run_dir}
+                       "cohort": ds.cohort, "phenotype": ds.phenotype, "n_cases": ds.n_cases, "n_controls": ds.n_controls,
+                       "ancestry": ds.ancestry, "sex": ds.sex, "qc_run_id": run.id})
+    from gwashub_api.routers.meta import normalise
+    s = normalise(ma.settings)
+    image = meta_image(s["method"])
+    return {"kind": "meta", "meta_id": ma.id, "method": s["method"], "inputs": inputs, "params": s["params"].get(s["method"], {}),
+            "common": s["common"], "output": ma.run_dir, "images": {image: settings().images.get(image, {}).get("uri", "local")}}
+
+
+def meta_image(method_key: str) -> str:
+    from pipeline.runner.catalog import load_analyses
+    md = load_analyses().get(method_key)
+    return md.image if md else "gwashub/base"
 
 
 # ---------- starting jobs ----------
@@ -119,7 +130,7 @@ def start_meta(meta_id: int):
         spec = meta_spec(db, ma)
         db.commit()
         if settings().jobs == "batch":
-            ma.batch_job_id = _submit_batch(spec, f"gwashub-meta-{ma.id}", "gwashub/base")
+            ma.batch_job_id = _submit_batch(spec, f"gwashub-meta-{ma.id}", meta_image(spec["method"]))
             db.commit()
         else:
             _in_background(_run_meta_locally, ma.id, spec)

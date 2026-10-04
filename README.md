@@ -10,7 +10,7 @@ pick-a-user sign-in) and **on AWS** (S3, Postgres, AWS Batch, Cognito sign-in wi
 |---|---|
 | `docs/PROGRESS.md` | What's built, test results, decisions taken, known gaps |
 | `docs/AWS_FULL.md` | **The AWS deployment as built**: what runs where, deploying, admin commands, where to look in the console |
-| `CONTRIBUTING.md` | How a consortium adds its own QC step (and image) by pull request |
+| `CONTRIBUTING.md` | How a consortium adds its own QC step, meta-analysis method (and image) by pull request |
 | `docs/AWS_DEPLOYMENT.md` | The design and reasoning behind the AWS setup (production checklist, costs) |
 | `docs/AWS_ACCOUNT_SETUP.md` | Step-by-step guide to the AWS Organization and accounts |
 | `docs/PLAN.md` | The original plan |
@@ -45,8 +45,10 @@ pipeline/            compute that runs as jobs
                        Batch job (aws/batch_entry.py)
   qc_steps/            QC steps by owner: gwashub/ (defaults), <consortium>/ (added by pull request);
                        one folder per step (script, step.yaml, test_<step>.py); shared _lib/, templates/, fixtures/
-  images/              images steps run in, by owner: gwashub/base (Python), gwashub/base-r (R)
-  analyses/            meta_analysis/ (inverse-variance fixed / DerSimonian-Laird random effects)
+  images/              images steps and methods run in, by owner: gwashub/base (Python), gwashub/base-r (R),
+                       gwashub/gwama, gwashub/metal (the programs, built from pinned releases)
+  analyses/            meta_analysis/<owner>/<method>/ (analysis.yaml + script): gwashub/ivw (default),
+                       gwashub/gwama, gwashub/metal, custom_example/custom_meta_analysis; shared _metalib/
   tests/               runner, image grouping, liftover chain, meta-analysis, S3 tests
 images/app/          the site image (API and worker)
 infra/               AWS CDK app: Network, Data and App stacks (docs/AWS_FULL.md)

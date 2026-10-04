@@ -8,4 +8,4 @@ image: gwashub/base
 default_on_fail: flag
 resources: []
 params:
-  drop_indels: false
+  - {key: drop_indels, label: Drop indels, type: boolean, default: false, help: Remove insertions and deletions as well as invalid alleles}

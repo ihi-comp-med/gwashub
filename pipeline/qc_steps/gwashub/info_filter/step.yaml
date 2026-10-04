@@ -8,4 +8,5 @@ image: gwashub/base
 default_on_fail: flag
 resources: []
 params:
-  info_threshold: 0.8
+  - {key: info_threshold, label: Minimum INFO score, type: number, min: 0, max: 1, default: 0.8,
+     help: Variants with imputation INFO below this are removed (variants without INFO are kept)}

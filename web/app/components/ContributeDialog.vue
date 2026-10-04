@@ -9,8 +9,8 @@ command: [python, my_filter.py]      # or [Rscript, my_filter.R]
 image: gwashub/base                  # or gwashub/base-r, or your own image
 default_on_fail: flag                # block | flag | continue
 resources: []                        # reference files it needs, e.g. [my_regions.bed]
-params:                              # defaults reviewers can change per project
-  threshold: 0.01`
+params:                              # typed; reviewers can change them per project
+  - {key: threshold, label: Threshold, type: number, min: 0, max: 1, default: 0.01}`
 </script>
 
 <template>
@@ -35,6 +35,7 @@ params:                              # defaults reviewers can change per project
         <li>It may rewrite <code>--input</code> in place (tab-separated, standard columns <code>chr pos ea oa beta se p</code> …).</li>
         <li>It writes a JSON step log with a <code>verdict</code> of <code>pass</code>, <code>warn</code> or <code>fail</code>, plus optional <code>metrics</code>, <code>messages</code> and <code>artifacts</code>.</li>
         <li>Extra files (plots, tables) go in <code>$GWASHUB_ARTIFACT_DIR</code> and can be downloaded from the run.</li>
+        <li>Reference files it needs are uploaded by a platform admin: list them in the pull request (source, build, licence).</li>
         <li>Exit 0 when it ran. Steps work only with their inputs: no network calls, no database.</li>
       </ul>
 

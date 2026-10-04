@@ -74,3 +74,17 @@ export const fmtDate = (s?: string | null) => s ? new Date(s).toLocaleDateString
 export const fmtSize = (b?: number) => !b ? '–' : b > 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1e3))} KB`
 export const fmtP = (p?: number | null) => p == null ? '–' : p < 1e-3 ? p.toExponential(1) : p.toFixed(3)
 export const initials = (n: string) => n.split(' ').map(x => x[0]).join('').slice(0, 2).toUpperCase()
+
+/** Headline QC metrics (keys match the API's `qc` object), for the datasets table and the dataset panel. */
+export const QC_COLUMNS = [
+  { key: 'lambda_gc', label: 'λGC', digits: 3, help: 'Genomic inflation: median χ² / 0.455' },
+  { key: 'lambda_1000', label: 'λ1000', digits: 3, help: 'λ rescaled to 1,000 cases and 1,000 controls' },
+  { key: 'lambda_maf01', label: 'λ MAF≥1%', digits: 3, help: 'λGC among variants with MAF ≥ 1%' },
+  { key: 'n_variants', label: 'Variants', digits: 0, help: 'Variants after QC' },
+  { key: 'n_gws', label: 'P<5e-8', digits: 0, help: 'Variants with P < 5×10⁻⁸' },
+  { key: 'n_suggestive', label: 'P<1e-5', digits: 0, help: 'Variants with P < 1×10⁻⁵' },
+  { key: 'lifted', label: 'Lifted', digits: 0, help: 'Variants lifted to GRCh38' },
+  { key: 'unmapped', label: 'Unmapped', digits: 0, help: 'Variants that could not be lifted' },
+  { key: 'strand_flips', label: 'Flips', digits: 0, help: 'Variants on inverted segments (alleles reverse-complemented)' },
+  { key: 'ldsc_intercept', label: 'LDSC int.', digits: 3, help: 'LD score regression intercept (near 1: polygenic; above 1: confounding)' },
+] as const

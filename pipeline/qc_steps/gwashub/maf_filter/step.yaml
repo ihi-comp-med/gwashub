@@ -8,4 +8,4 @@ image: gwashub/base
 default_on_fail: flag
 resources: []
 params:
-  maf_threshold: 0.01
+  - {key: maf_threshold, label: Minimum MAF, type: number, min: 0, max: 0.5, default: 0.01, help: Variants with minor allele frequency below this are removed}

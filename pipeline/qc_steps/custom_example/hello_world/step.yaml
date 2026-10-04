@@ -8,4 +8,4 @@ image: gwashub/base
 default_on_fail: continue
 resources: []
 params:
-  greeting: hello world
+  - {key: greeting, label: Greeting, type: text, default: hello world, help: Printed to the console and the step log}

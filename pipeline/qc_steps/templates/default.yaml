@@ -9,5 +9,6 @@ steps:
 - step: gwashub/liftover
 - step: gwashub/reference_check
 - step: gwashub/stats_summary
+- step: gwashub/ldsc
 - step: gwashub/plots
 - step: gwashub/qc_report

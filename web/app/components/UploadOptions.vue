@@ -1,5 +1,6 @@
 <script setup lang="ts">
-// Project upload options: phenotypes offered in the upload form, allowed ancestries, expected sex strata.
+// Project upload options: phenotypes (code + description) offered in the upload form, allowed ancestries,
+// expected sex strata.
 const props = defineProps<{ project: any }>()
 const emit = defineEmits<{ saved: [] }>()
 const toast = useToast()
@@ -10,19 +11,43 @@ const ALL_ANC = [
 ]
 const ALL_SEX = ['Combined', 'Female', 'Male']
 
-const form = reactive({ phenotypes: [] as string[], ancestries: [] as string[], sexes: [] as string[] })
+const form = reactive({ phenotypes: [] as string[], phenotype_descriptions: {} as Record<string, string>, ancestries: [] as string[], sexes: [] as string[] })
 const original = ref('')
 function reset() {
-  Object.assign(form, { phenotypes: [...props.project.phenotypes], ancestries: [...props.project.ancestries], sexes: [...props.project.sexes] })
+  Object.assign(form, { phenotypes: [...props.project.phenotypes], phenotype_descriptions: { ...(props.project.phenotype_descriptions ?? {}) },
+    ancestries: [...props.project.ancestries], sexes: [...props.project.sexes] })
   original.value = JSON.stringify(form)
 }
 watch(() => props.project, reset, { immediate: true })
 const dirty = computed(() => JSON.stringify(form) !== original.value)
 const newPheno = ref('')
+const newDesc = ref('')
 function addPheno() {
   const p = newPheno.value.trim()
   if (p && !form.phenotypes.includes(p)) form.phenotypes.push(p)
+  if (p && newDesc.value.trim()) form.phenotype_descriptions[p] = newDesc.value.trim()
   newPheno.value = ''
+  newDesc.value = ''
+}
+function removePheno(i: number) {
+  const [p] = form.phenotypes.splice(i, 1)
+  if (p) delete form.phenotype_descriptions[p]
+}
+// CSV / TSV import: one phenotype per line, "code,description" (a header line starting with "code" is skipped).
+const csvInput = ref<HTMLInputElement | null>(null)
+async function importCsv(e: Event) {
+  const f = (e.target as HTMLInputElement).files?.[0]
+  if (!f) return
+  const lines = (await f.text()).split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+  let added = 0
+  for (const line of lines) {
+    const [code, ...rest] = line.split(line.includes('\t') ? '\t' : ',').map(x => x.trim().replace(/^"|"$/g, ''))
+    if (!code || /^code$/i.test(code)) continue
+    if (!form.phenotypes.includes(code)) { form.phenotypes.push(code); added++ }
+    if (rest.join(',').trim()) form.phenotype_descriptions[code] = rest.join(',').trim()
+  }
+  toast.add({ severity: 'info', summary: `Imported ${lines.length} line${lines.length === 1 ? '' : 's'}`, detail: `${added} new phenotype${added === 1 ? '' : 's'}; save to keep them.`, life: 4000 })
+  if (csvInput.value) csvInput.value.value = ''
 }
 function toggle(list: string[], v: string) {
   const i = list.indexOf(v)
@@ -51,14 +76,28 @@ async function save() {
       <div class="opts">
         <div>
           <h4>Phenotypes</h4>
-          <div class="chips">
-            <Chip v-for="(p, i) in form.phenotypes" :key="p" :label="p" :removable="isReviewer" @remove="form.phenotypes.splice(i, 1)" />
-            <span v-if="!form.phenotypes.length" class="muted small">None: add at least one.</span>
-          </div>
+          <table class="ph">
+            <thead><tr><th>Code</th><th>Description</th><th /></tr></thead>
+            <tbody>
+              <tr v-for="(p, i) in form.phenotypes" :key="p">
+                <td class="mono">{{ p }}</td>
+                <td><InputText v-if="isReviewer" v-model="form.phenotype_descriptions[p]" size="small" fluid placeholder="Description" />
+                  <span v-else>{{ form.phenotype_descriptions[p] || '–' }}</span></td>
+                <td><Button v-if="isReviewer" icon="pi pi-times" text rounded size="small" severity="secondary" :aria-label="`Remove ${p}`" @click="removePheno(i)" /></td>
+              </tr>
+              <tr v-if="!form.phenotypes.length"><td colspan="3" class="muted small">None: add at least one.</td></tr>
+            </tbody>
+          </table>
           <form v-if="isReviewer" class="row add" @submit.prevent="addPheno">
-            <InputText v-model="newPheno" placeholder="Add a phenotype, e.g. HFmrEF" size="small" />
+            <InputText v-model="newPheno" placeholder="Code, e.g. HFmrEF" size="small" class="code" />
+            <InputText v-model="newDesc" placeholder="Description" size="small" class="grow" />
             <Button type="submit" icon="pi pi-plus" size="small" outlined :disabled="!newPheno.trim()" aria-label="Add phenotype" />
           </form>
+          <div v-if="isReviewer" class="row imp">
+            <input ref="csvInput" type="file" accept=".csv,.tsv,.txt" hidden @change="importCsv">
+            <Button label="Import CSV" icon="pi pi-upload" size="small" text @click="csvInput?.click()" />
+            <span class="muted small">one per line: code,description</span>
+          </div>
         </div>
         <div>
           <h4>Allowed ancestries</h4>
@@ -93,7 +132,14 @@ async function save() {
 @media (max-width: 900px) { .opts { grid-template-columns: 1fr; } }
 h4 { margin: 0 0 10px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--gh-muted); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.add { flex-wrap: nowrap; gap: 6px; }
+.add { flex-wrap: nowrap; gap: 6px; margin-top: 8px; }
+.add .code { width: 9rem; }
+.grow { flex: 1; }
+.imp { gap: 6px; margin-top: 4px; }
+.ph { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+.ph th { text-align: left; font-size: 0.72rem; color: var(--gh-muted); font-weight: 600; padding: 4px 6px; }
+.ph td { padding: 3px 6px; border-top: 1px solid var(--gh-border); }
+.ph td:first-child { white-space: nowrap; }
 .checks { display: flex; flex-direction: column; gap: 8px; }
 .check { flex-wrap: nowrap; gap: 8px; cursor: pointer; font-size: 0.9rem; }
 .small { font-size: 0.78rem; }

@@ -20,8 +20,9 @@ How the AWS version of GWASHub is built, deployed and run. The design and its re
 
 **Images.** The API and worker run `gwashub/app` (ECR), built from `images/app/Dockerfile`. QC steps run in
 the pipeline images from `pipeline/images/<owner>/<image>/` (ECR repositories `gwashub-images/<owner>/<image>`):
-`gwashub/base` (Python, the default steps) and `gwashub/base-r` (adds R); consortium images build `FROM`
-them. Everything is built for arm64 by the deploy script, and each pipeline image gets its own Batch job
+`gwashub/base` (Python, the default steps), `gwashub/base-r` (adds R), and `gwashub/gwama` and
+`gwashub/metal` (the meta-analysis programs, compiled from pinned, checksummed releases); consortium images
+build `FROM` them. A meta-analysis runs as one Batch job in its method's image (`analysis.yaml`). Everything is built for arm64 by the deploy script, and each pipeline image gets its own Batch job
 definition pinned by digest. Each run's `result.json` records the image digests it used.
 
 **Image groups.** Consecutive steps that use the same image run as one Batch job in that image; a new

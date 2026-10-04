@@ -1,0 +1,17 @@
+name: ldsc
+title: LD score regression
+description: >
+  LD score regression intercept (Bulik-Sullivan et al. 2015): separates inflation from polygenicity
+  (intercept near 1) and from confounding or stratification (intercept above 1). Uses the LD-score
+  reference for the dataset's ancestry; until that reference is uploaded, the step passes and says it didn't run.
+command: [python, ldsc.py]
+image: gwashub/base
+default_on_fail: flag
+resources: []
+optional_resources: [ldscores_AFR.tsv.gz, ldscores_AMR.tsv.gz, ldscores_CSA.tsv.gz, ldscores_EAS.tsv.gz, ldscores_EUR.tsv.gz, ldscores_MID.tsv.gz]
+params:
+  - {key: warn_intercept, label: Warn above intercept, type: number, min: 1, max: 2, default: 1.1,
+     help: An intercept above this suggests confounding or population stratification}
+  - {key: min_snps, label: Minimum overlapping SNPs, type: integer, min: 100, default: 5000,
+     help: Fewer SNPs in common with the LD-score reference and the regression is skipped}
+  - {key: jackknife_blocks, label: Jackknife blocks, type: integer, min: 2, max: 1000, default: 200, help: Blocks used for the intercept's standard error}

@@ -4,6 +4,7 @@ balancer, QC jobs on AWS Batch, the job-events queue, and the website on S3 + Cl
 CloudFront is the only way in: `/api/*` reaches the internal load balancer through a CloudFront VPC
 origin (the load balancer has no public address), everything else is the static site.
 """
+import json
 import os
 
 import aws_cdk as cdk
@@ -151,8 +152,12 @@ class AppStack(cdk.Stack):
             supported_identity_providers=[cognito.UserPoolClientIdentityProvider.COGNITO],
             id_token_validity=cdk.Duration.minutes(60), access_token_validity=cdk.Duration.minutes(60),
             refresh_token_validity=cdk.Duration.hours(12), enable_token_revocation=True)
+        # Cognito's managed-login style with HERMES blue in place of AWS blue (login_branding.json: the
+        # default settings from DescribeManagedLoginBrandingByClient with the colours swapped).
+        with open(os.path.join(os.path.dirname(__file__), "login_branding.json")) as f:
+            branding = json.load(f)
         cognito.CfnManagedLoginBranding(self, "LoginBranding", user_pool_id=pool.user_pool_id,
-                                        client_id=client.user_pool_client_id, use_cognito_provided_values=True)
+                                        client_id=client.user_pool_client_id, use_cognito_provided_values=False, settings=branding)
         client_secret = sm.Secret(self, "CognitoClientSecret", secret_name=f"gwashub/{n}/cognito-client",
                                   secret_string_value=client.user_pool_client_secret)
 

@@ -80,7 +80,8 @@ def test_upload_runs_qc_and_enforces_dataset_permissions(client, synth_small):
     assert [s["state"] for s in d["run"]["steps"]].count("skipped") == 0
     assert client.get(f"/api/datasets/{up['id']}/files/qc").status_code == 200
     assert client.get(f"/api/datasets/{up['id']}/files/report").text.startswith("<!doctype html>")
-    art = client.get(f"/api/datasets/{up['id']}/files/artifact", params={"path": "steps/08_plots/manhattan.png"})
+    plots = next(s["dir"] for s in d["run"]["steps"] if s["key"] == "gwashub/plots")
+    art = client.get(f"/api/datasets/{up['id']}/files/artifact", params={"path": f"{plots}/manhattan.png"})
     assert art.status_code == 200 and art.headers["content-type"] == "image/png"
     assert client.get(f"/api/datasets/{up['id']}/files/artifact", params={"path": "../../../gwashub.db"}).status_code == 404
 
@@ -126,7 +127,12 @@ def test_pipeline_permissions_and_versions(client):
     assert client.put("/api/projects/hermes3/pipeline", json={"steps": steps}).status_code == 403
     as_user(client, "ama@example.org")
     assert client.put("/api/projects/hermes3/pipeline", json={"steps": [{"step": "gwashub/nope"}]}).status_code == 422
-    r = client.put("/api/projects/hermes3/pipeline", json={"steps": steps, "note": "MAF 5%"})
+    maf = next(c for c in p["catalog"] if c["key"] == "gwashub/maf_filter")
+    assert maf["param_schema"][0]["type"] == "number" and maf["param_schema"][0]["max"] == 0.5
+    for bad in ({"maf_threshold": 0.9}, {"maf_threshold": "x"}, {"maf_treshold": 0.05}):  # out of range, wrong type, typo
+        r = client.put("/api/projects/hermes3/pipeline", json={"steps": p["steps"][:4] + [{"step": "gwashub/maf_filter", "params": bad}] + p["steps"][4:]})
+        assert r.status_code == 422, bad
+    r =client.put("/api/projects/hermes3/pipeline", json={"steps": steps, "note": "MAF 5%"})
     assert r.json()["version"] == 2
     assert client.get("/api/projects/hermes3/pipeline").json()["history"][0]["note"] == "MAF 5%"
 
@@ -179,9 +185,10 @@ def test_resources_upload(client, tmp_path):
     f = tmp_path / "exclude.bed"
     f.write_text("chr6\t28000000\t34000000\tMHC\n")
     meta = {"key": "exclude.bed", "title": "Exclusions", "build": "GRCh38", "attest": True}
-    as_user(client, "jonas@example.org")
-    assert client.post("/api/projects/hermes3/resources", files={"file": ("exclude.bed", f.open("rb"))}, data={"meta": json.dumps(meta)}).status_code == 403
-    as_user(client, "ama@example.org")
+    for who in ("jonas@example.org", "ama@example.org"):  # uploaders and reviewers can't add resources
+        as_user(client, who)
+        assert client.post("/api/projects/hermes3/resources", files={"file": ("exclude.bed", f.open("rb"))}, data={"meta": json.dumps(meta)}).status_code == 403
+    as_user(client, "demo@gwashub.org")  # platform admin
     assert client.post("/api/projects/hermes3/resources", files={"file": ("exclude.bed", f.open("rb"))},
                        data={"meta": json.dumps({**meta, "attest": False})}).status_code == 422
     r1 = client.post("/api/projects/hermes3/resources", files={"file": ("exclude.bed", f.open("rb"))}, data={"meta": json.dumps(meta)})
@@ -190,6 +197,40 @@ def test_resources_upload(client, tmp_path):
     shared = client.post("/api/projects/hermes3/resources", files={"file": ("x", f.open("rb"))},
                          data={"meta": json.dumps({**meta, "key": "ref_panel_grch38.tsv.gz"})})
     assert shared.status_code == 409
+
+
+def _upload_resource_in_parts(client, body, data, part_size):
+    r = client.post("/api/resources/uploads", json={**body, "file_size": len(data)})
+    assert r.status_code == 201, r.text
+    t = r.json()
+    urls = client.post("/api/resources/uploads/urls", json={"ticket": t["ticket"], "parts": list(range(1, t["parts"] + 1))}).json()["urls"]
+    parts = []
+    for n in range(1, t["parts"] + 1):
+        resp = client.put(urls[str(n)], content=data[(n - 1) * part_size:n * part_size])
+        assert resp.status_code == 200
+        parts.append({"n": n, "etag": resp.headers["etag"]})
+    return client.post("/api/resources/uploads/complete", json={"ticket": t["ticket"], "parts": parts})
+
+
+def test_admin_uploads_shared_and_project_resources_in_parts(client, monkeypatch):
+    from gwashub_api import storage
+    monkeypatch.setattr(storage, "PART_SIZE", 1000)
+    data = b"CHR\tBP\tSNP\tL2\n" + b"1\t100\trs1\t2.5\n" * 300
+    body = {"scope": "shared", "key": "ldscores_EUR.tsv", "title": "LD scores (EUR)", "build": "GRCh38", "attest": True}
+    as_user(client, "ama@example.org")  # a reviewer can't
+    assert client.post("/api/resources/uploads", json={**body, "file_size": 10}).status_code == 403
+    as_user(client, "demo@gwashub.org")
+    assert client.post("/api/resources/uploads", json={**body, "key": "../x", "file_size": 10}).status_code == 422
+    r = _upload_resource_in_parts(client, body, data, 1000)
+    assert r.status_code == 201 and r.json()["scope"] == "shared" and r.json()["size"] == len(data) and r.json()["version"] == 1
+    # Every project now sees it; a project can't reuse the shared name.
+    pl = client.get("/api/projects/hermes3/pipeline").json()
+    assert any(x["key"] == "ldscores_EUR.tsv" and x["scope"] == "shared" for x in pl["resources"])
+    assert client.post("/api/resources/uploads", json={**body, "scope": "hermes3", "file_size": 10}).status_code == 409
+    r = _upload_resource_in_parts(client, {**body, "scope": "hermes3", "key": "regions.bed", "title": "Regions"}, b"chr1\t1\t2\n" * 50, 1000)
+    assert r.status_code == 201 and r.json()["scope"] == "project"
+    bad = client.post("/api/resources/uploads/complete", json={"ticket": "forged.abc", "parts": []})
+    assert bad.status_code == 403
 
 
 def test_meta_analysis(client, synth_small):
@@ -208,24 +249,44 @@ def test_meta_analysis(client, synth_small):
     assert client.post("/api/projects/hermes3/meta", json={"name": "x", "dataset_ids": eligible[:1]}).status_code == 422
     failed = next(c["id"] for c in cands if c["status"] == "failed")
     assert client.post("/api/projects/hermes3/meta", json={"name": "x", "dataset_ids": eligible + [failed]}).status_code == 422
+    # Settings in the format from before there were several methods still work (read as gwashub/ivw).
     r = client.post("/api/projects/hermes3/meta", json={"name": "HF all", "dataset_ids": eligible, "settings": {"method": "random"}})
     assert r.status_code == 201
     ma = client.get(f"/api/meta/{r.json()['id']}").json()
     assert ma["status"] == "completed", ma["error"]
     assert ma["summary"]["n_datasets"] == len(eligible) and ma["summary"]["n_loci"] >= 3
     assert ma["lead_loci"] and ma["forest"] and ma["plot_data"]["manhattan"]["x"]
-    assert ma["settings"]["method"] == "random"
+    assert ma["settings"]["method"] == "gwashub/ivw" and ma["settings"]["params"]["model"] == "random"
+    assert ma["method"]["title"].startswith("Inverse-variance") and ma["settings"]["common"]["gws"] == 5e-8
     assert client.get(f"/api/meta/{ma['id']}/files/meta_results.tsv.gz").status_code == 200
 
     as_user(client, "jonas@example.org")
     assert client.get(f"/api/meta/{ma['id']}").status_code == 200  # uploaders can view results
     assert client.get(f"/api/meta/{ma['id']}/files/manhattan.png").status_code == 200
     assert client.get(f"/api/meta/{ma['id']}/files/meta_results.tsv.gz").status_code == 403
-    assert client.put("/api/projects/hermes3/meta/settings", json={"method": "random"}).status_code == 403
+    assert client.put("/api/projects/hermes3/meta/settings", json={"method": "gwashub/ivw"}).status_code == 403
     as_user(client, "ama@example.org")
-    s = client.put("/api/projects/hermes3/meta/settings", json={"method": "random", "maf_threshold": 0.05}).json()["settings"]
-    assert s["method"] == "random" and s["maf_threshold"] == 0.05
-    assert client.put("/api/projects/hermes3/meta/settings", json={"method": "bayes"}).status_code == 422
+    s = client.put("/api/projects/hermes3/meta/settings", json={"method": "gwashub/metal", "params": {"gwashub/metal": {"scheme": "samplesize"}},
+                                                                 "common": {"clump_kb": 250}}).json()["settings"]
+    assert s["method"] == "gwashub/metal" and s["params"]["gwashub/metal"]["scheme"] == "samplesize" and s["common"]["clump_kb"] == 250
+    assert client.put("/api/projects/hermes3/meta/settings", json={"method": "nobody/bayes"}).status_code == 422
+    bad = client.put("/api/projects/hermes3/meta/settings", json={"method": "gwashub/ivw", "params": {"gwashub/ivw": {"model": "bayes"}}})
+    assert bad.status_code == 422 and "Model" in bad.json()["detail"]
+    assert client.put("/api/projects/hermes3/meta/settings", json={"method": "gwashub/ivw", "params": {}, "common": {}}).status_code == 200
+
+    # Every method is offered with typed parameters; the example consortium method runs end to end.
+    ms = client.get("/api/meta/methods").json()
+    assert ms["default_method"] == "gwashub/ivw" and ms["methods"][0]["key"] == "gwashub/ivw"
+    assert {"gwashub/gwama", "gwashub/metal", "custom_example/custom_meta_analysis"} <= {m["key"] for m in ms["methods"]}
+    r = client.post("/api/projects/hermes3/meta", json={"name": "Z-score", "dataset_ids": eligible, "settings": {
+        "method": "custom_example/custom_meta_analysis", "params": {"weighting": "equal"}}})
+    assert r.status_code == 201, r.text
+    z = client.get(f"/api/meta/{r.json()['id']}").json()
+    assert z["status"] == "completed", z["error"]
+    assert z["settings"]["method"] == "custom_example/custom_meta_analysis" and z["settings"]["params"]["weighting"] == "equal"
+    assert z["summary"]["n_loci"] >= 3 and z["forest"] and z["method"]["title"] == "Weighted Z-score (example)"
+    assert client.post("/api/projects/hermes3/meta", json={"name": "bad", "dataset_ids": eligible, "settings": {
+        "method": "custom_example/custom_meta_analysis", "params": {"weighting": "cubic"}}}).status_code == 422
 
 
 def test_upload_options_are_enforced(client, synth_small):
@@ -263,7 +324,7 @@ def test_study_metadata_upload_edit_and_audit(client, synth_small):
     assert validate({"case_type": "Incident", "n_variants_for_imputation": "40000", "contact_person": " "}) == {"case_type": "Incident", "n_variants_for_imputation": 40000}
 
     as_user(client, "jonas@example.org")
-    assert len(client.get("/api/metadata-schema").json()["sections"]) == 6
+    assert len(client.get("/api/metadata-schema").json()["sections"]) == 7
     meta = {"case_ascertainment": "Research study", "imputation_reference": "HRC r1.1", "age_mean_total": 56.2}
     up = upload(client, synth_small, synth_small["manifest"][2], study_meta=meta)
     d = client.get(f"/api/datasets/{up['id']}").json()
@@ -670,3 +731,131 @@ def test_platform_admins_create_projects(client):
     assert client.post("/api/projects", json=body).status_code == 409
     p = client.get("/api/projects/lvsf").json()
     assert p["role"] == "reviewer" and p["phenotypes"] == ["LVEF"] and p["pipeline"]["version"] == 1
+
+
+def test_cohorts_hold_shared_metadata_and_datasets_override(client, synth_small):
+    entry = synth_small["manifest"][0]
+    as_user(client, "jonas@example.org")
+    first = upload(client, synth_small, entry, cohort="Cohort Alpha", study_meta={"imputation_reference": "HRC r1.1", "case_type": "Incident"})
+    cohorts = {c["name"]: c for c in client.get("/api/projects/hermes3/cohorts").json()}
+    alpha = cohorts["Cohort Alpha"]
+    assert alpha["meta"] == {"imputation_reference": "HRC r1.1"} and alpha["datasets"] == 1 and alpha["can_edit"]
+    # A second upload naming the same cohort (any spacing / case) joins it and inherits its metadata.
+    second = upload(client, synth_small, entry, cohort="cohort-alpha", study_meta={})
+    d2 = client.get(f"/api/datasets/{second['id']}").json()
+    assert d2["cohort"] == "Cohort Alpha" and d2["cohort_id"] == alpha["id"]
+    assert d2["study_meta"]["imputation_reference"] == "HRC r1.1" and d2["overrides"] == []
+    # Override one cohort-level field for this dataset only.
+    r = client.patch(f"/api/datasets/{second['id']}", json={"study_meta": {**d2["study_meta"], "imputation_reference": "TOPMed r2"}})
+    assert r.status_code == 200
+    d2 = client.get(f"/api/datasets/{second['id']}").json()
+    assert d2["study_meta"]["imputation_reference"] == "TOPMed r2" and d2["overrides"] == ["imputation_reference"]
+    # Editing the cohort flows through to datasets without an override.
+    assert client.patch(f"/api/cohorts/{alpha['id']}", json={"meta": {"imputation_reference": "HRC r1.1", "genotyping_array": "GSA"}}).status_code == 200
+    d1 = client.get(f"/api/datasets/{first['id']}").json()
+    assert d1["study_meta"]["genotyping_array"] == "GSA" and client.get(f"/api/datasets/{second['id']}").json()["study_meta"]["imputation_reference"] == "TOPMed r2"
+    assert client.patch(f"/api/cohorts/{alpha['id']}", json={"meta": {"case_type": "Incident"}}).status_code == 422  # dataset-level field
+    # Similar names are flagged before creating; exact duplicates are refused.
+    sim = client.get("/api/projects/hermes3/cohorts/similar", params={"name": "Cohort Alfa"}).json()
+    assert any(c["name"] == "Cohort Alpha" for c in sim)
+    assert client.post("/api/projects/hermes3/cohorts", json={"name": "COHORT alpha"}).status_code == 409
+    assert client.post("/api/projects/hermes3/cohorts", json={"name": "Cohort Beta"}).status_code == 201
+    # Renaming the cohort renames it on its datasets; only its creator or a reviewer may.
+    as_user(client, "mei@example.org")
+    assert client.patch(f"/api/cohorts/{alpha['id']}", json={"name": "Nope"}).status_code == 403
+    as_user(client, "ama@example.org")
+    assert client.patch(f"/api/cohorts/{alpha['id']}", json={"name": "Cohort A"}).status_code == 200
+    assert client.get(f"/api/datasets/{first['id']}").json()["cohort"] == "Cohort A"
+    # Datasets table rows carry the cohort, the pipeline version and headline QC metrics.
+    row = next(x for x in client.get("/api/projects/hermes3/datasets").json() if x["id"] == first["id"])
+    assert row["cohort_id"] == alpha["id"] and row["pipeline_version"] >= 1
+    assert row["qc"]["lambda_gc"] > 0 and row["qc"]["n_variants"] > 0 and "lifted" in row["qc"] and "n_suggestive" in row["qc"]
+
+
+def test_metadata_config_and_required_fields(client, synth_small):
+    entry = synth_small["manifest"][0]
+    as_user(client, "jonas@example.org")  # uploaders can't change the config
+    assert client.put("/api/projects/hermes3/metadata-config", json={"shown": ["country"], "required": []}).status_code == 403
+    as_user(client, "ama@example.org")
+    assert client.put("/api/projects/hermes3/metadata-config", json={"shown": ["nope"]}).status_code == 422
+    assert client.put("/api/projects/hermes3/metadata-config", json={"shown": ["country"], "required": ["case_type"]}).status_code == 422
+    schema = client.get("/api/metadata-schema").json()
+    shown = schema["default_config"]["shown"] + ["country", "data_freeze_date"]
+    r = client.put("/api/projects/hermes3/metadata-config", json={"shown": shown, "required": ["country", "case_type"]})
+    assert r.status_code == 200 and r.json()["required"] == ["country", "case_type"]
+    p = client.get("/api/projects/hermes3").json()
+    assert "country" in p["metadata_config"]["shown"]
+    # Uploads now need the required fields (country from the cohort, case type per dataset).
+    as_user(client, "jonas@example.org")
+    meta = {k: entry[k] for k in ("phenotype", "ancestry", "sex", "build", "effect_type", "n_cases", "n_controls", "column_mapping")}
+    with open(os.path.join(synth_small["dir"], "fake_gwas", entry["file"]), "rb") as f:
+        r = client.post("/api/projects/hermes3/datasets", files={"file": (entry["file"], f)},
+                        data={"meta": json.dumps({**meta, "cohort": "Cohort Gamma", "study_meta": {"case_type": "Incident"}})})
+    assert r.status_code == 422 and "Country" in r.json()["detail"]
+    up = upload(client, synth_small, entry, cohort="Cohort Gamma", study_meta={"case_type": "Incident", "country": "Norway"})
+    d = client.get(f"/api/datasets/{up['id']}").json()
+    assert d["metadata_complete"]["missing_required"] == []
+    # Existing datasets just show what's missing.
+    old = [x for x in client.get("/api/projects/hermes3/datasets").json() if x["can_open"] and x["id"] != up["id"]]
+    assert old and any("Country/countries of ascertainment" in x["metadata_complete"]["missing_required"] for x in old)
+    as_user(client, "ama@example.org")  # put the defaults back for the other tests
+    assert client.put("/api/projects/hermes3/metadata-config", json=schema["default_config"]).status_code == 200
+
+
+def test_phenotype_descriptions(client):
+    as_user(client, "ama@example.org")
+    p = client.get("/api/projects/hermes3").json()
+    body = {"phenotypes": p["phenotypes"], "ancestries": p["ancestries"], "sexes": p["sexes"],
+            "phenotype_descriptions": {p["phenotypes"][0]: "All-cause heart failure", "not-a-code": "x"}}
+    r = client.put("/api/projects/hermes3/upload-options", json=body)
+    assert r.status_code == 200 and r.json()["phenotype_descriptions"] == {p["phenotypes"][0]: "All-cause heart failure"}
+    assert client.get("/api/projects/hermes3").json()["phenotype_descriptions"][p["phenotypes"][0]] == "All-cause heart failure"
+    # Saving without descriptions keeps the ones for codes that remain.
+    body.pop("phenotype_descriptions")
+    assert client.put("/api/projects/hermes3/upload-options", json=body).json()["phenotype_descriptions"] == {p["phenotypes"][0]: "All-cause heart failure"}
+
+
+def test_bulk_rerun(client, synth_small):
+    as_user(client, "jonas@example.org")
+    a = upload(client, synth_small, synth_small["manifest"][0])
+    b = upload(client, synth_small, synth_small["manifest"][2])
+    assert client.post("/api/projects/hermes3/datasets/rerun", json={"ids": [a["id"]]}).status_code == 403  # uploaders can't
+    as_user(client, "ama@example.org")
+    before = {i: len(client.get(f"/api/datasets/{i}").json()["runs"]) for i in (a["id"], b["id"])}
+    r = client.post("/api/projects/hermes3/datasets/rerun", json={"ids": [a["id"], b["id"], 999999]}).json()
+    assert r["started"] == 2 and r["skipped"] == [{"id": 999999, "reason": "not in this project"}]
+    for i in (a["id"], b["id"]):
+        assert len(client.get(f"/api/datasets/{i}").json()["runs"]) == before[i] + 1
+
+
+def test_project_metadata_preset(client):
+    as_user(client, "demo@gwashub.org")
+    r = client.post("/api/projects", json={"id": "skin", "name": "Skin GWAS", "short": "SGC", "phenotypes": ["AD"], "metadata_preset": "all"})
+    assert r.status_code == 201
+    cfg = client.get("/api/projects/skin").json()["metadata_config"]
+    assert "ethics_approval" in cfg["shown"] and "country" in cfg["shown"]
+
+
+def test_existing_datasets_get_cohort_records(client, synth_small):
+    """What happens on the first start after cohorts were introduced: names become Cohort records."""
+    from gwashub_api import services
+    from gwashub_api.db import SessionLocal
+    from gwashub_api.models import Cohort, Dataset
+    as_user(client, "jonas@example.org")
+    a = upload(client, synth_small, synth_small["manifest"][0], cohort="Legacy Study", study_meta={"imputation_reference": "1000G", "case_type": "Incident"})
+    b = upload(client, synth_small, synth_small["manifest"][2], cohort="Legacy Study", study_meta={"imputation_reference": "1000G"})
+    db = SessionLocal()
+    try:
+        cid = db.get(Dataset, a["id"]).cohort_id
+        for i in (a["id"], b["id"]):  # make them look like pre-cohort datasets
+            ds = db.get(Dataset, i)
+            ds.cohort_id, ds.study_meta = None, {"imputation_reference": "1000G", **({"case_type": "Incident"} if i == a["id"] else {})}
+        db.delete(db.get(Cohort, cid))
+        db.commit()
+        services.link_cohorts(db)
+        da, dbb = db.get(Dataset, a["id"]), db.get(Dataset, b["id"])
+        assert da.cohort_id and da.cohort_id == dbb.cohort_id
+        assert db.get(Cohort, da.cohort_id).meta == {"imputation_reference": "1000G"}
+        assert da.study_meta == {"case_type": "Incident"} and dbb.study_meta == {}  # no needless overrides left
+    finally:
+        db.close()

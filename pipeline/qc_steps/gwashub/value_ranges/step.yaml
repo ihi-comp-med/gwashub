@@ -9,5 +9,6 @@ image: gwashub/base
 default_on_fail: block
 resources: []
 params:
-  warn_drop_fraction: 0.005
-  fail_drop_fraction: 0.2
+  - {key: warn_drop_fraction, label: Warn above dropped fraction, type: number, min: 0, max: 1, default: 0.005,
+     help: Share of rows removed for out-of-range values}
+  - {key: fail_drop_fraction, label: Fail above dropped fraction, type: number, min: 0, max: 1, default: 0.2}

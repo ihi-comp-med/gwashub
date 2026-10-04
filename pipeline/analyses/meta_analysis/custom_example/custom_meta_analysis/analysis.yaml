@@ -1,0 +1,12 @@
+name: custom_meta_analysis
+title: Weighted Z-score (example)
+description: >
+  Example consortium method: sample-size weighted Z-score meta-analysis (Stouffer). Combines each dataset's
+  Z = BETA/SE, weighted by √N or equally; gives a Z and P per variant but no pooled effect size.
+reference: Stouffer et al. 1949; Willer, Li & Abecasis 2010 (sample-size scheme)
+command: [python, stouffer.py]
+image: gwashub/base
+params:
+  - {key: weighting, label: Weighting, type: select, options: [sqrt_n, equal], default: sqrt_n,
+     help: "sqrt_n weights each dataset by the square root of its sample size"}
+  - {key: min_studies, label: Minimum datasets per variant, type: integer, min: 1, default: 2}

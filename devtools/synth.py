@@ -164,6 +164,23 @@ def write_ref_panel(path, variants):
         panel[cols].to_csv(f, sep="\t", index=False)
 
 
+LD_POPULATIONS = ("AFR", "AMR", "CSA", "EAS", "EUR", "MID")
+
+
+def write_ld_scores(rng, res_dir, variants):
+    """Synthetic LD scores per population, in the format the gwashub/ldsc step reads: chr, pos (GRCh38), l2.
+    Higher in the hotspots where simulated signal sits, so polygenic signal shows up as slope (as with real
+    LD) rather than intercept. Production uses Pan-UK Biobank LD scores."""
+    panel = variants[variants["pos38"].notna()]
+    hot = panel["hotspot"].to_numpy().astype(float)  # simulated causal variants and their neighbours sit in hotspots
+    for pop in LD_POPULATIONS:
+        l2 = rng.gamma(2.0, 10.0, len(panel)) + hot * rng.gamma(4.0, 40.0, len(panel))
+        ld = pd.DataFrame({"chr": panel["chr"].to_numpy(), "pos": panel["pos38"].astype(int).to_numpy(), "l2": np.round(l2, 3)})
+        with gzip.open(os.path.join(res_dir, f"ldscores_{pop}.tsv.gz"), "wt") as f:
+            f.write(f"# SYNTHETIC LD scores ({pop}, GRCh38) for GWASHub local development.\n")
+            ld.to_csv(f, sep="\t", index=False)
+
+
 # --------------------------------------------------------------------------------------
 # Traits and summary statistics
 # --------------------------------------------------------------------------------------
@@ -348,6 +365,7 @@ def generate(out, n_variants=40000, small=False, seed=20261002):
     write_chain(os.path.join(res_dir, "hg19ToHg38.over.chain.gz"), segments, q_sizes)
     variants = make_variants(rng, n_variants, segments, q_sizes, n_hotspots=hotspots)
     write_ref_panel(os.path.join(res_dir, "ref_panel_grch38.tsv.gz"), variants)
+    write_ld_scores(rng, res_dir, variants)
     variants.to_csv(os.path.join(out, "truth_variants.tsv.gz"), sep="\t", index=False)
     traits, truth = {}, []
     for pheno, n_loci in (("All-cause HF", 6 if small else 20), ("HCM", 3 if small else 8)):

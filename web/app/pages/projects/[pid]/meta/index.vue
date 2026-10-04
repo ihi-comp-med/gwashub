@@ -5,6 +5,7 @@ const { pid, project, error: projectError, isReviewer } = useProject()
 const { data: analyses, refresh } = useApiGet<any[]>(() => `/projects/${pid.value}/meta`)
 const { data: cands, refresh: refreshCands } = useApiGet<any[]>(() => `/projects/${pid.value}/meta/candidates`)
 const { data: settingsResp, refresh: refreshSettings } = useApiGet<any>(() => `/projects/${pid.value}/meta/settings`)
+const { data: catalogue } = useApiGet<any>(() => '/meta/methods')
 let timer: ReturnType<typeof setInterval> | undefined
 onMounted(() => { timer = setInterval(() => analyses.value?.some(a => ['queued', 'running'].includes(a.status)) && refresh(), 2500) })
 onBeforeUnmount(() => clearInterval(timer))
@@ -14,6 +15,18 @@ const building = ref(false)
 const name = ref('')
 const s = reactive<any>({})
 watch(settingsResp, (v) => { if (v) Object.assign(s, JSON.parse(JSON.stringify(v.settings))) }, { immediate: true })
+// Methods (pipeline/analyses/meta_analysis/<owner>/<method>), grouped by owner for the picker.
+const methodList = computed<any[]>(() => catalogue.value?.methods ?? [])
+const method = computed(() => methodList.value.find(m => m.key === s.method))
+const ownerLabel = (o: string) => o === 'gwashub' ? 'GWASHub' : o
+const methodGroups = computed(() => [...new Set(methodList.value.map(m => m.owner))]
+  .map(o => ({ label: ownerLabel(o), items: methodList.value.filter(m => m.owner === o) })))
+const methodParams = computed({
+  get: () => s.params?.[s.method] ?? {},
+  set: (v) => { s.params = { ...(s.params ?? {}), [s.method]: v } },
+})
+const common = computed({ get: () => s.common ?? {}, set: (v) => { s.common = v } })
+const hasGc = computed(() => method.value?.params?.some((f: any) => f.key === 'genomic_control'))
 const filters = reactive({ phenotype: null as string | null, ancestries: [] as string[], sex: null as string | null })
 watch(cands, (c) => { if (c?.length && !filters.phenotype) filters.phenotype = c[0].phenotype }, { immediate: true })
 const phenotypes = computed(() => [...new Set((cands.value ?? []).map(c => c.phenotype))])
@@ -40,8 +53,8 @@ const running = ref(false)
 async function run() {
   running.value = true
   try {
-    const { include_statuses: _, ...rest } = s
-    const ma = await api(`/projects/${pid.value}/meta`, { method: 'POST', body: { name: name.value, dataset_ids: selectedIds.value, settings: { ...rest, include_statuses: s.include_statuses } } })
+    const settings = { method: s.method, params: { [s.method]: methodParams.value }, common: s.common, include_statuses: s.include_statuses }
+    const ma = await api(`/projects/${pid.value}/meta`, { method: 'POST', body: { name: name.value, dataset_ids: selectedIds.value, settings } })
     toast.add({ severity: 'success', summary: 'Meta-analysis started', detail: `${ma.n_datasets} datasets`, life: 3000 })
     building.value = false
     navigateTo(`/projects/${pid.value}/meta/${ma.id}`)
@@ -58,7 +71,7 @@ async function saveDefaults() {
   catch (e: any) { toast.add({ severity: 'error', summary: 'Could not save', detail: e.message, life: 5000 }) }
 }
 function resetDefaults() { if (settingsResp.value) Object.assign(s, JSON.parse(JSON.stringify(settingsResp.value.settings))) }
-const methodOptions = [{ l: 'Fixed (IVW)', v: 'fixed' }, { l: 'Random (DL)', v: 'random' }]
+const methodSummary = (a: any) => [a.method?.title ?? a.settings.method, a.settings.params?.model ?? a.settings.params?.scheme].filter(Boolean).join(', ')
 const inflated = computed(() => selected.value.filter(c => (c.lambda_gc ?? 0) > 1.1))
 const statusChoices = [{ l: 'Passed QC', v: 'passed' }, { l: 'For review', v: 'review' }]
 const statusSev = (st: string) => ({ completed: 'success', running: 'info', queued: 'secondary', failed: 'danger' } as any)[st]
@@ -68,13 +81,12 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
   <div v-if="project">
     <ProjectHeader :project="project" />
     <div class="container page">
-      <div class="row head">
+      <div class="head">
+        <Button v-if="isReviewer && !building" label="New meta-analysis" icon="pi pi-plus" class="new" @click="openBuilder" />
         <div>
           <h2 class="h2">Meta-analysis</h2>
-          <p class="page-sub">Inverse-variance meta-analysis of QC'd datasets: every input is already aligned to the reference (effect allele = ALT) on GRCh38.</p>
+          <p class="page-sub">Meta-analysis of QC'd datasets with GWASHub's own method, GWAMA, METAL or a consortium's method. Every input is already aligned to the reference (effect allele = ALT) on GRCh38.</p>
         </div>
-        <span class="spacer" />
-        <Button v-if="isReviewer && !building" label="New meta-analysis" icon="pi pi-plus" @click="openBuilder" />
       </div>
       <Message v-if="!isReviewer" severity="info" :closable="false" icon="pi pi-lock" class="mb">
         You can view results and plots. Only reviewers can run meta-analyses or download full results.
@@ -112,20 +124,20 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
 
           <h3 class="h3">2. Settings <span class="muted small">(project defaults; change for this run or save as new defaults)</span></h3>
           <div class="grid settings">
-            <div class="field"><label>Method</label><SelectButton v-model="s.method" :options="methodOptions" option-label="l" option-value="v" :allow-empty="false" />
-              <small class="muted">{{ s.method === 'random' ? 'DerSimonian–Laird random effects. Expect λGC below 1: chance heterogeneity widens null SEs.' : 'Inverse-variance weighted fixed effects.' }}</small></div>
-            <div class="field"><label>Eligible QC statuses</label><SelectButton v-model="s.include_statuses" :options="statusChoices" option-label="l" option-value="v" multiple /></div>
-            <div class="field"><label>Minimum datasets per variant</label><InputNumber v-model="s.min_studies" :min="1" :max="50" show-buttons /></div>
-            <div class="field"><label>Per-dataset MAF filter</label><InputNumber v-model="s.maf_threshold" :min="0" :max="0.49" :min-fraction-digits="2" :max-fraction-digits="4" :step="0.005" show-buttons /></div>
-            <div class="field"><label>Genome-wide threshold</label><InputNumber v-model="s.gws" :min-fraction-digits="1" :max-fraction-digits="12" /><small class="muted">{{ Number(s.gws).toExponential(0) }}</small></div>
-            <div class="field"><label>Lead-locus window (kb)</label><InputNumber v-model="s.clump_kb" :min="10" :max="5000" :step="50" show-buttons /></div>
-            <div class="field"><label>Heterogeneity flag (P)</label><InputNumber v-model="s.het_p_threshold" :min-fraction-digits="1" :max-fraction-digits="10" /></div>
-            <div class="field toggles">
-              <div class="row"><ToggleSwitch v-model="s.genomic_control" input-id="gc" /><label for="gc">Genomic control per dataset (SE × √λ when λ &gt; 1)</label></div>
-              <div class="row"><ToggleSwitch v-model="s.drop_palindromic" input-id="pal" /><label for="pal">Drop palindromic SNPs</label></div>
+            <div class="field method">
+              <label for="ma-method">Method</label>
+              <Select v-model="s.method" input-id="ma-method" :options="methodGroups" option-group-label="label" option-group-children="items"
+                      option-label="title" option-value="key" :loading="!catalogue" />
+              <small v-if="method" class="muted">{{ method.description }}<br><em>{{ method.reference }}</em><br><span class="mono">{{ method.script }}</span> · image <span class="mono">{{ method.image }}</span></small>
+              <small class="muted">Consortia add methods by pull request to <span class="mono">pipeline/analyses/meta_analysis/&lt;consortium&gt;/</span> (CONTRIBUTING.md, section 6).</small>
             </div>
+            <div class="field"><label>Eligible QC statuses</label><SelectButton v-model="s.include_statuses" :options="statusChoices" option-label="l" option-value="v" multiple /></div>
           </div>
-          <Message v-if="inflated.length && !s.genomic_control" severity="warn" :closable="false" size="small">
+          <h4 v-if="method?.params?.length" class="h4">{{ method.title }} parameters</h4>
+          <ParamForm v-if="method" v-model="methodParams" :schema="method.params" id-prefix="mp" />
+          <h4 class="h4">Results <span class="muted small">(lead loci and heterogeneity flags, the same for every method)</span></h4>
+          <ParamForm v-if="catalogue" v-model="common" :schema="catalogue.common" id-prefix="cp" />
+          <Message v-if="inflated.length && hasGc && !methodParams.genomic_control" severity="warn" :closable="false" size="small" class="gcwarn">
             {{ inflated.map(c => `${c.cohort} (λGC ${c.lambda_gc.toFixed(2)})`).join(', ') }} {{ inflated.length > 1 ? 'are' : 'is' }} inflated: consider genomic control, or excluding {{ inflated.length > 1 ? 'them' : 'it' }}.
           </Message>
           <div class="row end">
@@ -145,7 +157,7 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
             <template #empty><div class="muted empty">No meta-analyses yet.{{ isReviewer ? ' Start one with “New meta-analysis”.' : '' }}</div></template>
             <Column field="name" header="Name"><template #body="{ data }"><strong>{{ data.name }}</strong></template></Column>
             <Column header="Datasets"><template #body="{ data }">{{ data.n_datasets }}</template></Column>
-            <Column header="Method"><template #body="{ data }">{{ data.settings.method === 'random' ? 'Random' : 'Fixed' }} effects</template></Column>
+            <Column header="Method"><template #body="{ data }">{{ methodSummary(data) }}</template></Column>
             <Column header="Variants"><template #body="{ data }">{{ data.summary?.n_variants?.toLocaleString() ?? '–' }}</template></Column>
             <Column header="Loci"><template #body="{ data }">{{ data.summary?.n_loci ?? '–' }}</template></Column>
             <Column header="λGC"><template #body="{ data }">{{ data.lambda_gc?.toFixed(3) ?? '–' }}</template></Column>
@@ -162,7 +174,9 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
 </template>
 
 <style scoped>
-.head { align-items: flex-start; }
+.head { display: flex; align-items: center; gap: 20px; margin-bottom: 16px; }
+.head .new { flex: 0 0 auto; }
+.head .page-sub { margin: 0; }
 .h2 { font-size: 1.25rem; margin: 0 0 4px; }
 .h3 { font-size: 0.95rem; margin: 18px 0 10px; }
 .mb { margin-bottom: 16px; }
@@ -170,9 +184,11 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
 .tiny { font-size: 0.72rem; }
 .builder { border: 1px solid #b5bce0; }
 .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
-.settings { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 4px 20px; }
-.toggles { gap: 10px; justify-content: center; }
-.toggles .row { flex-wrap: nowrap; gap: 8px; font-size: 0.9rem; }
+.settings { grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr); gap: 4px 20px; }
+@media (max-width: 800px) { .settings { grid-template-columns: 1fr; } }
+.method small { line-height: 1.5; }
+.h4 { font-size: 0.85rem; margin: 14px 0 8px; color: var(--gh-muted); font-weight: 600; }
+.gcwarn { margin-top: 10px; }
 .end { margin-top: 8px; gap: 8px; }
 .warnv { color: #b45309; font-weight: 600; }
 .empty { padding: 20px; text-align: center; }

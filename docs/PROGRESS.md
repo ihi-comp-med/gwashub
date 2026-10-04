@@ -22,8 +22,8 @@ qc_steps, images, analyses), `infra/` (AWS CDK) and a git-ignored `local/` for g
 | Interim AWS pilot (one EC2 server, password sign-in) | ✅ ran on 2026-10-03; deleted once the full deployment was live, together with its template, script and password sign-in |
 | Full AWS deployment (CDK in `infra/`): S3 direct uploads, Postgres, Cognito (MFA), Fargate API + worker, Batch jobs per image group, CloudFront | ✅ **live in gwashub-dev**, checked end to end (uploads, QC on Batch incl. an R step in its own image, sign-in); see `docs/AWS_FULL.md` |
 
-**Tests: 81 passing** (`.venv/bin/python -m pytest`): QC steps 26, runner and grouping 11, meta-analysis 5,
-liftover chain 1, S3 helpers 4, API 31 (also run against Postgres 16), S3 storage and jobs (mocked) 3.
+**Tests: 91 passing** (`.venv/bin/python -m pytest`), including the API tests on Postgres 16 and S3 storage and Batch job
+hand-over against mocked S3.
 
 ## How to run
 
@@ -139,6 +139,55 @@ Meta-analyses vs the simulated truth:
 - **Members and projects:** reviewers invite members (new people get a Cognito invitation), change roles
   and remove members; platform admins create projects from the Projects page.
 - Environment banner per deployment ("Development build" on AWS dev, none in prod).
+
+## Changes on 2026-10-04 (done; see `docs/NEXT_STEPS.md`)
+
+- **Datasets table:** Overview / Details toggle (Details: cases, controls, λGC, λ1000, λ MAF≥1%, variants,
+  hits at 5e-8 and 1e-5, liftover counts, LDSC intercept, in smaller type); pipeline version per dataset
+  (older ones highlighted); cohort filter; reviewers select datasets and **re-run QC** in bulk.
+- **Dataset panel:** a QC metrics table above the plots; metadata shows what comes from the cohort and what
+  a dataset overrides.
+- **Cohorts** are records (per project; Cohorts tab): cohort-level metadata (study, genotyping, imputation,
+  QC) entered once and inherited by its datasets, which may override a value. Existing datasets were linked
+  to cohorts by name on first start. Uploads pick an existing cohort or add one, warned about similar names.
+- **Metadata field catalogue** (`metadata_schema.py`, HERMES and SGC fields, each per cohort or per dataset);
+  per project, the fields shown and those required at upload are stored in the database (Pipeline settings →
+  Metadata fields; platform admins pick a starting set when creating a project). Missing required fields show
+  as "metadata incomplete".
+- **Phenotype codes and descriptions**, with CSV import.
+- **QC:** `stats_summary` adds λ1000, λ at MAF ≥ 1% and hits at 1e-5; new step `gwashub/ldsc` (LD score
+  regression intercept, in the default pipeline; it passes and says so when the reference isn't uploaded yet;
+  synthetic LD scores locally, Pan-UK Biobank intended for production). Steps can declare `optional_resources`.
+- **Resources:** platform admins only, for one project or shared with all, uploaded in parts (multi-GB).
+- **Sign-in page** in HERMES blue (Cognito branding in `infra/gwashub_infra/login_branding.json`).
+
+## Meta-analysis methods and typed parameters (2026-10-04, done)
+
+- Methods are folders like QC steps: `pipeline/analyses/meta_analysis/<owner>/<method>/analysis.yaml` + script,
+  added by pull request (CONTRIBUTING.md section 6). Every project can use every method.
+  - `gwashub/ivw`: GWASHub's inverse-variance method (fixed / DerSimonian-Laird), the default.
+  - `gwashub/gwama`: wraps GWAMA 2.2.2 (image `gwashub/gwama`), incl. genomic control and the sex-differentiated test.
+  - `gwashub/metal`: wraps METAL 2020-05-05 (image `gwashub/metal`), standard-error or sample-size scheme.
+  - `custom_example/custom_meta_analysis`: weighted Z-score example (no pooled effect size).
+  - GWAMA and METAL give the same estimates as `ivw` on the test data (tests run inside their images).
+- A method writes `meta_results.tsv.gz`; `_metalib/publish.py` does lead loci, forest data, plots and summary for all.
+- Settings are `{method, params, common, include_statuses}`; project defaults keep parameters per method.
+  Older flat settings read as `gwashub/ivw`. `meta_analysis.method` column (migration `9b3e1c7d2a40`).
+- **Typed parameters** (`pipeline/runner/params.py`) for QC steps and methods: forms in the pipeline editor and
+  the meta-analysis builder are drawn from them; the API rejects wrong types, out-of-range values and unknown keys.
+
+## Before/after QC numbers and meta-analysis outputs (2026-10-04, done)
+
+- The runner profiles every QC run at both ends, whatever the pipeline (`qc_steps/_lib/profile.py`): the upload
+  as received (through the column mapping) and the cleaned file. Per column (BETA, SE, P, EAF, N, INFO): count,
+  missing, mean, median, SD, min, max. Stored in `result.json` (`profile`); shown in the dataset panel and the QC
+  report. Chosen over enforced first/last steps because pipelines are editable lists and steps have no fixed places.
+- Rows in and out of every step (`rows_before`/`rows_after`); the panel shows rows removed per step and the QC
+  report has a rows-by-step table.
+- Meta-analysis: each dataset's filter counts (missing BETA/SE, below MAF, palindromic), variants used and variants
+  in the results; `datasets.tsv` (input order = direction-string order) and `README.txt` (every column, effect
+  allele = ALT) downloadable with the results.
+- Runs from before this change have no profile; re-run QC to get one.
 
 ## Found and fixed during testing
 

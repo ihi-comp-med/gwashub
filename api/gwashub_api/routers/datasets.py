@@ -17,7 +17,7 @@ from gwashub_api.auth import can_open_dataset, current_user, require_dataset, re
 from gwashub_api.colmap import suggest
 from gwashub_api import metadata_schema
 from gwashub_api.db import get_db
-from gwashub_api.models import Dataset, QCRun, User
+from gwashub_api.models import Cohort, Dataset, QCRun, User
 from gwashub_api.config import settings
 
 log = logging.getLogger(__name__)
@@ -28,12 +28,41 @@ SEXES = ("Combined", "Female", "Male")
 BUILDS = ("GRCh37", "GRCh38")
 
 
-def ds_row(ds: Dataset, can_open: bool):
-    return {"id": ds.id, "cohort": ds.cohort, "phenotype": ds.phenotype, "ancestry": ds.ancestry, "sex": ds.sex,
-            "build": ds.build, "n_cases": ds.n_cases, "n_controls": ds.n_controls, "file_name": ds.file_name,
+# QC metrics shown in the datasets table (Details) and the dataset panel: (output key, step name, metric key).
+QC_METRICS = [("lambda_gc", "stats_summary", "lambda_gc"), ("lambda_1000", "stats_summary", "lambda_1000"),
+              ("lambda_maf01", "stats_summary", "lambda_maf01"), ("n_variants", "stats_summary", "n_variants"),
+              ("n_gws", "stats_summary", "n_genome_wide_sig"), ("n_suggestive", "stats_summary", "n_suggestive"),
+              ("n_loci", "stats_summary", "n_loci"), ("lifted", "liftover", "lifted"), ("unmapped", "liftover", "unmapped"),
+              ("strand_flips", "liftover", "strand_flipped"), ("ldsc_intercept", "ldsc", "intercept"),
+              ("ldsc_intercept_se", "ldsc", "intercept_se"), ("ldsc_ratio", "ldsc", "ratio")]
+
+
+def qc_metrics(run: QCRun | None) -> dict:
+    """Headline QC numbers from a run's step logs (by step name, so consortium pipelines work too)."""
+    if not run or not run.result:
+        return {}
+    by_step = {s.get("key", "").split("/")[-1]: s.get("metrics") or {} for s in run.result.get("steps", [])}
+    out = {k: by_step[step][metric] for k, step, metric in QC_METRICS if metric in by_step.get(step, {})}
+    rows = (run.result.get("outputs") or {}).get("rows")
+    if rows is not None:
+        out["rows_out"] = rows
+    return out
+
+
+def latest_run(ds: Dataset) -> QCRun | None:
+    return ds.runs[-1] if ds.runs else None
+
+
+def ds_row(ds: Dataset, can_open: bool, cfg: dict | None = None):
+    run = latest_run(ds)
+    meta = metadata_schema.effective(ds.cohort_ref.meta if ds.cohort_ref else {}, ds.study_meta)
+    return {"id": ds.id, "cohort": ds.cohort, "cohort_id": ds.cohort_id, "phenotype": ds.phenotype, "ancestry": ds.ancestry,
+            "sex": ds.sex, "build": ds.build, "n_cases": ds.n_cases, "n_controls": ds.n_controls, "file_name": ds.file_name,
             "file_size": ds.file_size, "status": ds.status, "uploaded_by": ds.uploaded_by,
-            "uploader": ds.uploader.name, "created_at": ds.created_at, "can_open": can_open,
-            "review": ds.review, "metadata_complete": metadata_schema.completeness(ds.study_meta)}
+            "uploader": ds.uploader.name, "created_at": ds.created_at, "can_open": can_open, "review": ds.review,
+            "pipeline_version": run.pipeline_version.version if run else None,
+            "qc": qc_metrics(run) if can_open else {},
+            "metadata_complete": metadata_schema.completeness(meta, cfg)}
 
 
 def run_view(run: QCRun):
@@ -41,20 +70,22 @@ def run_view(run: QCRun):
     return {"id": run.id, "status": run.status, "overall_verdict": run.overall_verdict, "error": run.error,
             "pipeline_version": run.pipeline_version.version, "started_at": run.started_at, "finished_at": run.finished_at,
             "stop_reason": (run.result or {}).get("stop_reason"), "rows_out": ((run.result or {}).get("outputs") or {}).get("rows"),
-            "steps": steps}
+            "steps": steps, "profile": (run.result or {}).get("profile")}
 
 
 @router.get("/metadata-schema")
 def metadata_schema_view(user: User = Depends(current_user)):
-    return {"sections": metadata_schema.SECTIONS}
+    """The whole field catalogue; each project shows the subset in its metadata config."""
+    return {"sections": metadata_schema.SECTIONS, "units": metadata_schema.units(), "default_config": metadata_schema.default_config()}
 
 
 @router.get("/projects/{project_id}/datasets")
 def list_datasets(project_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
     m = require_member(db, user, project_id)
+    cfg = services.metadata_config(m.project)
     q = select(Dataset).where(Dataset.project_id == project_id).order_by(Dataset.created_at.desc())
     # Unfinished uploads are listed only to the person uploading.
-    return [ds_row(ds, can_open_dataset(m, user, ds)) for ds in db.scalars(q)
+    return [ds_row(ds, can_open_dataset(m, user, ds), cfg) for ds in db.scalars(q)
             if ds.status != "uploading" or ds.uploaded_by == user.id]
 
 
@@ -82,9 +113,17 @@ async def column_suggestion(project_id: str, file: UploadFile = File(...), user:
     return {"columns": list(df.columns), "preview": df.head(5).fillna("").values.tolist(), **s}
 
 
-def validate_upload(project, d: dict) -> dict:
+def validate_upload(db, project, d: dict, user: User) -> dict:
+    """Checks an upload's details and resolves its cohort: an existing one (cohort_id), or found / created by
+    name. A new cohort takes the cohort-level metadata given here; for an existing cohort, values that differ
+    from the cohort's become this dataset's overrides. Fields the project requires must be filled in."""
+    if d.get("cohort_id"):
+        c = db.get(Cohort, int(d["cohort_id"]))
+        if not c or c.project_id != project.id:
+            raise HTTPException(422, "That cohort isn't in this project")
+        d = {**d, "cohort": c.name}
     for f in ("cohort", "phenotype", "ancestry", "sex", "build", "column_mapping"):
-        if not d.get(f):
+        if not d.get(f) or (f == "cohort" and not str(d[f]).strip()):
             raise HTTPException(422, f"missing field: {f}")
     if d["phenotype"] not in project.phenotypes:
         raise HTTPException(422, f"Phenotype '{d['phenotype']}' isn't one of this project's phenotypes")
@@ -94,9 +133,20 @@ def validate_upload(project, d: dict) -> dict:
         raise HTTPException(422, f"Sex stratum '{d['sex']}' isn't expected in this project")
     if d["build"] not in BUILDS:
         raise HTTPException(422, "build must be GRCh37 or GRCh38")
-    return {"cohort": d["cohort"], "phenotype": d["phenotype"], "ancestry": d["ancestry"], "sex": d["sex"], "build": d["build"],
-            "effect_type": d.get("effect_type", "beta"), "n_cases": d.get("n_cases"), "n_controls": d.get("n_controls"),
-            "column_mapping": d["column_mapping"], "study_meta": metadata_schema.validate(d.get("study_meta"))}
+    meta = metadata_schema.validate(d.get("study_meta"))
+    if len(str(d["cohort"]).strip()) > 200:
+        raise HTTPException(422, "Cohort names are limited to 200 characters")
+    if d.get("cohort_id"):
+        c = db.get(Cohort, int(d["cohort_id"]))
+    else:
+        c, _ = services.get_or_create_cohort(db, project.id, str(d["cohort"]), user.id, meta)
+    stored = services.dataset_overrides(c, meta)
+    missing = metadata_schema.missing_required(metadata_schema.effective(c.meta, stored), services.metadata_config(project))
+    if missing:
+        raise HTTPException(422, f"This project requires: {', '.join(missing)}")
+    return {"cohort": c.name, "cohort_id": c.id, "phenotype": d["phenotype"], "ancestry": d["ancestry"], "sex": d["sex"],
+            "build": d["build"], "effect_type": d.get("effect_type", "beta"), "n_cases": d.get("n_cases"),
+            "n_controls": d.get("n_controls"), "column_mapping": d["column_mapping"], "study_meta": stored}
 
 
 def safe_name(name: str | None) -> str:
@@ -117,7 +167,7 @@ def upload_dataset(project_id: str, file: UploadFile = File(...), meta: str = Fo
         d = json.loads(meta)
     except json.JSONDecodeError:
         raise HTTPException(422, "meta must be JSON")
-    ds = Dataset(project_id=project_id, uploaded_by=user.id, **validate_upload(m.project, d),
+    ds = Dataset(project_id=project_id, uploaded_by=user.id, **validate_upload(db, m.project, d, user),
                  file_name=safe_name(file.filename), file_size=0, storage_path="", status="processing")
     db.add(ds)
     db.flush()
@@ -146,7 +196,7 @@ def start_upload(project_id: str, body: UploadStart, user: User = Depends(curren
     n_parts = -(-body.file_size // storage.PART_SIZE)
     if n_parts > 10_000:
         raise HTTPException(422, "The file is too large (limit 640 GB)")
-    ds = Dataset(project_id=project_id, uploaded_by=user.id, **validate_upload(m.project, body.meta),
+    ds = Dataset(project_id=project_id, uploaded_by=user.id, **validate_upload(db, m.project, body.meta, user),
                  file_name=safe_name(body.file_name), file_size=body.file_size, storage_path="", status="uploading")
     db.add(ds)
     db.flush()
@@ -174,27 +224,31 @@ def part_urls(dataset_id: int, body: PartsRequest, user: User = Depends(current_
     ds = require_own_upload(db, user, dataset_id)
     if not body.parts or len(body.parts) > 100 or any(not 1 <= n <= 10_000 for n in body.parts):
         raise HTTPException(422, "Ask for 1 to 100 part numbers between 1 and 10,000")
-    return {"urls": {str(n): storage.part_url(ds.storage_path, ds.upload_id, n, ds.id) for n in body.parts}}
+    return {"urls": {str(n): storage.part_url(ds.storage_path, ds.upload_id, n, f"ds{ds.id}") for n in body.parts}}
 
 
-@router.put("/uploads/local/{dataset_id}/{upload_id}/{part}", include_in_schema=False)
-async def local_part(dataset_id: int, upload_id: str, part: int, expires: int, token: str, request: Request,
+@router.put("/uploads/local/{owner}/{upload_id}/{part}", include_in_schema=False)
+async def local_part(owner: str, upload_id: str, part: int, expires: int, token: str, request: Request,
                      db: Session = Depends(get_db)):
-    """Local storage only: receives one part, authorised by the signed URL (like an S3 presigned URL)."""
+    """Local storage only: receives one part of a dataset ("ds<id>") or resource ("res") upload, authorised by
+    the signed URL (like an S3 presigned URL)."""
     import hmac
     if settings().storage != "local":
         raise HTTPException(404, "Not Found")
-    if expires < time.time() or not hmac.compare_digest(storage.local_part_token(dataset_id, upload_id, part, expires), token):
+    if expires < time.time() or not hmac.compare_digest(storage.local_part_token(owner, upload_id, part, expires), token):
         raise HTTPException(403, "This upload link has expired; try again")
-    ds = db.get(Dataset, dataset_id)
-    if not ds or ds.upload_id != upload_id:
+    if owner.startswith("ds"):
+        ds = db.get(Dataset, int(owner[2:])) if owner[2:].isdigit() else None
+        if not ds or ds.upload_id != upload_id:
+            raise HTTPException(404, "No such upload")
+    elif owner != "res":
         raise HTTPException(404, "No such upload")
     import tempfile
     with tempfile.SpooledTemporaryFile(max_size=8 << 20) as buf:
         async for chunk in request.stream():
             buf.write(chunk)
         buf.seek(0)
-        etag = storage.save_local_part(ds.storage_path, upload_id, part, buf)
+        etag = storage.save_local_part("", upload_id, part, buf)
     return Response(status_code=200, headers={"ETag": etag})
 
 
@@ -238,9 +292,13 @@ def start_run(db, ds: Dataset) -> QCRun:
 @router.get("/datasets/{dataset_id}")
 def get_dataset(dataset_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     ds, m = require_dataset(db, user, dataset_id)
-    run = ds.runs[-1] if ds.runs else None
-    return {**ds_row(ds, True), "column_mapping": ds.column_mapping, "effect_type": ds.effect_type,
-            "study_meta": ds.study_meta or {}, "edits": ds.edits or [], "can_edit": m.role == "reviewer" or ds.uploaded_by == user.id,
+    run = latest_run(ds)
+    cohort_meta = (ds.cohort_ref.meta if ds.cohort_ref else {}) or {}
+    return {**ds_row(ds, True, services.metadata_config(m.project)), "column_mapping": ds.column_mapping, "effect_type": ds.effect_type,
+            "study_meta": metadata_schema.effective(cohort_meta, ds.study_meta), "cohort_meta": cohort_meta,
+            "overrides": sorted(k for k in (ds.study_meta or {}) if k in metadata_schema.COHORT_KEYS),
+            "metadata_config": services.metadata_config(m.project),
+            "edits": ds.edits or [], "can_edit": m.role == "reviewer" or ds.uploaded_by == user.id,
             "run": run and run_view(run), "runs": [{"id": r.id, "status": r.status, "overall_verdict": r.overall_verdict,
                                                     "pipeline_version": r.pipeline_version.version, "finished_at": r.finished_at} for r in ds.runs]}
 
@@ -350,12 +408,21 @@ def edit_dataset(dataset_id: int, body: DatasetEdit, user: User = Depends(curren
         raise HTTPException(403, "Only the uploader or a reviewer can edit this dataset")
     p = m.project
     changes = {}
+    old_meta = metadata_schema.effective(ds.cohort_ref.meta if ds.cohort_ref else {}, ds.study_meta)
     for f in CORE_EDITABLE:
         v = getattr(body, f)
         if v is None or v == getattr(ds, f):
             continue
-        if f == "cohort" and not str(v).strip():
-            raise HTTPException(422, "Cohort can't be empty")
+        if f == "cohort":
+            if not str(v).strip() or len(str(v).strip()) > 200:
+                raise HTTPException(422, "Give a cohort name (up to 200 characters)")
+            # Moving a dataset to another cohort (found by name, or created).
+            c, _ = services.get_or_create_cohort(db, ds.project_id, str(v), user.id)
+            if c.id == ds.cohort_id:
+                continue
+            changes["cohort"] = [ds.cohort, c.name]
+            ds.cohort_id, ds.cohort, ds.cohort_ref = c.id, c.name, c
+            continue
         if f == "phenotype" and v not in p.phenotypes:
             raise HTTPException(422, f"Phenotype '{v}' isn't one of this project's phenotypes")
         if f == "ancestry" and v not in p.ancestries:
@@ -372,12 +439,13 @@ def edit_dataset(dataset_id: int, body: DatasetEdit, user: User = Depends(curren
         changes[f] = [getattr(ds, f), v]
         setattr(ds, f, v)
     if body.study_meta is not None:
+        # The client sends the dataset's full (effective) metadata; cohort-level values equal to the cohort's
+        # aren't stored on the dataset, so editing the cohort later still flows through.
         new = metadata_schema.validate(body.study_meta)
-        old = ds.study_meta or {}
-        for k in sorted(set(old) | set(new)):
-            if old.get(k) != new.get(k):
-                changes[k] = [old.get(k), new.get(k)]
-        ds.study_meta = new
+        for k in sorted(set(old_meta) | set(new)):
+            if old_meta.get(k) != new.get(k):
+                changes[k] = [old_meta.get(k), new.get(k)]
+        ds.study_meta = services.dataset_overrides(ds.cohort_ref, new)
     if changes:
         ds.edits = [*(ds.edits or []), {"by": user.name, "at": jobs.now().isoformat(), "changes": changes}]
     # The build decides liftover, so QC output made with the old build is wrong: re-run straight away.
@@ -429,3 +497,29 @@ def review(dataset_id: int, body: Review, user: User = Depends(current_user), db
     ds.review = {"decision": body.decision, "note": body.note, "by": user.name, "at": jobs.now().isoformat()}
     db.commit()
     return ds_row(ds, True)
+
+
+class BulkRerun(BaseModel):
+    ids: list[int]
+
+
+@router.post("/projects/{project_id}/datasets/rerun")
+def bulk_rerun(project_id: str, body: BulkRerun, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Reviewer-only: re-run QC on several datasets with the project's current pipeline version."""
+    require_member(db, user, project_id, role="reviewer")
+    if not body.ids or len(body.ids) > 500:
+        raise HTTPException(422, "Choose between 1 and 500 datasets")
+    started, skipped = [], []
+    for i in dict.fromkeys(body.ids):
+        ds = db.get(Dataset, i)
+        if not ds or ds.project_id != project_id:
+            skipped.append({"id": i, "reason": "not in this project"})
+        elif ds.status in ("processing", "uploading"):
+            skipped.append({"id": i, "reason": "QC is already running" if ds.status == "processing" else "upload not finished"})
+        else:
+            ds.status, ds.review = "processing", None
+            started.append(start_run(db, ds).id)
+    db.commit()
+    for run_id in started:
+        jobs.start_qc(run_id)
+    return {"started": len(started), "skipped": skipped}

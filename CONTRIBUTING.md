@@ -1,4 +1,6 @@
-# Contributing a QC step
+# Contributing QC steps and meta-analysis methods
+
+Consortia add their own QC steps (sections 1 to 5) and meta-analysis methods (section 6) by pull request.
 
 GWASHub's QC steps live in this repository. The default steps are in `pipeline/qc_steps/gwashub/`;
 consortia add their own in `pipeline/qc_steps/<consortium>/` by pull request. Once merged and deployed,
@@ -27,10 +29,24 @@ command: [Rscript, sarcomere_filter.R]   # or [python, my_step.py]
 image: gwashub/base-r                # an image from pipeline/images (see 4)
 default_on_fail: flag                # block (stop the pipeline) | flag (mark for review) | continue (ignore)
 resources: [sarcomere_genes_grch38.bed]  # reference files it needs (project or shared resources)
-params:                              # optional defaults, editable per project
-  window_kb: 500
+params:                              # optional; reviewers can change them per project (see below)
+  - {key: window_kb, label: Window around each gene (kb), type: integer, min: 0, max: 5000, default: 500,
+     help: Variants this close to a listed gene are removed too}
 always_run: false                    # true only for steps that must run after a block (like the report)
 ```
+
+`params` is a list of typed fields. The pipeline editor draws a form from it, and GWASHub rejects values of the
+wrong type or out of range when a pipeline is saved:
+
+| Field | Meaning |
+|---|---|
+| `key` | the name your script reads (lower case, underscores) |
+| `label`, `help` | what the form shows |
+| `type` | `number`, `integer`, `boolean`, `select` (with `options: [a, b]`) or `text` |
+| `default` | used unless a project changes it |
+| `min`, `max` | optional limits for numbers |
+
+The older form, a plain mapping such as `params: {window_kb: 500}`, still works (types come from the defaults).
 
 ## 2. The step contract
 
@@ -42,7 +58,10 @@ The runner calls your script as
 
 - `--input` is the dataset so far: tab-separated, with the standard columns `chr pos ea oa beta se p`
   (and `eaf n rsid info` when present). Rewrite it in place to remove or change rows.
-- `--resources` holds only the reference files your `step.yaml` declares.
+- `--resources` holds only the reference files your `step.yaml` declares: `resources:` are required (the run
+  fails without them), `optional_resources:` are staged when available (the step must cope without them, as
+  `gwashub/ldsc` does). Reference files are uploaded by a platform admin, so list any new ones in the pull
+  request (source URL, build, licence).
 - `--params` is JSON: the dataset's details (`build`, `ancestry`, `n_cases`, ...) and, under `"step"`,
   your step's parameters.
 - `--log`: write JSON like
@@ -93,3 +112,63 @@ image starts another job, which adds a few minutes to a run.
 Use the pull request template. Automated checks run every step's tests and build every image. The
 consortium's maintainers (listed in `.github/CODEOWNERS`) and a GWASHub maintainer review it. After
 it's merged, the next deploy makes the step available.
+
+## 6. Contributing a meta-analysis method
+
+Meta-analysis methods live in `pipeline/analyses/meta_analysis/<owner>/<method>/`. GWASHub's own are in
+`gwashub/`: `ivw` (GWASHub's inverse-variance method, the default), `gwama` (a wrapper around GWAMA 2.2.2) and
+`metal` (a wrapper around METAL). A consortium adds its own in `pipeline/analyses/meta_analysis/<consortium>/`;
+once merged and deployed, every project can choose it when starting a meta-analysis. The smallest example is
+`custom_example/custom_meta_analysis` (a weighted Z-score method in about 40 lines).
+
+```
+pipeline/analyses/meta_analysis/<consortium>/
+  README.md                       who maintains these methods, and what each one does
+  <method>/
+    analysis.yaml                 how GWASHub runs it (below)
+    <method>.py                   the script (or a wrapper around other software)
+```
+
+```yaml
+name: custom_meta_analysis           # must match the folder name
+title: Weighted Z-score (example)    # shown in the method picker
+description: One or two sentences on what it does and when to use it.
+reference: Stouffer et al. 1949      # citation shown with the results
+command: [python, stouffer.py]
+image: gwashub/base                  # an image from pipeline/images (section 4)
+params:                              # typed fields, as for QC steps (section 1)
+  - {key: weighting, label: Weighting, type: select, options: [sqrt_n, equal], default: sqrt_n}
+  - {key: min_studies, label: Minimum datasets per variant, type: integer, min: 1, default: 2}
+```
+
+The method is called once per meta-analysis, in the method's folder, as
+
+```
+<command> --inputs inputs.json --params params.json --out OUT_DIR --log log.json
+```
+
+- `inputs.json` lists the datasets: `[{"id", "label", "path", "n_cases", "n_controls", "ancestry", "sex"}]`. Each
+  `path` is a QC'd file: tab-separated, GRCh38, aligned to the reference (effect allele = ALT), with
+  `chr pos ea oa beta se p` and, when present, `eaf n rsid info`.
+- `params.json` holds the method's own parameters, already checked against `analysis.yaml`.
+- Write `OUT_DIR/meta_results.tsv.gz` (tab-separated, gzipped) with one row per variant and the columns
+  `chr pos ea oa p n_studies` plus either `beta se` or `z`. Optional: `rsid eaf n i2 het_p direction`.
+- Write `--log` as JSON: `{"verdict": "pass", "metrics": {}, "messages": [], "studies": []}`.
+- Exit 0 when it ran. No network calls, no database.
+
+GWASHub then does the rest for every method: lead loci (with the project's significance threshold and window),
+forest plots, Manhattan and QQ plots, λGC, the summary, `datasets.tsv` (the datasets in direction-string order
+with how many variants each filter removed) and a `README.txt` describing the columns. If your log's `studies`
+entries carry counts such as `variants_in`, `removed_<reason>` and `variants_used` (as `_metalib.common.load_study`
+does), they appear there. Python methods may use the helpers in
+`pipeline/analyses/meta_analysis/_metalib/common.py` (reading the inputs with MAF and genomic-control filters,
+variant IDs, writing results and the log).
+
+To wrap other software, add an image for it (section 4) that downloads a pinned release and checks its
+checksum, as `pipeline/images/gwashub/gwama/` and `pipeline/images/gwashub/metal/` do, and have your script
+write that program's input files, run it and convert its output to `meta_results.tsv.gz`.
+
+Add a test in `pipeline/tests/` that runs the method on the synthetic datasets (see
+`test_weighted_z_example_method` in `pipeline/tests/test_meta_analysis.py`), and list the method in the pull
+request template's checklist.
+

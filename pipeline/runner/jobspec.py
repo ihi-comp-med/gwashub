@@ -132,7 +132,7 @@ def run_qc(spec, workdir, on_step=None, group=None):
 
     # Fetch only the resources the steps of this job declare.
     indexes = {i for g in todo for i in groups[g]["steps"]}
-    needed = {k for e in resolved if e.index in indexes for k in e.step.resources}
+    needed = {k for e in resolved if e.index in indexes for k in e.step.all_resources}
     res_dir = os.path.join(workdir, "_resources")
     os.makedirs(res_dir, exist_ok=True)
     for key, loc in (spec.get("resources") or {}).items():
@@ -141,7 +141,7 @@ def run_qc(spec, workdir, on_step=None, group=None):
 
     if todo[0] == 0:
         name = os.path.basename(spec["input"].rstrip("/")) or "input"
-        state = executor.start_run(fetch(spec["input"], os.path.join(workdir, "_input", name)), local_out)
+        state = executor.start_run(fetch(spec["input"], os.path.join(workdir, "_input", name)), local_out, spec["params"])
         progress = [{"key": e.step.key, "title": e.step.title, "image": e.image, "state": "queued"} for e in resolved]
     else:
         _fetch_outputs(output, local_out)
@@ -186,31 +186,59 @@ def run_qc(spec, workdir, on_step=None, group=None):
 
 # ---------- meta-analysis ----------
 
+def run_method(method, inputs, params, common, local_out):
+    """Run one meta-analysis method (analysis.yaml) and then GWASHub's post-processing in local_out.
+    inputs: [{id, label, path (local), n_cases, n_controls, ancestry, sex}]. Returns the result dict."""
+    from pipeline.runner.catalog import META_ANALYSIS_DIR
+    from pipeline.runner.executor import _interpreter
+    os.makedirs(local_out, exist_ok=True)
+    for name, obj in (("inputs.json", inputs), ("params.json", params), ("common.json", common)):
+        with open(os.path.join(local_out, name), "w") as f:
+            json.dump(obj, f, indent=2)
+    log = os.path.join(local_out, "log.json")
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([META_ANALYSIS_DIR, QC_STEPS_DIR]),
+           "MPLCONFIGDIR": os.environ.get("MPLCONFIGDIR", "/tmp/gwashub-mpl")}
+    cmd = [*_interpreter(method.command[:-1]), os.path.join(method.workdir, method.command[-1])] if len(method.command) > 1 \
+        else [os.path.join(method.workdir, method.command[0])]
+    proc = subprocess.run([*cmd, "--inputs", os.path.join(local_out, "inputs.json"), "--params", os.path.join(local_out, "params.json"),
+                           "--out", local_out, "--log", log], cwd=method.workdir, env=env, capture_output=True, text=True)
+    if proc.returncode != 0 or not os.path.exists(os.path.join(local_out, "meta_results.tsv.gz")):
+        return {"status": "failed", "method": method.key, "error": (proc.stderr[-2000:] or proc.stdout[-2000:] or "the method wrote no results")}
+    if not os.path.exists(log):
+        with open(log, "w") as f:
+            json.dump({"method": method.key, "verdict": "pass", "metrics": {}, "messages": []}, f)
+    pub = subprocess.run([sys.executable, os.path.join(META_ANALYSIS_DIR, "_metalib", "publish.py"), "--inputs",
+                          os.path.join(local_out, "inputs.json"), "--params", os.path.join(local_out, "common.json"),
+                          "--out", local_out, "--log", log, "--method", method.key, "--title", method.title],
+                         env=env, capture_output=True, text=True)
+    if pub.returncode != 0:
+        return {"status": "failed", "method": method.key, "error": "Post-processing failed: " + (pub.stderr[-2000:] or pub.stdout[-2000:])}
+    with open(os.path.join(local_out, "summary.json")) as f:
+        summary = json.load(f)
+    with open(log) as f:
+        mlog = json.load(f)
+    return {"status": "completed", "method": method.key, "summary": summary, "log": mlog}
+
+
 def run_meta(spec, workdir):
+    """Meta-analysis spec: {"kind": "meta", "method": "<owner>/<method>", "inputs": [{id, label, loc, ...}],
+    "params": {...}, "common": {gws, clump_kb, het_p_threshold}, "output": LOC}."""
+    from pipeline.runner.catalog import load_analyses
     output = spec["output"]
     local_out = output if not output.startswith("s3://") else os.path.join(workdir, "out")
     os.makedirs(local_out, exist_ok=True)
-    inputs = []
-    for i, item in enumerate(spec["inputs"]):
-        path = fetch(item["loc"], os.path.join(workdir, "_inputs", f"{i:03d}_{item['id']}.tsv"))
-        inputs.append({k: v for k, v in item.items() if k != "loc"} | {"path": path})
-    with open(os.path.join(local_out, "inputs.json"), "w") as f:
-        json.dump(inputs, f, indent=2)
-    with open(os.path.join(local_out, "params.json"), "w") as f:
-        json.dump(spec["params"], f, indent=2)
-    env = {**os.environ, "PYTHONPATH": QC_STEPS_DIR, "MPLCONFIGDIR": os.environ.get("MPLCONFIGDIR", "/tmp/gwashub-mpl")}
-    proc = subprocess.run([sys.executable, os.path.join(ROOT, "pipeline", "analyses", "meta_analysis", "meta_analysis.py"),
-                           "--inputs", os.path.join(local_out, "inputs.json"), "--params", os.path.join(local_out, "params.json"),
-                           "--out", local_out, "--log", os.path.join(local_out, "log.json")],
-                          env=env, capture_output=True, text=True)
-    if proc.returncode != 0:
-        result = {"status": "failed", "error": (proc.stderr[-2000:] or proc.stdout[-2000:])}
+    methods = load_analyses()
+    key = spec.get("method", "gwashub/ivw")
+    if key not in methods:
+        result = {"status": "failed", "method": key, "error": f"Unknown meta-analysis method {key}"}
     else:
-        with open(os.path.join(local_out, "summary.json")) as f:
-            summary = json.load(f)
-        with open(os.path.join(local_out, "log.json")) as f:
-            log = json.load(f)
-        result = {"status": "completed", "summary": summary, "log": log}
+        inputs = []
+        for i, item in enumerate(spec["inputs"]):
+            path = fetch(item["loc"], os.path.join(workdir, "_inputs", f"{i:03d}_{item['id']}.tsv"))
+            inputs.append({k: v for k, v in item.items() if k != "loc"} | {"path": path})
+        result = run_method(methods[key], inputs, spec.get("params") or {}, spec.get("common") or {}, local_out)
+    if spec.get("images"):
+        result["images"] = spec["images"]
     with open(os.path.join(local_out, "result.json"), "w") as f:
         json.dump(result, f, indent=2, default=str)
     publish(local_out, output)

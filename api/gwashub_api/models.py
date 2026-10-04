@@ -26,7 +26,10 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(300))
     short: Mapped[str] = mapped_column(String(50))
     description: Mapped[str] = mapped_column(Text, default="")
-    phenotypes: Mapped[list] = mapped_column(JSON, default=list)
+    phenotypes: Mapped[list] = mapped_column(JSON, default=list)  # codes, e.g. "HF"
+    phenotype_descriptions: Mapped[dict] = mapped_column(JSON, default=dict)  # code -> description
+    # Which metadata fields (metadata_schema.py) are shown and which are required at upload; null = defaults.
+    metadata_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Upload options: which ancestries and sex strata may be chosen when uploading.
     ancestries: Mapped[list] = mapped_column(JSON, default=lambda: ["EUR", "AFR", "EAS", "SAS", "AMR", "Multi"])
     sexes: Mapped[list] = mapped_column(JSON, default=lambda: ["Combined", "Female", "Male"])
@@ -77,12 +80,26 @@ class PipelineVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class Cohort(Base):
+    """A study that contributes datasets to one project (projects are isolated, so the same study in two
+    projects is two cohorts). Holds the cohort-level metadata its datasets inherit."""
+    __tablename__ = "cohort"
+    __table_args__ = (UniqueConstraint("project_id", "name"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("project.id"))
+    name: Mapped[str] = mapped_column(String(200))
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)  # cohort-level fields of metadata_schema.py
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("user.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class Dataset(Base):
     __tablename__ = "dataset"
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("project.id"))
     uploaded_by: Mapped[int] = mapped_column(ForeignKey("user.id"))
-    cohort: Mapped[str] = mapped_column(String(200))
+    cohort: Mapped[str] = mapped_column(String(200))  # the cohort's name (kept in step with Cohort.name)
+    cohort_id: Mapped[int | None] = mapped_column(ForeignKey("cohort.id"), nullable=True, index=True)
     phenotype: Mapped[str] = mapped_column(String(200))
     ancestry: Mapped[str] = mapped_column(String(20))
     sex: Mapped[str] = mapped_column(String(20))
@@ -91,7 +108,8 @@ class Dataset(Base):
     n_cases: Mapped[int | None] = mapped_column(Integer, nullable=True)
     n_controls: Mapped[int | None] = mapped_column(Integer, nullable=True)
     column_mapping: Mapped[dict] = mapped_column(JSON)
-    study_meta: Mapped[dict] = mapped_column(JSON, default=dict)  # see metadata_schema.py
+    # Dataset-level metadata plus any overrides of cohort-level fields (see metadata_schema.effective).
+    study_meta: Mapped[dict] = mapped_column(JSON, default=dict)
     edits: Mapped[list] = mapped_column(JSON, default=list)  # [{by, at, changes: {field: [old, new]}}]
     file_name: Mapped[str] = mapped_column(String(300))
     file_size: Mapped[int] = mapped_column(BigInteger)
@@ -102,6 +120,7 @@ class Dataset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     runs: Mapped[list["QCRun"]] = relationship(back_populates="dataset", order_by="QCRun.id", cascade="all, delete-orphan")
     uploader: Mapped[User] = relationship()
+    cohort_ref: Mapped["Cohort | None"] = relationship()
 
 
 class QCRun(Base):
@@ -127,7 +146,8 @@ class MetaAnalysis(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("project.id"))
     name: Mapped[str] = mapped_column(String(300))
-    settings: Mapped[dict] = mapped_column(JSON)
+    method: Mapped[str] = mapped_column(String(200), default="gwashub/ivw", server_default="gwashub/ivw")  # pipeline/analyses/meta_analysis/<owner>/<method>
+    settings: Mapped[dict] = mapped_column(JSON)  # {method, params, common, include_statuses}
     dataset_ids: Mapped[list] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(20), default="queued")  # queued|running|completed|failed
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)

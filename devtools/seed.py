@@ -78,7 +78,11 @@ def main():
         users[email] = u
     db.flush()
 
-    for key, title, build, desc in SHARED:
+    shared = list(SHARED) + [(f"ldscores_{pop}.tsv.gz", f"LD scores, {pop} (SYNTHETIC)", "GRCh38",
+                               "Synthetic LD scores for local development; production uses Pan-UK Biobank.")
+                              for pop in ("AFR", "AMR", "CSA", "EAS", "EUR", "MID")
+                              if os.path.exists(os.path.join(shared_dir, f"ldscores_{pop}.tsv.gz"))]
+    for key, title, build, desc in shared:
         path = os.path.join(shared_dir, key)
         db.add(Resource(project_id=None, key=key, title=title, description=desc, build=build, size=os.path.getsize(path),
                         sha256=sha256_file(path), version=1, source="Synthetic (devtools/synth.py)",
