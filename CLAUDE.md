@@ -27,7 +27,7 @@ Read before substantial work:
 | `images/app/` | The site image (API and worker) |
 | `infra/` | AWS CDK app (Network, Data, App stacks); see `docs/AWS_FULL.md` |
 | `devtools/` | `dev.sh`, `build_images.sh`, `synth.py` (synthetic data and references), `seed.py`, `e2e.py`, `run_demo.py`; AWS: `aws_cdk_deploy.sh` (deploy), `aws_admin.sh` (admin commands), `aws_upload_resources.py` (reference files to S3), `aws_db_tunnel.sh`, `aws_bookmarks.py` |
-| `docs/` | Progress, AWS guides, `ARCHITECTURE_IMAGE_PROMPT.md` (prompt for an architecture poster) |
+| `docs/` | Progress, AWS guides, `ARCHITECTURE_IMAGE_PROMPT.md` (prompt for an architecture poster), `VALIDATION_PLAN.md` (five validation tests; basis for a Validation page) |
 | `local/` | Git-ignored local state: `synthetic/` (fake data + resources), `app/` (dev DB, uploads, run outputs), `runs/` (CLI runs) |
 
 The original sources were git clones that have been removed; they remain on GitHub if anything else
