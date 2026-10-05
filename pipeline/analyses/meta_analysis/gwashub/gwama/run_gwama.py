@@ -1,6 +1,10 @@
 """GWAMA wrapper: write each dataset in GWAMA's input format, run GWAMA, map its output to the standard
-results columns (see _metalib/common.py)."""
+results columns (see _metalib/common.py) and keep GWAMA's own log files for download.
+
+Always run as -qt (BETA and SE; odds ratios are already log-odds) with --indel_alleles, as the HERMES 3 analyses did.
+Variants are matched across datasets by chr:pos and the alleles in either order (_metalib.common.marker_id)."""
 import os
+import shutil
 import subprocess
 
 import pandas as pd
@@ -8,6 +12,9 @@ import pandas as pd
 from _metalib.common import load_study, marker_id, parse_args, split_marker, write_log, write_results
 
 SEX = {"Male": "M", "Female": "F"}
+# GWAMA's output files -> (download name, label)
+OUTPUTS = {"gwama.log.out": ("gwama_log.txt", "GWAMA log"), "gwama.err.out": ("gwama_errors.txt", "GWAMA errors and warnings"),
+           "gwama.gc.out": ("gwama_gc.txt", "GWAMA genomic control (λ per dataset)")}
 
 
 def main():
@@ -18,7 +25,7 @@ def main():
         raise SystemExit("The sex-differentiated test needs every dataset to be male-only or female-only")
     lines, infos, rsids = [], [], {}
     for s in specs:
-        df, info = load_study(s, p.get("maf_min", 0.01))
+        df, info = load_study(s, p.get("maf_min", 0))
         df["MARKERNAME"] = marker_id(df)
         if "rsid" in df:
             rsids.update(dict(zip(df["MARKERNAME"], df["rsid"])))
@@ -32,16 +39,24 @@ def main():
         infos.append(info)
     with open(os.path.join(work, "gwama.in"), "w") as f:
         f.write("\n".join(lines) + "\n")
-    cmd = ["GWAMA", "-i", os.path.join(work, "gwama.in"), "-o", os.path.join(work, "gwama"), "-qt", "--indel_alleles"]
+    cmd = ["GWAMA", "-i", os.path.join(work, "gwama.in"), "-o", os.path.join(work, "gwama"), "-qt", "--indel_alleles",
+           "--threshold", str(p.get("direction_threshold", 1))]
     if p.get("model") == "random":
-        cmd.append("-r")
+        cmd.append("--random")
     if p.get("genomic_control"):
-        cmd.append("-gc")
+        cmd.append("--genomic_control")
+    if p.get("genomic_control_output"):
+        cmd.append("--genomic_control_output")
     if p.get("sex_differentiated"):
         cmd.append("--sex")
     proc = subprocess.run(cmd, capture_output=True, text=True)
     with open(os.path.join(a.out, "gwama_console.txt"), "w") as f:
-        f.write(proc.stdout + proc.stderr)
+        f.write("$ " + " ".join(cmd) + "\n\n" + proc.stdout + proc.stderr)
+    files = [{"path": "gwama_console.txt", "label": "GWAMA console output"}]
+    for src, (name, label) in OUTPUTS.items():
+        if os.path.exists(os.path.join(work, src)):
+            shutil.move(os.path.join(work, src), os.path.join(a.out, name))
+            files.append({"path": name, "label": label})
     if proc.returncode != 0 or not os.path.exists(os.path.join(work, "gwama.out")):
         raise SystemExit(f"GWAMA failed: {(proc.stderr or proc.stdout)[-1500:]}")
 
@@ -58,14 +73,12 @@ def main():
             res[extra.replace("-value", "").replace("-", "_")] = g[extra]
     res = res[res["n_studies"] >= p.get("min_studies", 2)]
     write_results(res, a.out)
-    if os.path.exists(os.path.join(work, "gwama.log.out")):
-        os.replace(os.path.join(work, "gwama.log.out"), os.path.join(a.out, "gwama_log.txt"))
+    options = [o for o in ("random", "genomic_control", "genomic_control_output", "sex") if f"--{o}" in cmd]
     write_log(a.log, "gwashub/gwama", "pass", {"model": p.get("model", "fixed")},
-              [f"GWAMA {p.get('model', 'fixed')}-effects meta-analysis of {len(res):,} variants across {len(specs)} datasets."],
-              studies=infos)
-    for fn in os.listdir(work):  # inputs are reproducible from the datasets; keep only GWAMA's logs
-        os.remove(os.path.join(work, fn))
-    os.rmdir(work)
+              [f"GWAMA {p.get('model', 'fixed')}-effects meta-analysis of {len(res):,} variants across {len(specs)} datasets"
+               + (f" (options: {', '.join('--' + o for o in options)})." if options else ".")],
+              studies=infos, files=files)
+    shutil.rmtree(work)  # the inputs are reproducible from the datasets
 
 
 if __name__ == "__main__":

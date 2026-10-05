@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // QQ plot from plot_data.json "qq" ({expected, observed, lambda}); synthetic when no data.
-const props = withDefaults(defineProps<{ data?: any, seed?: number, lambda?: number }>(), { seed: 1, lambda: 1.04 })
+// `size` is the plot's height (and width) in pixels, to match a Manhattan plot of the same height.
+const props = withDefaults(defineProps<{ data?: any, seed?: number, lambda?: number, size?: number }>(), { seed: 1, lambda: 1.04, size: 280 })
 const S = 260, PAD = 36
 
 const pts = computed(() => {
@@ -25,7 +26,7 @@ const diag = computed(() => Math.min(xMax.value, yMax.value))
 </script>
 
 <template>
-  <svg :viewBox="`0 0 ${S} ${S}`" class="plot" role="img" aria-label="QQ plot">
+  <svg :viewBox="`0 0 ${S} ${S}`" class="plot" :style="{ width: `${size}px`, height: `${size}px` }" role="img" aria-label="QQ plot">
     <line :x1="sx(0)" :y1="sy(0)" :x2="sx(diag)" :y2="sy(diag)" class="diag" />
     <circle v-for="(p, i) in pts" :key="i" :cx="sx(p.x)" :cy="sy(p.y)" r="1.8" class="pt" />
     <line :x1="PAD" :x2="PAD" :y1="10" :y2="S - PAD" class="axis" />
@@ -39,7 +40,7 @@ const diag = computed(() => Math.min(xMax.value, yMax.value))
 </template>
 
 <style scoped>
-.plot { width: 100%; max-width: 340px; height: auto; display: block; margin: 0 auto; }
+.plot { max-width: 100%; display: block; margin: 0 auto; }
 .pt { fill: #303880; opacity: 0.7; }
 .diag { stroke: #c2410c; stroke-dasharray: 4 3; }
 .axis { stroke: #9aa7b0; }

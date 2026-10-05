@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Forest plot: per-dataset effect ± 95% CI and the pooled estimate (diamond; absent for methods that give only Z).
 const props = defineProps<{ locus: any }>()
-const ROW = 24, LEFT = 170, RIGHT = 150, W = 600
+const ROW = 24, LEFT = 150, RIGHT = 128, W = 450  // sized for a third of the page, beside the locus plot
 const studies = computed(() => props.locus.studies ?? [])
 const pooled = computed(() => props.locus.beta != null && props.locus.se != null)
 const H = computed(() => (studies.value.length + 2) * ROW + 40)
@@ -16,13 +16,16 @@ const sx = (v: number) => LEFT + ((v - range.value[0]) / (range.value[1] - range
 const maxW = computed(() => Math.max(...studies.value.map((s: any) => 1 / s.se ** 2)))
 const box = (s: any) => 3 + 6 * Math.sqrt((1 / s.se ** 2) / maxW.value)
 const yPooled = computed(() => (studies.value.length + 1) * ROW + 14)
+// At most about five ticks on a 1, 2, 5 × 10^k step: the axis is narrow.
 const ticks = computed(() => {
-  const [a, b] = range.value, step = Math.pow(10, Math.floor(Math.log10((b - a) / 4)))
-  const n = (b - a) / step > 8 ? step * 2 : step
+  const [a, b] = range.value, base = Math.pow(10, Math.floor(Math.log10((b - a) / 5)))
+  const n = [1, 2, 5, 10].map(m => m * base).find(s => (b - a) / s <= 5) ?? 10 * base
   const out = []
   for (let t = Math.ceil(a / n) * n; t <= b; t += n) out.push(Number(t.toFixed(6)))
   return out
 })
+// Dataset names longer than the label column are shortened (the full name shows on hover).
+const short = (label: string) => label.length > 24 ? `${label.slice(0, 23)}…` : label
 const ci = (b: number, se: number) => `${b.toFixed(3)} [${lo(b, se).toFixed(3)}, ${hi(b, se).toFixed(3)}]`
 </script>
 
@@ -33,7 +36,7 @@ const ci = (b: number, se: number) => `${b.toFixed(3)} [${lo(b, se).toFixed(3)},
     <line :x1="sx(0)" :x2="sx(0)" y1="22" :y2="H - 26" class="zero" />
     <line v-if="pooled" :x1="sx(locus.beta)" :x2="sx(locus.beta)" y1="22" :y2="H - 26" class="pooled-line" />
     <g v-for="(s, i) in studies" :key="s.id" :transform="`translate(0, ${(i + 1) * ROW + 10})`">
-      <text x="0" y="4" class="lbl">{{ s.label }}</text>
+      <text x="0" y="4" class="lbl"><title>{{ s.label }}</title>{{ short(s.label) }}</text>
       <line :x1="sx(lo(s.beta, s.se))" :x2="sx(hi(s.beta, s.se))" y1="0" y2="0" class="ci" />
       <rect :x="sx(s.beta) - box(s)" :y="-box(s)" :width="2 * box(s)" :height="2 * box(s)" class="box" />
       <text :x="W" y="4" class="val" text-anchor="end">{{ ci(s.beta, s.se) }}</text>

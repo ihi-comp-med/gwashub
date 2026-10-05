@@ -1,0 +1,5 @@
+title: VCF tools (bcftools 1.22 + liftover, gwas2vcf)
+description: >
+  bcftools 1.22 with the liftover plugin, and the edited gwas2vcf in its own Python 3.7 environment, plus the
+  GWASHub runner. Used by Harmonise and liftover. Built for x86-64 because gwas2vcf's pinned libraries have no ARM64 builds.
+platform: linux/amd64

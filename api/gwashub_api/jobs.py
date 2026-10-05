@@ -88,8 +88,14 @@ def meta_spec(db, ma: MetaAnalysis) -> dict:
     from gwashub_api.routers.meta import normalise
     s = normalise(ma.settings)
     image = meta_image(s["method"])
+    # The 1000 Genomes LD panels (resources/build/kg1000_b38.sh) for clumping the lead loci: the chosen super-population's
+    # and the others', which bound loci whose lead has no LD partner in the chosen one.
+    # Plus the genes (genes_b38.tsv.gz) for the locus plots' gene track and each locus's nearest genes.
+    panels = {k: r.storage_path for k, r in services.latest_resources(db, ma.project_id).items()
+              if k.startswith("1kg_b38_") or k == "genes_b38.tsv.gz"}
     return {"kind": "meta", "meta_id": ma.id, "method": s["method"], "inputs": inputs, "params": s["params"].get(s["method"], {}),
-            "common": s["common"], "output": ma.run_dir, "images": {image: settings().images.get(image, {}).get("uri", "local")}}
+            "common": s["common"], "resources": panels, "output": ma.run_dir,
+            "images": {image: settings().images.get(image, {}).get("uri", "local")}}
 
 
 def meta_image(method_key: str) -> str:
@@ -105,7 +111,7 @@ def start_qc(run_id: int):
     db = SessionLocal()
     try:
         run = db.get(QCRun, run_id)
-        run.run_dir = storage.location("results", f"qc/{run.id}")
+        run.run_dir = storage.location("results", f"qc/{run.dataset.project_id}/{run.dataset_id}/{run.id}-{storage.stamp()}")
         spec = qc_spec(db, run)
         titles = services.step_titles()
         run.progress = [{"key": s["step"], "title": titles.get(s["step"], s["step"]), "state": "queued"} for s in spec["steps"]]
@@ -126,7 +132,7 @@ def start_meta(meta_id: int):
     db = SessionLocal()
     try:
         ma = db.get(MetaAnalysis, meta_id)
-        ma.run_dir = storage.location("results", f"meta/{ma.id}")
+        ma.run_dir = storage.location("results", f"meta/{ma.project_id}/{ma.id}-{storage.stamp()}")
         spec = meta_spec(db, ma)
         db.commit()
         if settings().jobs == "batch":
@@ -155,14 +161,20 @@ def _put_spec(spec: dict) -> str:
     return spec_loc
 
 
-def _submit_batch(spec: dict, name: str, image: str, extra_args=(), depends_on: str | None = None, put_spec=True) -> str:
+def _submit_batch(spec: dict, name: str, image: str, extra_args=(), depends_on: str | None = None, put_spec=True,
+                  compute: dict | None = None) -> str:
+    """image_cfg may name its own job queue (x86-64 images run on their own compute environment)."""
     image_cfg = settings().images.get(image)
     if not image_cfg:
         raise RuntimeError(f"No Batch job definition for image {image}; deploy it first (pipeline/images)")
     spec_loc = _put_spec(spec) if put_spec else storage.join(spec["output"], "spec.json")
     kwargs = {"dependsOn": [{"jobId": depends_on, "type": "SEQUENTIAL"}]} if depends_on else {}
-    r = _batch().submit_job(jobName=name, jobQueue=settings().batch_queue, jobDefinition=image_cfg["job_definition"],
-                            containerOverrides={"command": ["python", "-m", "pipeline.runner.aws.batch_entry", spec_loc, *extra_args]},
+    overrides = {"command": ["python", "-m", "pipeline.runner.aws.batch_entry", spec_loc, *extra_args]}
+    if compute:
+        overrides["resourceRequirements"] = [{"type": "VCPU", "value": str(compute["vcpus"])},
+                                             {"type": "MEMORY", "value": str(int(compute["memory_gb"] * 1024))}]
+    r = _batch().submit_job(jobName=name, jobQueue=image_cfg.get("job_queue") or settings().batch_queue,
+                            jobDefinition=image_cfg["job_definition"], containerOverrides=overrides,
                             tags={"gwashub": name}, **kwargs)
     log.info("Submitted %s (%s) as Batch job %s", name, image, r["jobId"])
     return r["jobId"]
@@ -175,7 +187,7 @@ def _submit_qc_groups(spec: dict, run_id: int) -> str:
     previous = None
     for k, g in enumerate(spec["groups"]):
         previous = _submit_batch(spec, f"gwashub-qc-{run_id}-g{k}", g["image"], ["--group", str(k)], depends_on=previous,
-                                 put_spec=False)
+                                 put_spec=False, compute=g.get("compute"))
     return previous
 
 

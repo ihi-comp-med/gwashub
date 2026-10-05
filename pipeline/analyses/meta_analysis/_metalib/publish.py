@@ -1,7 +1,8 @@
-"""GWASHub's post-processing after any meta-analysis method: lead loci, forest-plot data, Manhattan and
-QQ plots, and summary.json, all from the method's meta_results.tsv.gz and the inputs.
+"""GWASHub's post-processing after any meta-analysis method: lead loci (LD clumping, _metalib/loci.py), forest-plot
+data, Manhattan and QQ plots, and summary.json, all from the method's meta_results.tsv.gz and the inputs.
 
-    python publish.py --inputs inputs.json --params common.json --out OUT_DIR --log method_log.json --method KEY
+    python publish.py --inputs inputs.json --params common.json --out OUT_DIR --log method_log.json --method KEY \
+                      [--resources DIR]   # the 1000 Genomes LD panels (1kg_b38_<POP>.*), when uploaded
 """
 import argparse
 import json
@@ -11,18 +12,9 @@ import numpy as np
 import pandas as pd
 
 from _lib.plotting import lambda_gc, make_plots
+from _metalib import loci, regions
 
-COMMON = {"gws": 5e-8, "clump_kb": 500, "het_p_threshold": 1e-3}
-
-
-def clump(res, gws, window):
-    hits = res[res["p"] < gws].sort_values("p")
-    leads = []
-    for row in hits.itertuples(index=False):
-        if any(l.chr == row.chr and abs(l.pos - row.pos) < window for l in leads):
-            continue
-        leads.append(row)
-    return pd.DataFrame(leads, columns=res.columns) if leads else res.iloc[0:0]
+COMMON = {**loci.DEFAULTS, "het_p_threshold": 1e-3}
 
 
 def forest_data(leads, specs):
@@ -49,7 +41,7 @@ def forest_data(leads, specs):
                 if (rsid is None or pd.isna(rsid) or rsid == "") and "rsid" in row and pd.notna(row["rsid"]):
                     rsid = row["rsid"]  # methods needn't output rsids; take one from the inputs
         het = getattr(r, "het_p", None)
-        out.append({"chr": str(r.chr), "pos": int(r.pos), "rsid": None if rsid is None or pd.isna(rsid) else str(rsid), "ea": r.ea, "oa": r.oa,
+        out.append({"locus_id": int(getattr(r, "locus_id", len(out) + 1)), "chr": str(r.chr), "pos": int(r.pos), "rsid": None if rsid is None or pd.isna(rsid) else str(rsid), "ea": r.ea, "oa": r.oa,
                     "beta": None if pd.isna(getattr(r, "beta", np.nan)) else float(r.beta),
                     "se": None if pd.isna(getattr(r, "se", np.nan)) else float(r.se), "p": float(r.p),
                     "i2": None if pd.isna(getattr(r, "i2", np.nan)) else float(r.i2),
@@ -64,11 +56,35 @@ DATASET_COLUMNS = [
     ("variants_in", "Variants in the cleaned (QC'd) file"),
     ("removed_missing_beta_se", "Removed: BETA or SE missing, or SE not positive"),
     ("removed_maf", "Removed: below the method's minimum MAF"),
-    ("removed_palindromic", "Removed: palindromic SNPs (when chosen)"),
     ("variants_used", "Variants passed to the method"),
     ("in_results", "Variants in meta_results.tsv.gz with this dataset contributing"),
-    ("lambda_gc", "λGC of the cleaned file"), ("gc_applied", "λ used for genomic control (SE × √λ), if applied"),
+    ("lambda_gc", "λGC of the cleaned file"),
+    ("lead_loci_covered", "Lead loci (their lead SNP) present in this dataset"),
+    ("direction_agreement", "Share of those lead loci where this dataset's effect has the same sign as the meta-analysis"),
+    ("outlier_loci", "Lead loci where this dataset's effect differs from the pooled effect by more than 3 of its standard errors"),
 ]
+
+
+def lead_locus_agreement(forest, studies):
+    """Per dataset, at the lead loci (forest-plot data): how many it covers, the share with the same effect direction as
+    the pooled estimate, and how many it is an outlier at (|beta - pooled beta| > 3 SE of the dataset's beta)."""
+    by_id = {st.get("id"): st for st in studies}
+    for st in studies:
+        st.update(lead_loci_covered=0, lead_loci_total=len(forest), direction_agreement=None, outlier_loci=None)
+    agree, compared, outliers = {}, {}, {}
+    for f in forest:
+        for x in f["studies"]:
+            st = by_id.get(x["id"])
+            if st is None:
+                continue
+            st["lead_loci_covered"] += 1
+            if f.get("beta") is not None and x.get("se"):
+                compared[x["id"]] = compared.get(x["id"], 0) + 1
+                agree[x["id"]] = agree.get(x["id"], 0) + (np.sign(x["beta"]) == np.sign(f["beta"]))
+                outliers[x["id"]] = outliers.get(x["id"], 0) + (abs(x["beta"] - f["beta"]) / x["se"] > 3)
+    for i, n in compared.items():
+        by_id[i]["direction_agreement"] = round(agree[i] / n, 3)
+        by_id[i]["outlier_loci"] = int(outliers[i])
 
 
 def write_datasets(specs, studies, out):
@@ -89,18 +105,23 @@ RESULT_HELP = {
     "oa": "Other (non-effect) allele: the REF allele", "beta": "Pooled effect of the effect allele", "se": "Standard error of BETA",
     "z": "Pooled Z-score of the effect allele", "p": "P-value", "n_studies": "Number of datasets with this variant",
     "n": "Total sample size over those datasets", "eaf": "Effect-allele frequency, weighted by sample size",
-    "q": "Cochran's Q", "het_p": "Heterogeneity P-value (Cochran's Q)", "i2": "I² (0 to 1)", "tau2": "Between-dataset variance (random effects)",
+    "q": "Cochran's Q", "het_p": "Heterogeneity P-value (Cochran's Q)", "i2": "I² (0 to 1)",
+    "eaf_min": "Smallest effect-allele frequency across datasets", "eaf_max": "Largest effect-allele frequency across datasets",
+    "gender_differentiated_p": "Sex-differentiated P-value (GWAMA --sex)", "gender_heterogeneity_p": "Sex heterogeneity P-value (GWAMA --sex)",
     "direction": "One symbol per dataset, in the order of datasets.tsv: + effect allele raises the trait or risk, - lowers it, ? variant missing",
 }
 
 
-def write_readme(res, specs, a, opts, out):
+def write_readme(res, specs, a, opts, out, how):
     lines = [f"GWASHub meta-analysis: {a.title or a.method} ({a.method})", "",
-             f"{len(specs)} datasets, {len(res):,} variants. Genome-wide threshold P < {opts['gws']:g}; lead loci at least "
-             f"{opts['clump_kb']} kb apart.", "", "Files", "-----",
+             f"{len(specs)} datasets, {len(res):,} variants. Genome-wide threshold P < {opts['gws']:g}; lead loci by {how}.",
+             "", "Files", "-----",
              "meta_results.tsv.gz  one row per variant (columns below)",
              "datasets.tsv         the datasets in input order, the order of the direction column, with how many variants each filter removed",
-             "lead_loci.tsv        the strongest variant of each genome-wide significant locus", "",
+             "lead_loci.tsv        one row per locus (locus_id 1 = strongest): its strongest lead variant, the locus bounds, its lead SNPs",
+             "signals.tsv          every independent significant SNP in a locus, with its locus_id, the lead SNP it clumped under",
+             "                     (lead_snp), and whether it is a lead SNP (is_lead) or the locus's strongest (is_locus_lead)",
+             "region_<id>.json     data for each locus's plot: variants with -log10 P and r² with the lead, signals, genes", "",
              "Columns of meta_results.tsv.gz", "------------------------------"]
     header = pd.read_csv(os.path.join(out, "meta_results.tsv.gz"), sep="\t", nrows=0).columns  # as the method wrote it
     lines += [f"{c:<12} {RESULT_HELP.get(c, '')}" for c in header]
@@ -117,6 +138,7 @@ def main():
     for a in ("--inputs", "--params", "--out", "--log", "--method"):
         ap.add_argument(a, required=True)
     ap.add_argument("--title", default="")
+    ap.add_argument("--resources", default="")
     a = ap.parse_args()
     with open(a.inputs) as f:
         specs = json.load(f)
@@ -135,11 +157,16 @@ def main():
     if "direction" not in res.columns:
         res["direction"] = ""
 
-    leads = clump(res, opts["gws"], opts["clump_kb"] * 1000)
+    work = os.path.join(a.out, "_loci_work")
+    leads, signals, loci_info = loci.define_loci(res, opts, a.resources, work)
+    leads = regions.annotate_genes(leads, regions.load_genes(a.resources))
+    region_files = regions.write_regions(res, leads, signals, a.resources, opts, a.out, work)
+    __import__("shutil").rmtree(work, ignore_errors=True)
     forest = forest_data(leads, specs)
     if len(leads):
         leads = leads.assign(rsid=[f["rsid"] for f in forest])
     leads.to_csv(os.path.join(a.out, "lead_loci.tsv"), sep="\t", index=False, float_format="%.6g")
+    signals.to_csv(os.path.join(a.out, "signals.tsv"), sep="\t", index=False, float_format="%.6g")
     with open(os.path.join(a.out, "forest.json"), "w") as f:
         json.dump(forest, f)
     lam, _ = make_plots(res, a.out, gws=opts["gws"], title=f"Meta-analysis ({len(specs)} datasets, {a.title or a.method})")
@@ -153,22 +180,32 @@ def main():
             lam_s = lambda_gc(df["p"]) if len(df) else float("nan")
             studies.append({"id": s["id"], "label": s["label"], "variants_in": len(df), "lambda_gc": round(lam_s, 4) if np.isfinite(lam_s) else None})
     # Variants each dataset contributed to the results: its symbol in the direction string isn't "?".
+    for st, s in zip(studies, specs):
+        st.setdefault("qc_run_id", s.get("qc_run_id"))
+    lead_locus_agreement(forest, studies)
     dirs = res["direction"].fillna("").astype(str)
     if dirs.str.len().eq(len(specs)).all() and len(dirs):
         for i, st in enumerate(studies):
             st["in_results"] = int((dirs.str[i] != "?").sum())
     write_datasets(specs, studies, a.out)
-    write_readme(res, specs, a, opts, a.out)
+    how = (f"LD clumping against the 1000 Genomes {opts['ld_panel']} panel (r² < {opts['iss_r2']}, then < {opts['lead_r2']}; "
+           f"loci bounded by each lead's LD cloud and merged within {opts['merge_kb']} kb)"
+           if loci_info["loci_method"] == "clumping" else f"a {opts['boundary_kb']} kb distance window (no LD panel uploaded)")
+    write_readme(res, specs, a, opts, a.out, how)
     n_het = int((pd.to_numeric(leads["het_p"], errors="coerce") < opts["het_p_threshold"]).sum()) if len(leads) else 0
     summary = {
         "n_datasets": len(specs), "method": a.method, "method_title": a.title, "n_variants": int(len(res)),
         "n_genome_wide_sig": int((res["p"] < opts["gws"]).sum()), "n_loci": int(len(leads)), "n_loci_heterogeneous": n_het,
-        "lambda_gc": None if not np.isfinite(lam) else round(lam, 4), "studies": studies,
+        "lambda_gc": None if not np.isfinite(lam) else round(lam, 4), "studies": studies, **loci_info,
+        "n_region_files": len(region_files), "gene_track": regions.load_genes(a.resources) is not None,
     }
     with open(os.path.join(a.out, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2, default=float)
-    messages = list(mlog.get("messages") or []) + [f"{len(leads)} genome-wide significant loci (P < {opts['gws']:g})."
+    messages = list(mlog.get("messages") or []) + [f"{len(leads)} genome-wide significant loci (P < {opts['gws']:g}; {how})."
                                                   + (f" {n_het} show significant heterogeneity." if n_het else "")]
+    if loci_info.get("n_gws_not_in_panel"):
+        messages.append(f"{loci_info['n_gws_not_in_panel']:,} genome-wide significant variants aren't in the LD panel and "
+                        "couldn't be clumped.")
     verdict = "warn" if n_het or mlog.get("verdict") == "warn" else "pass"
     with open(a.log, "w") as f:
         json.dump({**mlog, "verdict": verdict, "messages": messages,

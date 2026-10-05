@@ -22,6 +22,7 @@ import posixpath
 import shutil
 import subprocess
 import sys
+import uuid
 
 from pipeline.runner import executor
 from pipeline.runner.catalog import QC_STEPS_DIR, load_steps
@@ -186,31 +187,49 @@ def run_qc(spec, workdir, on_step=None, group=None):
 
 # ---------- meta-analysis ----------
 
-def run_method(method, inputs, params, common, local_out):
+def run_method(method, inputs, params, common, local_out, resources=None):
     """Run one meta-analysis method (analysis.yaml) and then GWASHub's post-processing in local_out.
-    inputs: [{id, label, path (local), n_cases, n_controls, ancestry, sex}]. Returns the result dict."""
+    inputs: [{id, label, path (local), n_cases, n_controls, ancestry, sex}]. resources: a folder with the 1000 Genomes
+    LD panels (1kg_b38_<POP>.*) for clumping the lead loci, if any. Returns the result dict."""
     from pipeline.runner.catalog import META_ANALYSIS_DIR
-    from pipeline.runner.executor import _interpreter
+    from pipeline.runner.executor import _interpreter, docker_command, step_runner
     os.makedirs(local_out, exist_ok=True)
+    inputs = [{**i, "path": os.path.realpath(i["path"])} for i in inputs]
     for name, obj in (("inputs.json", inputs), ("params.json", params), ("common.json", common)):
         with open(os.path.join(local_out, name), "w") as f:
             json.dump(obj, f, indent=2)
     log = os.path.join(local_out, "log.json")
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([META_ANALYSIS_DIR, QC_STEPS_DIR]),
            "MPLCONFIGDIR": os.environ.get("MPLCONFIGDIR", "/tmp/gwashub-mpl")}
-    cmd = [*_interpreter(method.command[:-1]), os.path.join(method.workdir, method.command[-1])] if len(method.command) > 1 \
-        else [os.path.join(method.workdir, method.command[0])]
-    proc = subprocess.run([*cmd, "--inputs", os.path.join(local_out, "inputs.json"), "--params", os.path.join(local_out, "params.json"),
-                           "--out", local_out, "--log", log], cwd=method.workdir, env=env, capture_output=True, text=True)
+    args = ["--inputs", os.path.join(local_out, "inputs.json"), "--params", os.path.join(local_out, "params.json"),
+            "--out", local_out, "--log", log]
+    if step_runner() == "docker":  # locally, in the method's image (GWAMA and METAL live there)
+        argv = docker_command(method.image, method.command, method.workdir, args, env, f"gwashub-meta-{uuid.uuid4().hex[:12]}",
+                              writable=[local_out], readable=[i["path"] for i in inputs],
+                              pythonpath=("analyses/meta_analysis", "qc_steps"))
+    else:
+        cmd = [*_interpreter(method.command[:-1]), os.path.join(method.workdir, method.command[-1])] if len(method.command) > 1 \
+            else [os.path.join(method.workdir, method.command[0])]
+        argv = [*cmd, *args]
+    proc = subprocess.run(argv, cwd=method.workdir, env=env, capture_output=True, text=True)
     if proc.returncode != 0 or not os.path.exists(os.path.join(local_out, "meta_results.tsv.gz")):
         return {"status": "failed", "method": method.key, "error": (proc.stderr[-2000:] or proc.stdout[-2000:] or "the method wrote no results")}
     if not os.path.exists(log):
         with open(log, "w") as f:
             json.dump({"method": method.key, "verdict": "pass", "metrics": {}, "messages": []}, f)
-    pub = subprocess.run([sys.executable, os.path.join(META_ANALYSIS_DIR, "_metalib", "publish.py"), "--inputs",
-                          os.path.join(local_out, "inputs.json"), "--params", os.path.join(local_out, "common.json"),
-                          "--out", local_out, "--log", log, "--method", method.key, "--title", method.title],
-                         env=env, capture_output=True, text=True)
+    publish_dir = os.path.join(META_ANALYSIS_DIR, "_metalib")
+    pub_args = ["--inputs", os.path.join(local_out, "inputs.json"), "--params", os.path.join(local_out, "common.json"),
+                "--out", local_out, "--log", log, "--method", method.key, "--title", method.title,
+                *(["--resources", resources] if resources else [])]
+    if step_runner() == "docker":  # clumping needs PLINK 2, which every image built FROM gwashub/base has
+        staged = [os.path.join(resources, f) for f in sorted(os.listdir(resources))] if resources else []
+        pub_argv = docker_command(method.image, ["python", "publish.py"], publish_dir, pub_args, env,
+                                  f"gwashub-publish-{uuid.uuid4().hex[:12]}", writable=[local_out],
+                                  readable=[i["path"] for i in inputs] + ([resources] if resources else []) + staged,
+                                  pythonpath=("analyses/meta_analysis", "qc_steps"))
+    else:
+        pub_argv = [sys.executable, os.path.join(publish_dir, "publish.py"), *pub_args]
+    pub = subprocess.run(pub_argv, cwd=publish_dir, env=env, capture_output=True, text=True)
     if pub.returncode != 0:
         return {"status": "failed", "method": method.key, "error": "Post-processing failed: " + (pub.stderr[-2000:] or pub.stdout[-2000:])}
     with open(os.path.join(local_out, "summary.json")) as f:
@@ -222,13 +241,13 @@ def run_method(method, inputs, params, common, local_out):
 
 def run_meta(spec, workdir):
     """Meta-analysis spec: {"kind": "meta", "method": "<owner>/<method>", "inputs": [{id, label, loc, ...}],
-    "params": {...}, "common": {gws, clump_kb, het_p_threshold}, "output": LOC}."""
+    "params": {...}, "common": {gws, ld_panel, ...}, "resources": {key: LOC} (the LD panels), "output": LOC}."""
     from pipeline.runner.catalog import load_analyses
     output = spec["output"]
     local_out = output if not output.startswith("s3://") else os.path.join(workdir, "out")
     os.makedirs(local_out, exist_ok=True)
     methods = load_analyses()
-    key = spec.get("method", "gwashub/ivw")
+    key = spec.get("method", "gwashub/gwama")
     if key not in methods:
         result = {"status": "failed", "method": key, "error": f"Unknown meta-analysis method {key}"}
     else:
@@ -236,7 +255,12 @@ def run_meta(spec, workdir):
         for i, item in enumerate(spec["inputs"]):
             path = fetch(item["loc"], os.path.join(workdir, "_inputs", f"{i:03d}_{item['id']}.tsv"))
             inputs.append({k: v for k, v in item.items() if k != "loc"} | {"path": path})
-        result = run_method(methods[key], inputs, spec.get("params") or {}, spec.get("common") or {}, local_out)
+        res_dir = None
+        if spec.get("resources"):
+            res_dir = os.path.join(workdir, "_resources")
+            for rkey, loc in spec["resources"].items():
+                fetch(loc, os.path.join(res_dir, rkey))
+        result = run_method(methods[key], inputs, spec.get("params") or {}, spec.get("common") or {}, local_out, res_dir)
     if spec.get("images"):
         result["images"] = spec["images"]
     with open(os.path.join(local_out, "result.json"), "w") as f:

@@ -17,22 +17,24 @@ pipeline/qc_steps/<consortium>/
     test_<step>.py              a test that runs the script on a small table
 ```
 
-`<consortium>` and `<step>` are lower-case with underscores, e.g. `hcm/sarcomere_filter`. The step's key
+`<consortium>` and `<step>` are lower-case with underscores, e.g. `hermes/exclusion_regions`. The step's key
 in pipelines is `<consortium>/<step>`. Examples: `pipeline/qc_steps/custom_example/hello_world/` (the smallest
-possible Python step: a console message, a log message and an image artifact) and `pipeline/qc_steps/hcm/` (R).
+possible Python step: a console message, a log message and an image artifact) and the default steps in
+`pipeline/qc_steps/gwashub/` (`parse` and `filter` are R).
 
 ```yaml
-name: sarcomere_filter               # must match the folder name
-title: Sarcomere-variant filter
+name: exclusion_regions             # must match the folder name
+title: Exclusion regions
 description: One or two sentences on what it removes or checks.
-command: [Rscript, sarcomere_filter.R]   # or [python, my_step.py]
+command: [Rscript, exclusion_regions.R]   # or [python, my_step.py]
 image: gwashub/base-r                # an image from pipeline/images (see 4)
 default_on_fail: flag                # block (stop the pipeline) | flag (mark for review) | continue (ignore)
-resources: [sarcomere_genes_grch38.bed]  # reference files it needs (project or shared resources)
+resources: [exclusion_regions_grch38.bed]  # reference files it needs (project or shared resources)
 params:                              # optional; reviewers can change them per project (see below)
   - {key: window_kb, label: Window around each gene (kb), type: integer, min: 0, max: 5000, default: 500,
      help: Variants this close to a listed gene are removed too}
 always_run: false                    # true only for steps that must run after a block (like the report)
+compute: {vcpus: 2, memory_gb: 16}   # optional: what the step needs on AWS Batch (default 2 vCPUs, 8 GB)
 ```
 
 `params` is a list of typed fields. The pipeline editor draws a form from it, and GWASHub rejects values of the
@@ -56,8 +58,12 @@ The runner calls your script as
 <command> --input working.tsv --resources <dir> --params params.json --log step_log.json
 ```
 
-- `--input` is the dataset so far: tab-separated, with the standard columns `chr pos ea oa beta se p`
-  (and `eaf n rsid info` when present). Rewrite it in place to remove or change rows.
+- `--input` is the dataset so far in the **GWASHub format**: tab-separated, `NA` for missing values, the columns
+  `chr pos ea oa beta se p` and, when the upload or the study details give them, `eaf n ncase ncontrol rsid info`
+  (`_lib/common.py` `STANDARD`). Rewrite it in place to remove or change rows, and write the same format back:
+  no other columns, chromosomes 1-22, X, Y. Only `gwashub/parse`, the first step, reads the upload as received.
+  Positions are in the uploaded build until `gwashub/harmonise_liftover`; after it they are GRCh38 with the effect
+  allele = ALT, so put steps that need GRCh38 (like a filter on GRCh38 regions) after it.
 - `--resources` holds only the reference files your `step.yaml` declares: `resources:` are required (the run
   fails without them), `optional_resources:` are staged when available (the step must cope without them, as
   `gwashub/ldsc` does). Reference files are uploaded by a platform admin, so list any new ones in the pull
@@ -66,7 +72,7 @@ The runner calls your script as
   your step's parameters.
 - `--log`: write JSON like
   ```json
-  {"step": "sarcomere_filter", "verdict": "pass", "metrics": {"rows_removed": 12},
+  {"step": "exclusion_regions", "verdict": "pass", "metrics": {"rows_removed": 12},
    "messages": ["Removed 12 variants in 2 regions."], "artifacts": [{"type": "table", "path": "removed.tsv", "label": "Removed variants"}]}
   ```
   `verdict` is `pass`, `warn` or `fail`. Artifact files go in `$GWASHUB_ARTIFACT_DIR`; everything written
@@ -79,9 +85,10 @@ working file, writing the log); R steps follow the same contract by hand.
 
 ## 3. Tests
 
-`test_<step>.py` runs the script on a few rows and checks the output and the log (see
-`pipeline/qc_steps/hcm/sarcomere_filter/test_sarcomere_filter.py`; Python steps can use
-`_lib.testing.run_step`). Run everything with `.venv/bin/python -m pytest`.
+`test_<step>.py` runs the script on a few rows and checks the output and the log with `_lib.testing.run_step`, which
+runs the step in its image as the pipeline does; mark the test with `needs_image("<owner>/<image>")` so it skips on
+machines without the images (see `pipeline/qc_steps/gwashub/filter/test_filter.py`). Build the images with `./devtools/build_images.sh`, then run
+everything with `.venv/bin/python -m pytest`.
 
 ## 4. Images
 
@@ -89,8 +96,10 @@ Steps run in the image named in `step.yaml`. Use an existing one if you can:
 
 | Image | Contents |
 |---|---|
-| `gwashub/base` | Python 3.12, pandas, numpy, scipy, matplotlib (the default steps) |
+| `gwashub/base` | Python 3.12, pandas, numpy, scipy, matplotlib |
 | `gwashub/base-r` | `gwashub/base` plus R with data.table and jsonlite |
+| `gwashub/vcf` | bcftools 1.22 with the liftover plugin, and gwas2vcf in its own Python 3.7 environment (x86-64) |
+| `gwashub/ldsc` | the LDSC software from its authors (bulik/ldsc) in its own Python 2.7 environment (x86-64) |
 
 If your step needs more, add `pipeline/images/<consortium>/<image>/Dockerfile` (plus an optional
 `image.yaml` with `title` and `description`). It must start `FROM gwashub/base` or `FROM gwashub/base-r`,
@@ -104,7 +113,9 @@ USER gwashub
 ```
 
 Images are built for ARM64 (AWS Graviton) and pinned by digest at deploy time; each run records the
-image digests it used. Consecutive steps that share an image run together as one job; each change of
+image digests it used. Software with no ARM64 build can use an x86-64 image instead: add `platform: linux/amd64` to
+`image.yaml` (as `gwashub/vcf` and `gwashub/ldsc` do; their Dockerfiles repeat `gwashub/base` because that image is
+ARM64). Those jobs run on a separate x86-64 compute environment. Consecutive steps that share an image run together as one job; each change of
 image starts another job, which adds a few minutes to a run.
 
 ## 5. The pull request
@@ -116,8 +127,7 @@ it's merged, the next deploy makes the step available.
 ## 6. Contributing a meta-analysis method
 
 Meta-analysis methods live in `pipeline/analyses/meta_analysis/<owner>/<method>/`. GWASHub's own are in
-`gwashub/`: `ivw` (GWASHub's inverse-variance method, the default), `gwama` (a wrapper around GWAMA 2.2.2) and
-`metal` (a wrapper around METAL). A consortium adds its own in `pipeline/analyses/meta_analysis/<consortium>/`;
+`gwashub/`: `gwama` (a wrapper around GWAMA 2.2.2, the default) and `metal` (a wrapper around METAL). A consortium adds its own in `pipeline/analyses/meta_analysis/<consortium>/`;
 once merged and deployed, every project can choose it when starting a meta-analysis. The smallest example is
 `custom_example/custom_meta_analysis` (a weighted Z-score method in about 40 lines).
 
@@ -153,10 +163,13 @@ The method is called once per meta-analysis, in the method's folder, as
 - `params.json` holds the method's own parameters, already checked against `analysis.yaml`.
 - Write `OUT_DIR/meta_results.tsv.gz` (tab-separated, gzipped) with one row per variant and the columns
   `chr pos ea oa p n_studies` plus either `beta se` or `z`. Optional: `rsid eaf n i2 het_p direction`.
-- Write `--log` as JSON: `{"verdict": "pass", "metrics": {}, "messages": [], "studies": []}`.
+- Write `--log` as JSON: `{"verdict": "pass", "metrics": {}, "messages": [], "studies": [], "files": []}`. `files` lists
+  files the method wrote in `OUT_DIR` for download with the results, such as the program's own log:
+  `[{"path": "gwama_log.txt", "label": "GWAMA log"}]` (file names only, no folders).
 - Exit 0 when it ran. No network calls, no database.
 
-GWASHub then does the rest for every method: lead loci (with the project's significance threshold and window),
+GWASHub then does the rest for every method: lead loci (LD clumping against the 1000 Genomes panels, `_metalib/loci.py`) with
+their independent signals, nearest genes and locus plots (`_metalib/regions.py`),
 forest plots, Manhattan and QQ plots, λGC, the summary, `datasets.tsv` (the datasets in direction-string order
 with how many variants each filter removed) and a `README.txt` describing the columns. If your log's `studies`
 entries carry counts such as `variants_in`, `removed_<reason>` and `variants_used` (as `_metalib.common.load_study`

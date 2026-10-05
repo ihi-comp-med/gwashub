@@ -28,12 +28,6 @@ def images() -> dict:
     return load_images(settings().images_dir)
 
 
-def cache_dir():
-    d = os.path.join(settings().data_dir, "cache")
-    os.makedirs(d, exist_ok=True)
-    return d
-
-
 def step_info(sd: StepDef) -> dict:
     return {"key": sd.key, "owner": sd.owner, "title": sd.title, "description": sd.description, "image": sd.image,
             "on_fail": sd.default_on_fail, "resources": sd.resources, "optional_resources": sd.optional_resources, "params": sd.params,

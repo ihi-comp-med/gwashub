@@ -22,8 +22,9 @@ def lambda_gc(p):
 
 
 def make_plots(df, out_dir, gws=5e-8, max_points=6000, title=None):
-    """df needs chr, pos, p. Writes manhattan.png, qq.png, plot_data.json. Returns (lambda, n)."""
-    df = df[["chr", "pos", "p"]].dropna().copy()
+    """df needs chr, pos, p (rsid optional: shown when hovering the interactive plot). Writes manhattan.png, qq.png,
+    plot_data.json. Returns (lambda, n)."""
+    df = df[["chr", "pos", "p", *(["rsid"] if "rsid" in df else [])]].dropna(subset=["chr", "pos", "p"]).copy()
     df["chr"] = df["chr"].astype(str)
     df = df[df["chr"].isin([str(i) for i in range(1, 23)] + ["X"])]
     df["cn"] = df["chr"].map(lambda c: 23 if c == "X" else int(c))
@@ -78,6 +79,7 @@ def make_plots(df, out_dir, gws=5e-8, max_points=6000, title=None):
         json.dump({
             "manhattan": {"x": sample["x"].round(0).astype(int).tolist(), "y": sample["logp"].round(3).tolist(),
                           "chr": sample["cn"].tolist(), "pos": sample["pos"].astype(int).tolist(),
+                          **({"rsid": sample["rsid"].fillna("").astype(str).tolist()} if "rsid" in sample else {}),
                           "ticks": [{"chr": "X" if c == 23 else str(c), "x": int(x)} for c, x in ticks], "x_max": int(off)},
             "qq": {"expected": exp[qq_idx].round(3).tolist(), "observed": obs[qq_idx].round(3).tolist(),
                    "lambda": None if np.isnan(lam) else round(lam, 4)},

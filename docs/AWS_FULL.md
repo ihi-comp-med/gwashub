@@ -11,7 +11,7 @@ How the AWS version of GWASHub is built, deployed and run. The design and its re
 | Website | S3 + CloudFront | Static files from `nuxt generate`. Address: `https://<id>.cloudfront.net` until a domain is added |
 | API | ECS Fargate (Graviton) behind an **internal** load balancer | Reached only through CloudFront (`/api/*`, VPC origin). No public address |
 | Worker | ECS Fargate | Reads Batch job events from SQS and records results in the database |
-| QC runs and meta-analyses | AWS Batch on EC2 Graviton (m7g/r7g, Spot), scales to zero | One job per *image group* of a run (below); `python -m pipeline.runner.aws.batch_entry s3://.../spec.json --group N` |
+| QC runs and meta-analyses | AWS Batch on EC2 Spot, scales to zero: Graviton (m7g/r7g) for arm64 images, queue `gwashub-<env>`; Intel (m7i/r7i) for x86-64 images, queue `gwashub-<env>-x86`. Jobs get a 200 GB (dev) / 500 GB (prod) encrypted volume and a 12 h timeout | One job per *image group* of a run (below); `python -m pipeline.runner.aws.batch_entry s3://.../spec.json --group N` |
 | Files | S3: uploads, results, resources buckets | KMS-encrypted, versioned, private, TLS only. Browsers upload straight to S3 in 64 MB parts |
 | Metadata | RDS PostgreSQL 16 | Private subnets, encrypted, automated backups, deletion protection. Schema by Alembic (`api/migrations`) |
 | Sign-in | Amazon Cognito | Invite-only, password + authenticator app (MFA) for everyone |
@@ -20,24 +20,29 @@ How the AWS version of GWASHub is built, deployed and run. The design and its re
 
 **Images.** The API and worker run `gwashub/app` (ECR), built from `images/app/Dockerfile`. QC steps run in
 the pipeline images from `pipeline/images/<owner>/<image>/` (ECR repositories `gwashub-images/<owner>/<image>`):
-`gwashub/base` (Python, the default steps), `gwashub/base-r` (adds R), and `gwashub/gwama` and
-`gwashub/metal` (the meta-analysis programs, compiled from pinned, checksummed releases); consortium images
-build `FROM` them. A meta-analysis runs as one Batch job in its method's image (`analysis.yaml`). Everything is built for arm64 by the deploy script, and each pipeline image gets its own Batch job
-definition pinned by digest. Each run's `result.json` records the image digests it used.
+`gwashub/base` (Python, PLINK 2, bcftools), `gwashub/base-r` (adds R), `gwashub/vcf` (gwas2vcf + bcftools
+liftover; x86-64), `gwashub/ldsc` (the authors' LDSC, Python 2.7; x86-64), and `gwashub/gwama` and `gwashub/metal`
+(the meta-analysis programs, compiled from pinned, checksummed releases); consortium images build `FROM` them. A
+meta-analysis runs as one Batch job in its method's image (`analysis.yaml`). The deploy script builds each image for
+the platform in its `image.yaml` (arm64 unless it says `linux/amd64`), and each pipeline image gets its own Batch job
+definition pinned by digest, on the queue for its platform. Each run's `result.json` records the image digests it used.
+ECR keeps the 5 newest images per repository and drops untagged ones after a day (lifecycle policy, set by the
+deploy script); an older image a past run used can be rebuilt from git at that commit.
 
 **Image groups.** Consecutive steps that use the same image run as one Batch job in that image; a new
 job starts only where the image changes, and each job depends on the previous one (Batch job
-dependencies). The default pipeline is one job; HCM's (an R step in the middle) is three. Between jobs,
-the working file and run state pass through `results/qc/<run>/_state/`.
+dependencies). The default pipeline is four jobs (`gwashub/base-r`, `gwashub/vcf`, `gwashub/ldsc`, `gwashub/base`).
+Each job is sized from its steps' `compute:` in `step.yaml` (the largest vCPU and memory among them), passed to Batch
+as overrides. Between jobs, the working file and run state pass through `results/qc/<project>/<dataset>/<run>-<time>/_state/`.
 
 ### How a QC run flows
 
 1. The browser asks the API to start an upload; the API creates the dataset (status *uploading*) and an
    S3 multipart upload, then hands out short-lived presigned URLs for each part.
 2. The browser PUTs the parts straight to S3 (4 at a time, with retries) and tells the API it's done.
-3. The API writes a job spec to `results/qc/<run>/spec.json` and submits one Batch job per image group.
+3. The API writes a job spec to `results/qc/<project>/<dataset>/<run>-<time>/spec.json` and submits one Batch job per image group.
 4. Each job downloads what it needs (input or hand-over state, the pinned reference files), runs its
-   steps, and writes outputs and `progress.json` (live step states) to `results/qc/<run>/`; the last
+   steps, and writes outputs and `progress.json` (live step states) to `results/qc/<project>/<dataset>/<run>-<time>/`; the last
    writes `result.json`.
 5. Batch's state changes go through EventBridge to SQS; the worker records the run when its last job
    succeeds (or as failed when any job fails). Every 5 minutes it also asks Batch about unfinished runs.
@@ -105,8 +110,8 @@ The first deploy takes 25–35 minutes (database and CloudFront); later ones 5�
 is printed at the end and saved in `infra/cdk-outputs-dev.json` (git-ignored; the admin, tunnel and
 bookmarks scripts read it). `GWASHUB_IMAGE_TAG=<tag>` redeploys images already in ECR without rebuilding.
 
-**dev today:** https://d3ap1iypuvmxl8.cloudfront.net (gwashub-dev). The demo projects were seeded with
-`seed-demo`; the HCM pipeline (an R step in the middle) runs as three Batch jobs.
+**dev today:** https://d3ap1iypuvmxl8.cloudfront.net (gwashub-dev). The database was reset on 2026-10-05: one
+project (`testing`), no demo data, and the real reference files registered as shared resources (dbSNP to follow).
 
 ## Running it
 
@@ -137,6 +142,18 @@ for platform admins, bulk changes and fixes:
 first sign-in the person sets their own password and registers an authenticator app. To remove
 someone completely, disable them in Cognito (console: Cognito → User pools → gwashub-dev → Users) and
 remove their project memberships.
+
+**Real reference files** (tens of GB, too big for the website's upload dialog) go up from your Mac and are then
+registered as shared resources, described by their `resources/catalog.yaml` entries:
+
+```bash
+python devtools/aws_upload_resources.py dev            # every file in local/resources/BUILT.tsv; skips files already there
+./devtools/aws_admin.sh dev add-resources s3://…/resources/shared/_manifests/<time>.json   # printed by the line above
+```
+
+Files land at `resources/shared/<key>/<sha256 prefix>/<key>`; a file whose sha256 matches the latest version is not
+registered again. The manifest stays in the bucket, so after a database reset the same `add-resources` line
+registers them again without uploading anything.
 
 ### Browsing the database from PyCharm
 
@@ -193,8 +210,9 @@ The AWS Organizations pages only work from the management account.
 
 | To see | Go to |
 |---|---|
-| Uploaded files | S3 → bucket `gwashub-dev-data-uploads…` → `uploads/<project>/<dataset id>/` |
-| QC outputs | S3 → `gwashub-dev-data-results…` → `qc/<run id>/` (`result.json`, `gwas_qc.tsv`, `steps/`) |
+| Uploaded files | S3 → bucket `gwashub-dev-data-uploads…` → `uploads/<project>/<dataset id>-<time>/` |
+| QC outputs | S3 → `gwashub-dev-data-results…` → `qc/<project>/<dataset id>/<run id>-<time>/` (`result.json`, `gwas_qc.tsv`, `steps/`); meta-analyses in `meta/<project>/<id>-<time>/` |
+| A user's problem | Ask them for the **reference** at the bottom of the dataset panel or meta-analysis page (copy button): it names the project, dataset, run and the exact folder |
 | Metadata (database) | PyCharm / DataGrip / psql through the tunnel above (the RDS console has no data browser for plain Postgres) |
 | QC jobs | Batch → Jobs → queue `gwashub-dev` |
 | Logs | CloudWatch → Log groups → `/gwashub/dev/app` |
@@ -210,8 +228,7 @@ The AWS Organizations pages only work from the management account.
 - **Malware scanning** of uploads (GuardDuty Malware Protection for S3), S3 access logs and CloudTrail
   data events for the buckets.
 - **Alarms**: API 5xx, failed jobs, dead-letter queue messages, budget.
-- **Real reference data** (UCSC chain file, 1000 Genomes / gnomAD panel): the dev environment uses the synthetic ones.
 - **CI/CD** with GitHub Actions and OIDC; deploys run from a laptop for now.
 - **Cognito Plus** (compromised-credential checks, adaptive authentication) costs extra per user; Essentials is used.
 - Read-only root filesystem for the API and worker containers (needs a scratch volume owned by the app user).
-- Batch jobs get 2 vCPU / 8 GB. Large real files will need more; set per job from the file size.
+- Job sizes come from each step's `compute:`; they don't yet scale with the size of the uploaded file.

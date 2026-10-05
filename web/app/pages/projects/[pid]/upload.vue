@@ -97,11 +97,15 @@ const standardFields = [
   { key: 'beta', label: 'Effect (BETA or OR)', required: true },
   { key: 'se', label: 'Standard error', required: true },
   { key: 'p', label: 'P-value', required: true },
+  { key: 'log10p', label: '-log10 P (if there is no P-value)', required: false },
   { key: 'n', label: 'Sample size', required: false },
+  { key: 'ncase', label: 'Number of cases', required: false },
+  { key: 'ncontrol', label: 'Number of controls', required: false },
   { key: 'info', label: 'Imputation INFO', required: false },
 ]
 const mapping = reactive<Record<string, string | null>>({})
-const unmappedRequired = computed(() => standardFields.filter(f => f.required && !mapping[f.key]).map(f => f.label))
+// A P-value column or a -log10 P column will do.
+const unmappedRequired = computed(() => standardFields.filter(f => f.required && !mapping[f.key] && !(f.key === 'p' && mapping.log10p)).map(f => f.label))
 const unmappedColumns = computed(() => (suggestion.value?.columns ?? []).filter((c: string) => !Object.values(mapping).includes(c)))
 
 // Step 4: upload in parts (straight to S3 on AWS), then QC starts and we go to the dataset.

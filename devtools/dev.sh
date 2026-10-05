@@ -6,6 +6,10 @@ cd "$(dirname "$0")/.."
 PY=.venv/bin/python
 [ -x "$PY" ] || { /opt/homebrew/bin/python3.12 -m venv .venv && .venv/bin/pip install -q -r requirements.txt; }
 [ -d web/node_modules ] || (cd web && npm install)
+# QC steps run in their images (R, bcftools, gwas2vcf and LDSC aren't on this machine); build any that are missing.
+MISSING=$($PY -c "from pipeline.runner.catalog import load_images; from pipeline.runner.executor import missing_local_images; print(' '.join(missing_local_images(load_images())))")
+[ -z "$MISSING" ] || ./devtools/build_images.sh $MISSING
+export GWASHUB_STEP_RUNNER=docker
 if [ "${1:-}" = "--fresh" ]; then
   $PY -m devtools.synth
   $PY -m devtools.seed

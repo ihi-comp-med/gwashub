@@ -1,110 +1,122 @@
-"""LD score regression intercept.
+"""LD score regression (GWASHub default step) with the authors' software: bulik/ldsc (Bulik-Sullivan et al. 2015),
+pinned in the gwashub/ldsc image and run unchanged in its Python 2.7 environment. GWASHub format in and out
+(the working file isn't changed).
 
-Regresses each variant's χ² (from BETA/SE) on its LD score: E[χ²] = N·h²·ℓ/M + intercept. An intercept
-near 1 means the inflation is polygenic signal; well above 1 points to confounding or stratification.
+    munge_sumstats.py --merge-alleles w_hm3.snplist   (LDSC's own defaults: INFO >= 0.9, MAF >= 0.01)
+    ldsc.py --h2 ... --ref-ld UKBB.<POP> --w-ld UKBB.<POP>
 
-Reference: ldscores_<POP>.tsv(.gz) in --resources, tab-separated with columns chr, pos (GRCh38) and l2
-(an optional rsid column is ignored). Populations follow Pan-UK Biobank: AFR, AMR, CSA, EAS, EUR, MID;
-GWASHub's SAS maps to CSA. When it can't run (no matching reference uploaded yet, a multi-ancestry dataset,
-too few overlapping variants, no sample size) the step *passes* with a message saying why, so it never
-holds a dataset up; only a high intercept gives a warning.
-
-Weights follow the LDSC software: 1 / (ℓ · 2·E[χ²]²), refined twice; the intercept's standard error is a
-block jackknife over contiguous blocks of variants.
+An intercept near 1 means the inflation is polygenic signal; well above 1 points to confounding or stratification.
+Reference: Pan-UK Biobank LD scores in LDSC format for the dataset's ancestry (UKBB.<POP>.l2.ldscore.gz and
+UKBB.<POP>.l2.M_5_50; POP = AFR, AMR, CSA, EAS, EUR, MID, with GWASHub's SAS as CSA) and the HapMap 3 SNP list
+w_hm3.snplist. When it can't run (reference not uploaded, an ancestry with no reference, no rsIDs) the step passes
+and says why, so it never holds a dataset up; a high intercept gives a warning.
 """
+import gzip
 import os
-
-import numpy as np
-import pandas as pd
+import re
+import subprocess
+import tempfile
 
 from _lib.common import load_params, parse_args, read_working, step_params, write_log
 
-DEFAULTS = {"warn_intercept": 1.1, "min_snps": 5000, "jackknife_blocks": 200}
-POPULATION = {"EUR": "EUR", "AFR": "AFR", "EAS": "EAS", "SAS": "CSA", "AMR": "AMR", "CSA": "CSA", "MID": "MID"}
+DEFAULTS = {"warn_intercept": 1.1, "info_min": 0.9, "maf_min": 0.01, "n_blocks": 200}
+POPULATION = {"EUR": "EUR", "AFR": "AFR", "AMR": "AMR", "EAS": "EAS", "SAS": "CSA", "CSA": "CSA", "MID": "MID"}
+SNPLIST = "w_hm3.snplist"
 
 
-def fit(chi2, l2, n_bar, m):
-    """Weighted least squares of χ² on LD score, with the LDSC heteroskedasticity weights. Returns (intercept, slope)."""
-    l2c = np.maximum(l2, 1.0)
-    w = 1 / l2c
-    for _ in range(3):
-        x = np.column_stack([np.ones_like(l2), l2])
-        sw = np.sqrt(w)
-        coef, *_ = np.linalg.lstsq(x * sw[:, None], chi2 * sw, rcond=None)
-        intercept, slope = coef
-        h2 = np.clip(slope * m / n_bar, 0, 1)
-        pred = np.maximum(intercept + n_bar * h2 * l2c / m, 1.0)
-        w = 1 / (l2c * 2 * pred ** 2)
-    return float(intercept), float(slope)
+def ld_files(pop):
+    return [f"UKBB.{pop}.l2.ldscore.gz", f"UKBB.{pop}.l2.M_5_50"]
 
 
-def jackknife_se(chi2, l2, n_bar, m, blocks):
-    idx = np.array_split(np.arange(len(chi2)), blocks)
-    est = []
-    for b in idx:
-        keep = np.ones(len(chi2), bool)
-        keep[b] = False
-        est.append(fit(chi2[keep], l2[keep], n_bar, m)[0])
-    est = np.array(est)
-    k = len(est)
-    return float(np.sqrt((k - 1) / k * ((est - est.mean()) ** 2).sum()))
+def number(pattern, text, group=1):
+    m = re.search(pattern, text)
+    return float(m.group(group)) if m else None
+
+
+def parse_h2_log(text):
+    """The numbers ldsc.py --h2 prints."""
+    out = {"h2": number(r"Total Observed scale h2: (-?[\d.e-]+) \(", text),
+           "h2_se": number(r"Total Observed scale h2: -?[\d.e-]+ \(([\d.e-]+)\)", text),
+           "lambda_gc": number(r"Lambda GC: ([\d.e-]+)", text),
+           "mean_chisq": number(r"Mean Chi\^2: ([\d.e-]+)", text),
+           "intercept": number(r"Intercept: (-?[\d.e-]+) \(", text),
+           "intercept_se": number(r"Intercept: -?[\d.e-]+ \(([\d.e-]+)\)", text),
+           "ratio": number(r"Ratio: (-?[\d.e-]+) \(", text),
+           "ratio_se": number(r"Ratio: -?[\d.e-]+ \(([\d.e-]+)\)", text),
+           "n_snps": number(r"After merging with regression SNP LD, (\d+) SNPs remain", text)}
+    if out["n_snps"] is not None:
+        out["n_snps"] = int(out["n_snps"])
+    return out
 
 
 def main():
     args = parse_args()
     params = load_params(args.params)
     opts = step_params(params, DEFAULTS)
-    pop = POPULATION.get(str(params.get("ancestry", "")).upper())
-    ref = os.path.join(args.resources, f"ldscores_{pop}.tsv.gz") if pop else None
+    art = os.environ.get("GWASHUB_ARTIFACT_DIR") or tempfile.mkdtemp()
+    os.makedirs(art, exist_ok=True)
+
+    def skip(msg, metrics=None):
+        write_log(args.log, "ldsc", "pass", {"ran": False, **(metrics or {})}, [msg])
+
+    ancestry = str(params.get("ancestry") or "").upper()
+    pop = POPULATION.get(ancestry)
     if not pop:
-        write_log(args.log, "ldsc", "pass", {"skipped": 1}, [f"Not run: no LD-score reference for ancestry "
-                                                             f"'{params.get('ancestry')}' (a multi-ancestry dataset)."])
-        return
-    if not os.path.exists(ref):
-        write_log(args.log, "ldsc", "pass", {"skipped": 1}, [f"Not run: the LD-score reference for {pop} "
-                                                             f"(ldscores_{pop}.tsv.gz) isn't uploaded yet."])
+        return skip(f"No LD-score reference for ancestry {ancestry or 'not given'}; LD score regression not run.")
+    needed = [*ld_files(pop), SNPLIST]
+    missing = [k for k in needed if not os.path.exists(os.path.join(args.resources, k))]
+    if missing:
+        return skip(f"LD-score reference not uploaded yet ({', '.join(missing)}); LD score regression not run.")
+    python2, ldsc_dir = os.environ.get("LDSC_PYTHON"), os.environ.get("LDSC_DIR")
+    if not (python2 and ldsc_dir):
+        write_log(args.log, "ldsc", "warn", {"ran": False}, ["LDSC isn't installed here (LDSC_PYTHON, LDSC_DIR): this step runs in the gwashub/ldsc image."])
         return
 
     df = read_working(args.input)
-    ld = pd.read_csv(ref, sep="\t", comment="#", dtype={"chr": str}, usecols=lambda c: c in ("chr", "pos", "l2"))
-    m = len(ld)
-    df["chr"] = df["chr"].astype(str).str.removeprefix("chr")
-    merged = df.merge(ld, on=["chr", "pos"], how="inner")
-    if "n" in merged.columns and pd.to_numeric(merged["n"], errors="coerce").notna().any():
-        n = pd.to_numeric(merged["n"], errors="coerce").fillna(pd.to_numeric(merged["n"], errors="coerce").median()).to_numpy()
-    else:
-        n = np.full(len(merged), float((params.get("n_cases") or 0) + (params.get("n_controls") or 0)))
-    chi2 = ((merged["beta"] / merged["se"]) ** 2).to_numpy(dtype=float)
-    l2 = merged["l2"].to_numpy(dtype=float)
-    ok = np.isfinite(chi2) & np.isfinite(l2) & (n > 0)
-    n_bar = float(np.mean(n[ok])) if ok.any() else 0.0
-    ok &= chi2 < max(80.0, 0.001 * n_bar)  # LDSC drops very large χ² (outliers dominate the fit)
-    chi2, l2 = chi2[ok], l2[ok]
-    if len(chi2) < opts["min_snps"] or n_bar <= 0:
-        write_log(args.log, "ldsc", "pass", {"skipped": 1, "n_snps": int(len(chi2))},
-                  [f"Not run: only {len(chi2):,} variants matched the {pop} LD-score reference (need {opts['min_snps']:,})."
-                   if n_bar > 0 else "Not run: no sample size given."])
+    if "rsid" not in df or df["rsid"].notna().sum() == 0:
+        return skip("No rsIDs to match the LD-score reference; LD score regression not run.")
+    if "n" not in df or df["n"].notna().sum() == 0:
+        return skip("No sample size (N); LD score regression not run.")
+    tmp = tempfile.mkdtemp(prefix="ldsc_")
+    sumstats = os.path.join(tmp, "sumstats.tsv.gz")
+    cols = {"rsid": "SNP", "ea": "A1", "oa": "A2", "beta": "BETA", "p": "P", "n": "N", "info": "INFO", "eaf": "FRQ"}
+    out = df[[c for c in cols if c in df]].rename(columns=cols).dropna(subset=["SNP", "N"])
+    with gzip.open(sumstats, "wt") as f:
+        out.to_csv(f, sep="\t", index=False, na_rep="NA")
+
+    munged, h2 = os.path.join(tmp, "munged"), os.path.join(tmp, "h2")
+    munge_cmd = [python2, os.path.join(ldsc_dir, "munge_sumstats.py"), "--sumstats", sumstats, "--out", munged,
+                 "--merge-alleles", os.path.join(args.resources, SNPLIST), "--chunksize", "500000",
+                 "--info-min", str(opts["info_min"]), "--maf-min", str(opts["maf_min"])]
+    prefix = os.path.join(args.resources, f"UKBB.{pop}")
+    h2_cmd = [python2, os.path.join(ldsc_dir, "ldsc.py"), "--h2", munged + ".sumstats.gz", "--ref-ld", prefix, "--w-ld", prefix,
+              "--n-blocks", str(int(opts["n_blocks"])), "--out", h2]
+    artifacts = []
+    for name, cmd, log_file in (("munge", munge_cmd, munged + ".log"), ("ldsc", h2_cmd, h2 + ".log")):
+        proc = subprocess.run(cmd, cwd=ldsc_dir, capture_output=True, text=True)
+        text = open(log_file).read() if os.path.exists(log_file) else proc.stdout + proc.stderr
+        with open(os.path.join(art, f"{name}.log"), "w") as f:
+            f.write(text + (proc.stderr if proc.returncode else ""))
+        artifacts.append({"type": "text", "path": f"{name}.log", "label": f"{'munge_sumstats.py' if name == 'munge' else 'ldsc.py --h2'} log"})
+        if proc.returncode != 0:
+            last = (proc.stderr or text).strip().splitlines()[-3:]
+            write_log(args.log, "ldsc", "warn", {"ran": False, "population": pop},
+                      [f"{name} did not finish: " + " ".join(last)], artifacts)
+            return
+
+    m = parse_h2_log(open(h2 + ".log").read())
+    if m["intercept"] is None:
+        write_log(args.log, "ldsc", "warn", {"ran": False, "population": pop}, ["ldsc.py ran but reported no intercept; see its log."], artifacts)
         return
-    order = np.lexsort((merged["pos"].to_numpy()[ok], merged["chr"].astype(int, errors="ignore").to_numpy()[ok]
-                        if merged["chr"].str.isdigit().all() else np.zeros(ok.sum())))
-    chi2, l2 = chi2[order], l2[order]
-    intercept, slope = fit(chi2, l2, n_bar, m)
-    se = jackknife_se(chi2, l2, n_bar, m, min(opts["jackknife_blocks"], len(chi2) // 50 or 1))
-    mean_chi2 = float(chi2.mean())
-    # The ratio (share of inflation not due to polygenicity) is only meaningful for an intercept above 1.
-    ratio = (intercept - 1) / (mean_chi2 - 1) if mean_chi2 > 1.02 and intercept > 1 else None
-    h2 = slope * m / n_bar
-    metrics = {"intercept": round(intercept, 4), "intercept_se": round(se, 4), "mean_chi2": round(mean_chi2, 4),
-               "h2_observed": round(h2, 4), "n_snps": int(len(chi2)), "population": pop}
-    if ratio is not None:
-        metrics["ratio"] = round(ratio, 4)
-    msg = f"LD score regression ({pop} reference, {len(chi2):,} variants): intercept {intercept:.3f} (SE {se:.3f}), mean χ² {mean_chi2:.3f}."
-    if intercept > opts["warn_intercept"]:
-        write_log(args.log, "ldsc", "warn", metrics,
-                  [msg, f"The intercept is above {opts['warn_intercept']}: inflation not explained by polygenicity "
-                        "(possible population stratification or cryptic relatedness)."])
-    else:
-        write_log(args.log, "ldsc", "pass", metrics, [msg])
+    metrics = {"ran": True, "population": pop, **m}
+    msg = (f"LDSC intercept {m['intercept']:.3f} (SE {m['intercept_se']:.3f}) from {m['n_snps']:,} HapMap 3 SNPs "
+           f"(Pan-UKB {pop} LD scores); λGC {m['lambda_gc']}, mean χ² {m['mean_chisq']}.")
+    verdict = "pass"
+    messages = [msg]
+    if m["intercept"] > opts["warn_intercept"]:
+        verdict = "warn"
+        messages.append(f"Intercept above {opts['warn_intercept']}: inflation beyond polygenic signal (confounding or stratification).")
+    write_log(args.log, "ldsc", verdict, metrics, messages, artifacts)
 
 
 if __name__ == "__main__":

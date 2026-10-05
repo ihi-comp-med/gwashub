@@ -146,7 +146,7 @@ class MetaAnalysis(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("project.id"))
     name: Mapped[str] = mapped_column(String(300))
-    method: Mapped[str] = mapped_column(String(200), default="gwashub/ivw", server_default="gwashub/ivw")  # pipeline/analyses/meta_analysis/<owner>/<method>
+    method: Mapped[str] = mapped_column(String(200), default="gwashub/gwama", server_default="gwashub/gwama")  # pipeline/analyses/meta_analysis/<owner>/<method>
     settings: Mapped[dict] = mapped_column(JSON)  # {method, params, common, include_statuses}
     dataset_ids: Mapped[list] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(20), default="queued")  # queued|running|completed|failed

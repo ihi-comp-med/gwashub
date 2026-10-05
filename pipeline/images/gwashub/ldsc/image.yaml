@@ -1,0 +1,5 @@
+title: LDSC (bulik/ldsc, Python 2.7)
+description: >
+  The LD score regression software from its authors (bulik/ldsc, pinned commit) in its own Python 2.7 environment,
+  plus the GWASHub runner. Used by LD score regression. Built for x86-64 because Python 2.7 and the pinned libraries have no ARM64 builds.
+platform: linux/amd64

@@ -2,15 +2,26 @@ name: metal
 title: METAL
 description: >
   Runs METAL (2020-05-05 release; Willer, Li & Abecasis), the widely used meta-analysis program:
-  inverse-variance weighted (standard-error scheme) or sample-size weighted Z-scores, with
-  heterogeneity statistics and optional genomic control per dataset.
+  inverse-variance weighted (standard-error scheme) or sample-size weighted Z-scores, with heterogeneity
+  statistics, optional genomic control per dataset and a correction for overlapping samples.
 reference: Willer CJ, Li Y & Abecasis GR (2010) METAL, Bioinformatics 26:2190
 command: [python, run_metal.py]
 image: gwashub/metal
 params:
   - {key: scheme, label: Scheme, type: select, options: [stderr, samplesize], default: stderr,
-     help: "stderr: inverse-variance weighted effects. samplesize: Z-scores weighted by √N (no effect sizes)"}
-  - {key: min_studies, label: Minimum datasets per variant, type: integer, min: 1, default: 2}
-  - {key: maf_min, label: Minimum MAF, type: number, min: 0, max: 0.5, default: 0.01,
-     help: "Per dataset, variants below this minor allele frequency are left out before METAL runs (needs EAF)"}
+     help: "METAL's SCHEME. stderr: inverse-variance weighted effects. samplesize: Z-scores weighted by √N (no effect sizes)"}
+  - {key: min_studies, label: Minimum datasets per variant, type: integer, min: 1, default: 2,
+     help: Variants in fewer datasets are left out of the results}
+  - {key: maf_min, label: Minimum MAF, type: number, min: 0, max: 0.5, default: 0,
+     help: "Per dataset, variants below this minor allele frequency are left out before METAL runs (needs EAF; 0 = all)"}
   - {key: genomic_control, label: Genomic control per dataset, type: boolean, default: false, help: "METAL's GENOMICCONTROL ON"}
+  - {key: overlap, label: Correct for sample overlap, type: boolean, default: false,
+     help: "METAL's OVERLAP ON: estimates overlap from the null Z-scores (samplesize scheme only)"}
+  - {key: zcutoff, label: Overlap Z cut-off, type: number, min: 0, default: 1,
+     help: "METAL's ZCUTOFF: variants with |Z| below this estimate the overlap"}
+  - {key: min_weight, label: Minimum total weight (N), type: number, min: 0, default: 1,
+     help: "METAL's MINWEIGHT (samplesize scheme)"}
+  - {key: minmax_freq, label: Report min and max EAF, type: boolean, default: false,
+     help: "METAL's MINMAXFREQ: the smallest and largest EAF across datasets, as eaf_min and eaf_max"}
+  - {key: precision, label: Significant digits for effects and SEs, type: integer, min: 4, max: 15, default: 8,
+     help: "METAL's EFFECT_PRINT_PRECISION and STDERR_PRINT_PRECISION (METAL's own default, 4, rounds the results)"}

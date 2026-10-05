@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 
 import yaml
 
-from pipeline.runner.catalog import VALID_ON_FAIL
+from pipeline.runner.catalog import VALID_ON_FAIL, job_compute
 
 
 @dataclass
@@ -60,11 +60,16 @@ def resolve(entries, catalog, images=None):
 def plan_groups(resolved):
     """Split a pipeline into groups of consecutive steps that use the same image. On AWS each group is
     one Batch job in that image, so the default pipeline (all gwashub/base) is a single job and a new
-    job starts only where the image changes. Returns [{"image": ..., "steps": [indexes]}]."""
-    groups = []
+    job starts only where the image changes. Each group's compute is the largest any of its steps asks for
+    (step.yaml `compute:`). Returns [{"image": ..., "steps": [indexes], "compute": {"vcpus", "memory_gb"}}]."""
+    groups, members = [], []
     for e in resolved:
         if groups and groups[-1]["image"] == e.image:
             groups[-1]["steps"].append(e.index)
+            members[-1].append(e.step)
         else:
             groups.append({"image": e.image, "steps": [e.index]})
+            members.append([e.step])
+    for g, steps in zip(groups, members):
+        g["compute"] = job_compute(steps)
     return groups

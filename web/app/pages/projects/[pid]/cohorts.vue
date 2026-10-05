@@ -67,10 +67,12 @@ async function add() {
               <Button label="Add cohort" icon="pi pi-plus" size="small" outlined @click="adding = true" /></div>
           </template>
           <template #content>
-            <IconField class="mb">
-              <InputIcon class="pi pi-search" />
-              <InputText v-model="search" placeholder="Search cohorts" fluid />
-            </IconField>
+            <div class="compact-ui mb">
+              <IconField>
+                <InputIcon class="pi pi-search" />
+                <InputText v-model="search" placeholder="Search cohorts" fluid />
+              </IconField>
+            </div>
             <p v-if="!rows.length" class="muted">{{ cohorts?.length ? 'No cohorts match.' : 'No cohorts yet. They are added when datasets are uploaded, or here.' }}</p>
             <ul class="cl">
               <li v-for="c in rows" :key="c.id" :class="{ on: open?.id === c.id }" @click="show(c)">

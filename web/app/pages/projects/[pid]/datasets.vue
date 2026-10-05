@@ -87,16 +87,16 @@ function changed() { refresh(); refreshProject() }
 
       <Card>
         <template #content>
-          <div class="filters">
+          <div class="filters compact-ui">
             <IconField class="search">
               <InputIcon class="pi pi-search" />
               <InputText v-model="filters.search" placeholder="Search cohort, phenotype, file, uploader" fluid />
             </IconField>
-            <Select v-model="filters.cohort" :options="cohorts" placeholder="Cohort" show-clear filter />
-            <Select v-model="filters.phenotype" :options="phenotypes" placeholder="Phenotype" show-clear />
-            <Select v-model="filters.ancestry" :options="[...ANCESTRIES]" placeholder="Ancestry" show-clear />
-            <Select v-model="filters.sex" :options="[...SEXES]" placeholder="Sex" show-clear />
-            <Select v-model="filters.status" :options="statusOptions" option-label="label" option-value="value" placeholder="QC status" show-clear />
+            <Select overlay-class="compact-overlay" v-model="filters.cohort" :options="cohorts" placeholder="Cohort" show-clear filter />
+            <Select overlay-class="compact-overlay" v-model="filters.phenotype" :options="phenotypes" placeholder="Phenotype" show-clear />
+            <Select overlay-class="compact-overlay" v-model="filters.ancestry" :options="[...ANCESTRIES]" placeholder="Ancestry" show-clear />
+            <Select overlay-class="compact-overlay" v-model="filters.sex" :options="[...SEXES]" placeholder="Sex" show-clear />
+            <Select overlay-class="compact-overlay" v-model="filters.status" :options="statusOptions" option-label="label" option-value="value" placeholder="QC status" show-clear />
             <div class="row mine"><ToggleSwitch v-model="filters.mine" input-id="mine" /><label for="mine">My uploads</label></div>
             <Button v-if="anyFilter" label="Clear" text size="small" @click="clear" />
             <span class="spacer" />
@@ -145,6 +145,15 @@ function changed() { refresh(); refreshProject() }
                 <template #body="{ data }">{{ num(data.qc?.[c.key], c.digits) }}</template>
               </Column>
             </template>
+            <Column field="status" header="QC status" sortable>
+              <template #body="{ data }">
+                <div class="status">
+                  <Tag :value="STATUS_META[data.status as DatasetStatus].label" :severity="STATUS_META[data.status as DatasetStatus].severity" />
+                  <i v-if="data.metadata_complete?.missing_required?.length" v-tooltip.top="`Metadata incomplete. Required: ${data.metadata_complete.missing_required.join(', ')}`"
+                     class="pi pi-exclamation-circle warnic" />
+                </div>
+              </template>
+            </Column>
             <Column field="pipeline_version" header="Pipeline" sortable class="num">
               <template #body="{ data }">
                 <span v-if="data.pipeline_version" :class="{ outdated: currentVersion && data.pipeline_version !== currentVersion }"
@@ -168,11 +177,12 @@ function changed() { refresh(); refreshProject() }
 .mine { gap: 8px; font-size: 0.9rem; }
 .strong { font-weight: 600; }
 .small { font-size: 0.78rem; }
-.fname { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+.fname { display: inline-block; max-width: 170px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 .spacer { flex: 1; }
 .bulk { gap: 8px; margin: -4px 0 10px; }
 .outdated { color: #b45309; font-weight: 600; }
 .dt.details :deep(td), .dt.details :deep(th) { font-size: 0.78rem; padding: 0.45rem 0.5rem; }
+.dt.overview :deep(td), .dt.overview :deep(th) { font-size: 0.78rem; padding: 0.45rem 0.6rem; }
 .nocase { text-transform: none; }
 .empty { padding: 24px; text-align: center; }
 .reviewed { margin-left: 6px; font-size: 0.8rem; }
@@ -181,4 +191,7 @@ function changed() { refresh(); refreshProject() }
 :deep(tr.locked td) { color: var(--gh-muted); }
 :deep(td.num), :deep(th.num) { text-align: right; }
 :deep(td), :deep(th) { white-space: nowrap; }
+.status { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.status :deep(.p-tag) { font-size: 0.7rem; padding: 0.1rem 0.4rem; }
+.warnic { color: #b45309; }
 </style>

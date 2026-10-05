@@ -47,6 +47,17 @@ def _s3():
     return _s3.client
 
 
+def stamp() -> str:
+    """UTC time for folder names (YYYYMMDD-HHMMSS). With the project and ids in the path it makes folders easy to
+    find and unique across database resets (ids start again at 1)."""
+    return time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+
+
+def parent(loc: str) -> str:
+    """The folder a location is in."""
+    return posixpath.dirname(loc) if is_s3(loc) else os.path.dirname(loc)
+
+
 def location(area: str, key: str) -> str:
     """Where `key` lives in an area: s3://<bucket>/<key> on AWS, or a path inside the local storage dir."""
     if area not in AREAS:
@@ -95,25 +106,6 @@ def put_file(local_path: str, loc: str):
     elif os.path.abspath(local_path) != os.path.abspath(loc):
         os.makedirs(os.path.dirname(loc), exist_ok=True)
         shutil.copyfile(local_path, loc)
-
-
-def put_dir(local_dir: str, loc: str):
-    """Copy a directory tree to a location (used by jobs to publish their outputs)."""
-    for dirpath, _, files in os.walk(local_dir):
-        for fn in files:
-            full = os.path.join(dirpath, fn)
-            put_file(full, join(loc, os.path.relpath(full, local_dir).replace(os.sep, "/")))
-
-
-def get_file(loc: str, dest: str) -> str:
-    """Make a local copy of a stored file (S3 download, or a symlink for local storage)."""
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    if is_s3(loc):
-        bucket, k = split_s3(loc)
-        _s3().download_file(bucket, k, dest)
-    elif not os.path.exists(dest):
-        os.symlink(loc, dest)
-    return dest
 
 
 def read_bytes(loc: str) -> bytes:

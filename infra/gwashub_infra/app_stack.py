@@ -44,8 +44,8 @@ function handler(event) {
 
 class AppStack(cdk.Stack):
     def __init__(self, scope: Construct, id: str, *, cfg, net, data, image_tag: str, pipeline_images: dict, **kwargs):
-        """pipeline_images: {"gwashub/base": "sha256:...", ...}, the digests pushed by the deploy script
-        to ECR repositories gwashub-images/<owner>/<image>."""
+        """pipeline_images: {"gwashub/base": {"digest": "sha256:...", "platform": "linux/arm64"}, ...} (or just the
+        digest), the images pushed by the deploy script to ECR repositories gwashub-images/<owner>/<image>."""
         super().__init__(scope, id, **kwargs)
         vpc, n = net.vpc, cfg.name
         repo = ecr.Repository.from_repository_name(self, "Repo", "gwashub/app")
@@ -171,25 +171,44 @@ class AppStack(cdk.Stack):
         data.uploads.grant_read(job_role)
         data.resources.grant_read(job_role)
         data.results.grant_read_write(job_role)
-        compute = batch.ManagedEc2EcsComputeEnvironment(
-            self, "Compute", vpc=vpc, vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
-            security_groups=[net.app_sg], spot=cfg.batch_spot, minv_cpus=0, maxv_cpus=cfg.batch_max_vcpus,
-            use_optimal_instance_classes=False,
-            instance_classes=[ec2.InstanceClass.M7G, ec2.InstanceClass.R7G],  # Graviton: the image is arm64
-            allocation_strategy=batch.AllocationStrategy.SPOT_PRICE_CAPACITY_OPTIMIZED if cfg.batch_spot
-            else batch.AllocationStrategy.BEST_FIT_PROGRESSIVE,
-            images=[batch.EcsMachineImage(image_type=batch.EcsMachineImageType.ECS_AL2023)],
-            update_to_latest_image_version=True)
+        # Jobs need room for reference files (FASTA, dbSNP) and intermediate VCFs: a larger root volume than the
+        # ECS AMI's default.
+        job_lt = ec2.LaunchTemplate(self, "JobLaunchTemplate", block_devices=[ec2.BlockDevice(
+            device_name="/dev/xvda", volume=ec2.BlockDeviceVolume.ebs(cfg.batch_volume_gb, encrypted=True,
+                                                                      volume_type=ec2.EbsDeviceVolumeType.GP3))])
+
+        def compute_env(cid, families):
+            return batch.ManagedEc2EcsComputeEnvironment(
+                self, cid, vpc=vpc, vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
+                security_groups=[net.app_sg], spot=cfg.batch_spot, minv_cpus=0, maxv_cpus=cfg.batch_max_vcpus,
+                use_optimal_instance_classes=False, launch_template=job_lt,
+                # Sizes up to 4xlarge (16 vCPU, 128 GiB): enough for any job (pipeline/runner/catalog.py MAX_COMPUTE),
+                # and Spot can't hand a small job a much larger machine.
+                instance_types=[ec2.InstanceType(f"{fam}.{size}") for fam in families for size in ("large", "xlarge", "2xlarge", "4xlarge")],
+                allocation_strategy=batch.AllocationStrategy.SPOT_PRICE_CAPACITY_OPTIMIZED if cfg.batch_spot
+                else batch.AllocationStrategy.BEST_FIT_PROGRESSIVE,
+                images=[batch.EcsMachineImage(image_type=batch.EcsMachineImageType.ECS_AL2023)],
+                update_to_latest_image_version=True)
+
+        # Graviton for the ARM64 images (the default), x86-64 for images whose image.yaml says linux/amd64
+        # (tools with no ARM64 builds, e.g. gwas2vcf and LDSC).
+        compute = compute_env("Compute", ["m7g", "r7g"])
         job_queue = batch.JobQueue(self, "JobQueue", job_queue_name=f"gwashub-{n}",
                                    compute_environments=[batch.OrderedComputeEnvironment(compute_environment=compute, order=1)])
+        compute_x86 = compute_env("ComputeX86", ["m7i", "r7i"])
+        job_queue_x86 = batch.JobQueue(self, "JobQueueX86", job_queue_name=f"gwashub-{n}-x86",
+                                       compute_environments=[batch.OrderedComputeEnvironment(compute_environment=compute_x86, order=1)])
+        pipeline_images = {ref: v if isinstance(v, dict) else {"digest": v} for ref, v in pipeline_images.items()}
+        queue_of = {ref: job_queue_x86 if v.get("platform") == "linux/amd64" else job_queue for ref, v in pipeline_images.items()}
         # One job definition per pipeline image (pipeline/images/<owner>/<image>), pinned by digest. A QC
         # run is one job per group of consecutive steps sharing an image; a meta-analysis uses gwashub/base.
         job_defs = {}
-        for ref, digest in sorted(pipeline_images.items()):
+        for ref, img in sorted(pipeline_images.items()):
+            digest = img["digest"]
             slug = ref.replace("/", "-")
             img_repo = ecr.Repository.from_repository_name(self, f"ImgRepo-{slug}", f"gwashub-images/{ref}")
             job_defs[ref] = batch.EcsJobDefinition(
-                self, f"JobDef-{slug}", job_definition_name=f"gwashub-{n}-{slug}", timeout=cdk.Duration.hours(6), retry_attempts=3,
+                self, f"JobDef-{slug}", job_definition_name=f"gwashub-{n}-{slug}", timeout=cdk.Duration.hours(12), retry_attempts=3,
                 retry_strategies=[batch.RetryStrategy.of(batch.Action.RETRY, batch.Reason.SPOT_INSTANCE_RECLAIMED),
                                   batch.RetryStrategy.of(batch.Action.RETRY, batch.Reason.CANNOT_PULL_CONTAINER),
                                   batch.RetryStrategy.of(batch.Action.EXIT, batch.Reason.custom(on_exit_code="*"))],
@@ -199,12 +218,13 @@ class AppStack(cdk.Stack):
                     command=["python", "-m", "pipeline.runner.aws.batch_entry"],
                     environment={"AWS_REGION": self.region, "MPLCONFIGDIR": "/tmp/mpl", "HOME": "/tmp"},
                     logging=ecs.LogDriver.aws_logs(stream_prefix=f"batch-{slug}", log_group=log_group)))
-        images_env = self.to_json_string({ref: {"uri": f"{self.account}.dkr.ecr.{self.region}.amazonaws.com/gwashub-images/{ref}@{digest}",
-                                                "job_definition": jd.job_definition_arn} for ref, jd in job_defs.items()
-                                          for digest in [pipeline_images[ref]]})
+        images_env = self.to_json_string({ref: {"uri": f"{self.account}.dkr.ecr.{self.region}.amazonaws.com/gwashub-images/{ref}@{img['digest']}",
+                                                "job_definition": job_defs[ref].job_definition_arn,
+                                                "job_queue": queue_of[ref].job_queue_arn}
+                                          for ref, img in pipeline_images.items()})
         rule = events.Rule(self, "JobEvents", event_pattern=events.EventPattern(
             source=["aws.batch"], detail_type=["Batch Job State Change"],
-            detail={"jobQueue": [job_queue.job_queue_arn], "status": ["RUNNING", "SUCCEEDED", "FAILED"]}))
+            detail={"jobQueue": [job_queue.job_queue_arn, job_queue_x86.job_queue_arn], "status": ["RUNNING", "SUCCEEDED", "FAILED"]}))
         rule.add_target(targets.SqsQueue(events_queue))
 
         # ---------- API + worker on Fargate ----------
@@ -255,7 +275,8 @@ class AppStack(cdk.Stack):
             data.resources.grant_read_write(td.task_role)
             td.task_role.add_to_principal_policy(iam.PolicyStatement(
                 actions=["batch:SubmitJob", "batch:TagResource"],
-                resources=[job_queue.job_queue_arn, *(_unversioned(jd.job_definition_arn) for jd in job_defs.values())]))
+                resources=[job_queue.job_queue_arn, job_queue_x86.job_queue_arn,
+                           *(_unversioned(jd.job_definition_arn) for jd in job_defs.values())]))
             td.task_role.add_to_principal_policy(iam.PolicyStatement(actions=["batch:DescribeJobs"], resources=["*"]))
         events_queue.grant_consume_messages(worker_td.task_role)
         # The API task definition also runs admin commands (devtools/aws_admin.sh), which invite users.

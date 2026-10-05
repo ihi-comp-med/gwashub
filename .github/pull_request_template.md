@@ -1,6 +1,6 @@
 ## What this changes
 
-<!-- e.g. "Adds hcm/sarcomere_filter: removes variants in sarcomere gene regions" -->
+<!-- e.g. "Adds hermes/exclusion_regions: removes variants in listed regions" -->
 
 ## Checklist for new or changed QC steps
 

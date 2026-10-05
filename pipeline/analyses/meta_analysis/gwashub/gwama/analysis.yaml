@@ -1,17 +1,23 @@
 name: gwama
 title: GWAMA
 description: >
-  Runs GWAMA 2.2.2 (Mägi & Morris), the meta-analysis program from the Estonian Genome Centre: fixed or
-  random effects with Cochran's Q and I², optional genomic control per dataset, and GWAMA's
-  sex-differentiated test when every dataset is male- or female-only.
+  Runs GWAMA 2.2.2 (Mägi & Morris), the meta-analysis program from the Estonian Genome Centre and the method of the
+  HERMES 3 analyses: fixed or random effects with Cochran's Q and I², optional genomic control per dataset and on the
+  results, and GWAMA's sex-differentiated test when every dataset is male- or female-only. The default method.
 reference: Mägi R & Morris AP (2010) GWAMA, BMC Bioinformatics 11:288
 command: [python, run_gwama.py]
 image: gwashub/gwama
 params:
-  - {key: model, label: Model, type: select, options: [fixed, random], default: fixed}
-  - {key: min_studies, label: Minimum datasets per variant, type: integer, min: 1, default: 2}
-  - {key: maf_min, label: Minimum MAF, type: number, min: 0, max: 0.5, default: 0.01,
-     help: "Per dataset, variants below this minor allele frequency are left out before GWAMA runs (needs EAF)"}
-  - {key: genomic_control, label: Genomic control per dataset, type: boolean, default: false, help: "GWAMA's -gc option"}
+  - {key: model, label: Model, type: select, options: [fixed, random], default: fixed, help: "random: GWAMA's --random"}
+  - {key: min_studies, label: Minimum datasets per variant, type: integer, min: 1, default: 2,
+     help: Variants in fewer datasets are left out of the results}
+  - {key: maf_min, label: Minimum MAF, type: number, min: 0, max: 0.5, default: 0,
+     help: "Per dataset, variants below this minor allele frequency are left out before GWAMA runs (needs EAF; 0 = all)"}
+  - {key: genomic_control, label: Genomic control per dataset, type: boolean, default: false,
+     help: "GWAMA's --genomic_control: each dataset's statistics corrected by its λGC"}
+  - {key: genomic_control_output, label: Genomic control on the results, type: boolean, default: false,
+     help: "GWAMA's --genomic_control_output: the meta-analysis results corrected by their λGC"}
+  - {key: direction_threshold, label: Direction shown below P, type: number, min: 0, max: 1, default: 1,
+     help: "GWAMA's --threshold: a dataset's effect direction is shown only when its P is below this (1 = always)"}
   - {key: sex_differentiated, label: Sex-differentiated test, type: boolean, default: false,
-     help: "GWAMA's --sex option; every dataset must be male-only or female-only"}
+     help: "GWAMA's --sex; every dataset must be male-only or female-only"}

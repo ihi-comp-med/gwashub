@@ -20,7 +20,7 @@ params:                              # typed; reviewers can change them per proj
         is reviewed and tested before it runs on anyone's data. Once it's merged and deployed, every project can add it to its pipeline.</p>
 
       <h4>1. Add a folder for your step</h4>
-      <p class="m0">Under <code>pipeline/qc_steps/&lt;consortium&gt;/&lt;step&gt;/</code>, for example <code>pipeline/qc_steps/hcm/sarcomere_filter/</code>:</p>
+      <p class="m0">Under <code>pipeline/qc_steps/&lt;consortium&gt;/&lt;step&gt;/</code>, for example <code>pipeline/qc_steps/custom_example/hello_world/</code>:</p>
       <ul>
         <li>the script (Python or R),</li>
         <li><code>step.yaml</code> describing it,</li>

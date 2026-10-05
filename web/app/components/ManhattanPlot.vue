@@ -1,10 +1,21 @@
 <script setup lang="ts">
 // Manhattan plot. With `data` (plot_data.json "manhattan") it draws real results; without, a seeded
 // synthetic example (landing page).
-const props = withDefaults(defineProps<{ data?: any, gws?: number, seed?: number, highlight?: { chr: string, pos: number }[] }>(),
-  { seed: 1, gws: 5e-8, highlight: () => [] })
+// `height` is the plot's height in pixels: the drawing keeps its width and grows or shrinks vertically to it, so it can
+// sit beside a QQ plot of the same height.
+const props = withDefaults(defineProps<{ data?: any, gws?: number, seed?: number, highlight?: { chr: string, pos: number }[], height?: number }>(),
+  { seed: 1, gws: 5e-8, highlight: () => [], height: 280 })
 const emit = defineEmits<{ select: [p: { chr: string, pos: number, logp: number }] }>()
-const W = 900, H = 260, PAD = 36
+const W = 900, PAD = 36
+const wrap = ref<HTMLElement | null>(null)
+const width = ref(0)
+let observer: ResizeObserver | null = null
+onMounted(() => {
+  observer = new ResizeObserver(([e]) => { width.value = e.contentRect.width })
+  if (wrap.value) observer.observe(wrap.value)
+})
+onBeforeUnmount(() => observer?.disconnect())
+const H = computed(() => Math.max(160, Math.round(W * props.height / (width.value || 3 * props.height))))
 
 function synthetic(seed: number) {
   let s = seed >>> 0
@@ -28,14 +39,14 @@ function synthetic(seed: number) {
 const d = computed(() => props.data ?? synthetic(props.seed))
 const yMax = computed(() => Math.max(10, Math.ceil(Math.max(...d.value.y, 0) * 1.05)))
 const sx = (x: number) => PAD + (x / d.value.x_max) * (W - PAD - 8)
-const sy = (y: number) => H - PAD - (y / yMax.value) * (H - PAD - 10)
+const sy = (y: number) => H.value - PAD - (y / yMax.value) * (H.value - PAD - 10)
 const yTicks = computed(() => { const step = yMax.value > 60 ? 20 : yMax.value > 25 ? 10 : 5; return Array.from({ length: Math.floor(yMax.value / step) + 1 }, (_, i) => i * step) })
 const points = computed(() => d.value.x.map((x: number, i: number) => ({ x: sx(x), y: sy(d.value.y[i]), c: d.value.chr[i] % 2, i })))
 const hover = ref<number | null>(null)
-const hovered = computed(() => hover.value == null ? null : { chr: String(d.value.chr[hover.value] === 23 ? 'X' : d.value.chr[hover.value]), pos: d.value.pos[hover.value], logp: d.value.y[hover.value] })
+const hovered = computed(() => hover.value == null ? null : { chr: String(d.value.chr[hover.value] === 23 ? 'X' : d.value.chr[hover.value]), pos: d.value.pos[hover.value], logp: d.value.y[hover.value], rsid: d.value.rsid?.[hover.value] || '' })
 function onMove(e: MouseEvent) {
   const svg = (e.currentTarget as SVGSVGElement).getBoundingClientRect()
-  const mx = (e.clientX - svg.left) * (W / svg.width), my = (e.clientY - svg.top) * (H / svg.height)
+  const mx = (e.clientX - svg.left) * (W / svg.width), my = (e.clientY - svg.top) * (H.value / svg.height)
   let best = -1, bd = 64
   for (const p of points.value) {
     const dd = (p.x - mx) ** 2 + (p.y - my) ** 2
@@ -46,7 +57,7 @@ function onMove(e: MouseEvent) {
 </script>
 
 <template>
-  <div class="wrap">
+  <div ref="wrap" class="wrap">
     <svg :viewBox="`0 0 ${W} ${H}`" class="plot" role="img" aria-label="Manhattan plot" @mousemove="onMove" @mouseleave="hover = null"
          @click="hovered && emit('select', hovered)">
       <line :x1="PAD" :x2="W - 8" :y1="sy(-Math.log10(gws))" :y2="sy(-Math.log10(gws))" class="gws" />
@@ -59,7 +70,7 @@ function onMove(e: MouseEvent) {
       <text :x="12" :y="H / 2" class="label" :transform="`rotate(-90 12 ${H / 2})`" text-anchor="middle">−log10(P)</text>
       <text :x="(W + PAD) / 2" :y="H - 4" class="label" text-anchor="middle">Chromosome</text>
     </svg>
-    <div v-if="hovered" class="tip mono">chr{{ hovered.chr }}:{{ hovered.pos.toLocaleString() }} · P = 10<sup>−{{ hovered.logp.toFixed(1) }}</sup></div>
+    <div v-if="hovered" class="tip mono"><template v-if="hovered.rsid">{{ hovered.rsid }} · </template>chr{{ hovered.chr }}:{{ hovered.pos.toLocaleString() }} · P = 10<sup>−{{ hovered.logp.toFixed(1) }}</sup></div>
   </div>
 </template>
 

@@ -5,7 +5,7 @@
     pipeline/images/<owner>/<image>/Dockerfile                       → image "<owner>/<image>"
 
 Consortia add steps and images by pull request (see CONTRIBUTING.md); folders starting with "_" and
-the shared `templates/` and `fixtures/` folders are not owners.
+the shared `templates/` folder are not owners.
 """
 import os
 from dataclasses import dataclass, field
@@ -19,8 +19,15 @@ REPO_ROOT = os.path.dirname(PIPELINE_DIR)
 QC_STEPS_DIR = os.path.join(PIPELINE_DIR, "qc_steps")
 IMAGES_DIR = os.path.join(PIPELINE_DIR, "images")
 META_ANALYSIS_DIR = os.path.join(PIPELINE_DIR, "analyses", "meta_analysis")
-NOT_OWNERS = ("templates", "fixtures")
+NOT_OWNERS = ("templates",)
 VALID_ON_FAIL = ("block", "flag", "continue")
+DEFAULT_PLATFORM = "linux/arm64"  # AWS Graviton; an image.yaml may say linux/amd64
+# What a Batch job gets unless its steps ask for more (step.yaml `compute:`); a job takes the largest request
+# among its steps.
+DEFAULT_COMPUTE = {"vcpus": 2, "memory_gb": 8}
+# The most one job can ask for: the largest Batch instances are 4xlarge (16 vCPU, 128 GiB; infra/gwashub_infra/
+# app_stack.py), less what ECS keeps for itself. A bigger request would never start.
+MAX_COMPUTE = {"vcpus": 16, "memory_gb": 120}
 
 
 @dataclass
@@ -29,7 +36,7 @@ class StepDef:
     title: str
     description: str
     workdir: str  # directory the command runs relative to (script lives here)
-    command: list  # e.g. ["python", "row_check.py"]
+    command: list  # e.g. ["Rscript", "parse.R"]
     image: str  # "<owner>/<image>", see pipeline/images
     default_on_fail: str = "flag"
     resources: list = field(default_factory=list)  # required: the run fails without them
@@ -39,6 +46,7 @@ class StepDef:
     source: dict = field(default_factory=dict)  # {"repo", "path"}
     pythonpath: list = field(default_factory=list)
     always_run: bool = False  # run even after the pipeline was blocked (e.g. the report)
+    compute: dict = field(default_factory=dict)  # {"vcpus", "memory_gb"} this step needs on AWS Batch
 
     @property
     def owner(self):
@@ -78,15 +86,35 @@ def load_steps(qc_steps_dir=QC_STEPS_DIR):
                 command=list(d["command"]), image=d["image"], default_on_fail=d.get("default_on_fail", "flag"),
                 resources=list(d.get("resources") or []), optional_resources=list(d.get("optional_resources") or []),
                 params=P.defaults(schema), param_schema=schema,
-                pythonpath=[qc_steps_dir], always_run=bool(d.get("always_run")),
+                pythonpath=[qc_steps_dir], always_run=bool(d.get("always_run")), compute=_compute(d.get("compute"), path),
                 source={"repo": "gwashub", "path": os.path.relpath(os.path.join(workdir, d["command"][-1]), REPO_ROOT)},
             )
     return steps
 
 
+def _compute(c, path):
+    c = dict(c or {})
+    unknown = set(c) - set(DEFAULT_COMPUTE)
+    if unknown or any(not isinstance(v, (int, float)) or v <= 0 for v in c.values()):
+        raise ValueError(f"{path}: compute takes positive vcpus and memory_gb only")
+    over = [k for k, v in c.items() if v > MAX_COMPUTE[k]]
+    if over:
+        raise ValueError(f"{path}: compute asks for more than one job can have ({', '.join(f'{k} {MAX_COMPUTE[k]}' for k in over)})")
+    return c
+
+
+def job_compute(steps):
+    """Compute for one Batch job running these StepDefs: the largest request of each kind."""
+    out = dict(DEFAULT_COMPUTE)
+    for sd in steps:
+        for k, v in (sd.compute or {}).items():
+            out[k] = max(out[k], v)
+    return out
+
+
 def load_images(images_dir=IMAGES_DIR):
-    """"<owner>/<image>" -> {"ref", "title", "description", "base", "dockerfile"} for every image folder.
-    title/description come from an optional image.yaml; base is the Dockerfile's first FROM."""
+    """"<owner>/<image>" -> {"ref", "title", "description", "base", "platform", "dockerfile"} for every image folder.
+    title/description/platform come from an optional image.yaml; base is the Dockerfile's first FROM."""
     images = {}
     for owner in _owners(images_dir):
         for name in sorted(os.listdir(os.path.join(images_dir, owner))):
@@ -103,7 +131,8 @@ def load_images(images_dir=IMAGES_DIR):
             ref = f"{owner}/{name}"
             # A multi-stage Dockerfile builds in a throwaway stage; the image is FROM its last stage's base.
             images[ref] = {"ref": ref, "title": meta.get("title", ref), "description": meta.get("description", ""),
-                           "base": froms[-1] if froms else "", "froms": froms, "dockerfile": os.path.relpath(dockerfile, REPO_ROOT)}
+                           "base": froms[-1] if froms else "", "froms": froms, "platform": meta.get("platform", DEFAULT_PLATFORM),
+                           "dockerfile": os.path.relpath(dockerfile, REPO_ROOT)}
     return images
 
 

@@ -1,0 +1,24 @@
+name: filter
+title: Filter
+description: >
+  Removes variants by chromosome, EAF/MAF, BETA, SE, INFO, N, indels and duplicates. The defaults are those of the
+  HERMES 3 DCM pipeline (chromosomes 1-22, X, Y; |BETA| < 20; 0 < EAF < 1; EAF, N and INFO required), plus duplicate removal.
+command: [Rscript, filter.R]
+image: gwashub/base-r
+default_on_fail: flag
+resources: []
+compute: {vcpus: 2, memory_gb: 32}
+params:
+  - {key: chromosomes, label: Chromosomes kept, type: select, options: ["1-22", "1-22, X", "1-22, X, Y"], default: "1-22, X, Y"}
+  - {key: max_abs_beta, label: Maximum |BETA|, type: number, min: 0, default: 20, help: Variants with |BETA| at or above this are removed (0 = no limit)}
+  - {key: max_se, label: Maximum SE, type: number, min: 0, default: 0, help: Variants with SE above this are removed (0 = no limit)}
+  - {key: min_info, label: Minimum INFO, type: number, min: 0, max: 1, default: 0}
+  - {key: drop_missing_info, label: Remove variants without INFO, type: boolean, default: true, help: Only when the dataset has an INFO column}
+  - {key: min_maf, label: Minimum MAF, type: number, min: 0, max: 0.5, default: 0}
+  - {key: drop_monomorphic, label: Remove EAF of 0 or 1, type: boolean, default: true}
+  - {key: require_eaf, label: Require EAF, type: boolean, default: true, help: Remove variants without EAF}
+  - {key: require_n, label: Require N, type: boolean, default: true, help: Remove variants without N (after filling from the study details)}
+  - {key: min_n, label: Minimum N, type: integer, min: 0, default: 0}
+  - {key: drop_indels, label: Remove indels, type: boolean, default: false}
+  - {key: drop_duplicates, label: Remove duplicate variants, type: boolean, default: true, help: Same chromosome, position and alleles; the first is kept}
+  - {key: warn_removed_fraction, label: Warn above removed fraction, type: number, min: 0, max: 1, default: 0.5}

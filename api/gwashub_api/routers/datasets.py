@@ -24,7 +24,6 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["datasets"])
 ANCESTRIES = ("EUR", "AFR", "EAS", "SAS", "AMR", "Multi")
-SEXES = ("Combined", "Female", "Male")
 BUILDS = ("GRCh37", "GRCh38")
 
 
@@ -32,9 +31,9 @@ BUILDS = ("GRCh37", "GRCh38")
 QC_METRICS = [("lambda_gc", "stats_summary", "lambda_gc"), ("lambda_1000", "stats_summary", "lambda_1000"),
               ("lambda_maf01", "stats_summary", "lambda_maf01"), ("n_variants", "stats_summary", "n_variants"),
               ("n_gws", "stats_summary", "n_genome_wide_sig"), ("n_suggestive", "stats_summary", "n_suggestive"),
-              ("n_loci", "stats_summary", "n_loci"), ("lifted", "liftover", "lifted"), ("unmapped", "liftover", "unmapped"),
-              ("strand_flips", "liftover", "strand_flipped"), ("ldsc_intercept", "ldsc", "intercept"),
-              ("ldsc_intercept_se", "ldsc", "intercept_se"), ("ldsc_ratio", "ldsc", "ratio")]
+              ("n_loci", "stats_summary", "n_loci"), ("lifted", "harmonise_liftover", "lifted"),
+              ("unmapped", "harmonise_liftover", "unmapped"), ("strand_flips", "harmonise_liftover", "strand_flipped"),
+              ("ldsc_intercept", "ldsc", "intercept"), ("ldsc_intercept_se", "ldsc", "intercept_se"), ("ldsc_ratio", "ldsc", "ratio")]
 
 
 def qc_metrics(run: QCRun | None) -> dict:
@@ -70,7 +69,7 @@ def run_view(run: QCRun):
     return {"id": run.id, "status": run.status, "overall_verdict": run.overall_verdict, "error": run.error,
             "pipeline_version": run.pipeline_version.version, "started_at": run.started_at, "finished_at": run.finished_at,
             "stop_reason": (run.result or {}).get("stop_reason"), "rows_out": ((run.result or {}).get("outputs") or {}).get("rows"),
-            "steps": steps, "profile": (run.result or {}).get("profile")}
+            "steps": steps, "profile": (run.result or {}).get("profile"), "location": run.run_dir}
 
 
 @router.get("/metadata-schema")
@@ -96,7 +95,6 @@ async def column_suggestion(project_id: str, file: UploadFile = File(...), user:
     require_member(db, user, project_id)
     head = await file.read(256 * 1024)
     if head[:2] == b"\x1f\x8b":
-        import gzip
         import zlib
         head = zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(head)
     text = head.decode("utf-8", errors="replace")
@@ -154,7 +152,7 @@ def safe_name(name: str | None) -> str:
 
 
 def upload_key(ds: Dataset) -> str:
-    return f"uploads/{ds.project_id}/{ds.id}/{ds.file_name}"
+    return f"uploads/{ds.project_id}/{ds.id}-{storage.stamp()}/{ds.file_name}"
 
 
 @router.post("/projects/{project_id}/datasets", status_code=201)
@@ -299,6 +297,7 @@ def get_dataset(dataset_id: int, user: User = Depends(current_user), db: Session
             "overrides": sorted(k for k in (ds.study_meta or {}) if k in metadata_schema.COHORT_KEYS),
             "metadata_config": services.metadata_config(m.project),
             "edits": ds.edits or [], "can_edit": m.role == "reviewer" or ds.uploaded_by == user.id,
+            "upload_location": storage.parent(ds.storage_path) if ds.storage_path else None,
             "run": run and run_view(run), "runs": [{"id": r.id, "status": r.status, "overall_verdict": r.overall_verdict,
                                                     "pipeline_version": r.pipeline_version.version, "finished_at": r.finished_at} for r in ds.runs]}
 
@@ -471,7 +470,7 @@ def delete_dataset(dataset_id: int, user: User = Depends(current_user), db: Sess
         raise HTTPException(409, "QC is running; delete the dataset when it has finished")
     if ds.status == "uploading" and ds.upload_id:
         storage.abort_multipart(ds.storage_path, ds.upload_id)
-    folders = [storage.location("uploads", f"uploads/{ds.project_id}/{ds.id}")] + [r.run_dir for r in ds.runs]
+    folders = [storage.parent(ds.storage_path) if ds.storage_path else ""] + [r.run_dir for r in ds.runs]
     log.info("Dataset %s (%s, %s) deleted by %s", ds.id, ds.cohort, ds.file_name, user.email)
     db.delete(ds)
     db.commit()

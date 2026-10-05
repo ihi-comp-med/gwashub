@@ -17,13 +17,23 @@ REPO=gwashub/app
 TAG=${GWASHUB_IMAGE_TAG:-$(date -u +%Y%m%d-%H%M%S)}
 echo "Deploying $ENV_NAME to account $ACCOUNT ($AWS_REGION), image tag $TAG"
 
+# ECR repositories are made here (not by CDK). Each keeps its 5 newest images (enough to roll back; the running
+# ones are always among them) and drops untagged layers after a day. Older images can be rebuilt from git.
+LIFECYCLE='{"rules": [
+  {"rulePriority": 1, "description": "untagged after 1 day", "selection": {"tagStatus": "untagged", "countType": "sinceImagePushed", "countUnit": "days", "countNumber": 1}, "action": {"type": "expire"}},
+  {"rulePriority": 2, "description": "keep the 5 newest", "selection": {"tagStatus": "any", "countType": "imageCountMoreThan", "countNumber": 5}, "action": {"type": "expire"}}]}'
+ensure_repo() {
+  aws ecr describe-repositories --repository-names "$1" >/dev/null 2>&1 || \
+    aws ecr create-repository --repository-name "$1" --image-scanning-configuration scanOnPush=true --image-tag-mutability IMMUTABLE >/dev/null
+  aws ecr put-lifecycle-policy --repository-name "$1" --lifecycle-policy-text "$LIFECYCLE" >/dev/null
+}
+
 echo "== website"
 (cd web && npx nuxi generate >/dev/null)
 
 echo "== image"
 if [ -z "${GWASHUB_IMAGE_TAG:-}" ]; then
-aws ecr describe-repositories --repository-names $REPO >/dev/null 2>&1 || \
-  aws ecr create-repository --repository-name $REPO --image-scanning-configuration scanOnPush=true --image-tag-mutability IMMUTABLE >/dev/null
+ensure_repo $REPO
 docker build --platform linux/arm64 -f images/app/Dockerfile -t "$REGISTRY/$REPO:$TAG" .
 aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null
 docker push -q "$REGISTRY/$REPO:$TAG"
@@ -31,18 +41,18 @@ fi
 
 echo "== pipeline images"
 PIPELINE_IMAGES="{"
-for REF in $(.venv/bin/python -c "from pipeline.runner.catalog import build_order, load_images; print(' '.join(build_order(load_images())))"); do
+for LINE in $(.venv/bin/python -c "from pipeline.runner.catalog import build_order, load_images; i = load_images(); print(' '.join(f'{r}={i[r][\"platform\"]}' for r in build_order(i)))"); do
+  REF=${LINE%%=*}; PLATFORM=${LINE#*=}
   IREPO=gwashub-images/$REF
-  aws ecr describe-repositories --repository-names "$IREPO" >/dev/null 2>&1 || \
-    aws ecr create-repository --repository-name "$IREPO" --image-scanning-configuration scanOnPush=true --image-tag-mutability IMMUTABLE >/dev/null
+  ensure_repo "$IREPO"
   # Tagged locally as <owner>/<image> too, so images built FROM gwashub/base find it.
   if ! aws ecr describe-images --repository-name "$IREPO" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
-    docker build -q --platform linux/arm64 -f "pipeline/images/$REF/Dockerfile" -t "$REF" -t "$REGISTRY/$IREPO:$TAG" . >/dev/null
+    docker build -q --platform "$PLATFORM" -f "pipeline/images/$REF/Dockerfile" -t "$REF" -t "$REGISTRY/$IREPO:$TAG" . >/dev/null
     docker push -q "$REGISTRY/$IREPO:$TAG" >/dev/null
   fi
   DIGEST=$(aws ecr describe-images --repository-name "$IREPO" --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text)
-  echo "  $REF $DIGEST"
-  PIPELINE_IMAGES="$PIPELINE_IMAGES\"$REF\": \"$DIGEST\","
+  echo "  $REF $DIGEST ($PLATFORM)"
+  PIPELINE_IMAGES="$PIPELINE_IMAGES\"$REF\": {\"digest\": \"$DIGEST\", \"platform\": \"$PLATFORM\"},"
 done
 PIPELINE_IMAGES="${PIPELINE_IMAGES%,}}"
 

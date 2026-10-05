@@ -11,7 +11,9 @@ python-multipart
 httpx
 pytest
 boto3
+botocore[crt]  # devtools that use `aws login` credentials (aws_upload_resources.py)
 pyjwt[crypto]
 psycopg[binary]
 alembic
 moto[s3]
+pysam  # devtools/synth.py: the synthetic dbSNP VCF and its index

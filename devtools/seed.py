@@ -1,5 +1,5 @@
-"""Create the demo database: users, projects, memberships, shared resources and pipelines (HCM's uses
-the consortium step hcm/sarcomere_filter, in R).
+"""Create the demo database: users, projects, memberships, shared resources and pipelines (the default
+template for both projects).
 
     python -m devtools.seed            # local: (re)creates local/app/ from scratch
 Requires `python -m devtools.synth` first (shared synthetic resources).
@@ -7,7 +7,6 @@ Requires `python -m devtools.synth` first (shared synthetic resources).
 With S3 storage / Postgres (a dev environment on AWS) it only seeds an empty database and uploads the
 resources to the resources bucket.
 """
-import gzip
 import os
 import shutil
 import sys
@@ -41,17 +40,33 @@ PROJECTS = [
      ["HCM", "Sarcomere-negative HCM"],
      {"tom@example.org": "reviewer", "demo@gwashub.org": "uploader", "noor@example.org": "uploader"}),
 ]
+SYNTH = "Synthetic file for local development"
+# (key, title, build, description): the references the default pipeline uses, under their production file names.
 SHARED = [
-    ("hg19ToHg38.over.chain.gz", "liftOver chain GRCh37 → GRCh38 (SYNTHETIC)", "Any",
-     "Synthetic chain for local development; production uses the UCSC file."),
-    ("ref_panel_grch38.tsv.gz", "Reference panel: alleles + per-ancestry frequencies (SYNTHETIC)", "GRCh38",
-     "Synthetic panel for local development; production uses 1000 Genomes / gnomAD."),
+    ("hg19ToHg38.over.chain.gz", "liftOver chain GRCh37 → GRCh38 (SYNTHETIC)", "Any", f"{SYNTH}; production uses the UCSC file."),
+    *[(f"{name}{ext}", f"{label} reference genome{' index' if ext else ''} (SYNTHETIC)", build,
+       f"{SYNTH}; production uses {prod}.")
+      for name, label, build, prod in (("human_g1k_v37.fasta", "GRCh37", "GRCh37", "the 1000 Genomes GRCh37 FASTA"),
+                                       ("Homo_sapiens_assembly38_nochr.fasta", "GRCh38", "GRCh38", "the Broad GRCh38 FASTA without chr prefixes"))
+      for ext in ("", ".fai", ".gzi")],
+    ("dbSNP157_b38_clean.vcf.gz", "dbSNP 157 rsIDs, GRCh38 (SYNTHETIC)", "GRCh38", f"{SYNTH}; production uses dbSNP build 157."),
+    ("dbSNP157_b38_clean.vcf.gz.tbi", "dbSNP 157 index (SYNTHETIC)", "GRCh38", f"{SYNTH}."),
+    ("all_afreq_b38.tsv.gz", "1000 Genomes allele frequencies by super-population (SYNTHETIC)", "GRCh38",
+     f"{SYNTH}; production uses 1000 Genomes phase 3 (AFR, AMR, EAS, EUR, SAS)."),
+    ("genes_b38.tsv.gz", "Genes, GRCh38 (SYNTHETIC)", "GRCh38", f"{SYNTH}; production uses GENCODE 50 (resources/build/genes_gencode.sh)."),
+    ("w_hm3.snplist", "HapMap 3 SNP list for LDSC (SYNTHETIC)", "Any", f"{SYNTH}; production uses the LDSC w_hm3.snplist."),
+    *[(f"1kg_b38_{pop}{ext}", f"1000 Genomes LD panel, {pop} (SYNTHETIC)", "GRCh38",
+       f"{SYNTH}; production uses resources/build/kg1000_b38.sh.")
+      for pop in ("AFR", "AMR", "EAS", "EUR", "SAS") for ext in (".pgen", ".pvar.zst", ".psam")],
+    *[(f"UKBB.{pop}.l2{ext}", f"LD scores, {pop}{' (M_5_50)' if ext == '.M_5_50' else ''} (SYNTHETIC)", "GRCh38",
+       f"{SYNTH}; production uses the Pan-UK Biobank LD scores.")
+      for pop in ("AFR", "AMR", "CSA", "EAS", "EUR", "MID") for ext in (".ldscore.gz", ".M_5_50")],
 ]
 
 def main():
     s = settings()
     shared_dir = s.shared_resources_dir
-    if not os.path.exists(os.path.join(shared_dir, "ref_panel_grch38.tsv.gz")):
+    if not os.path.exists(os.path.join(shared_dir, "Homo_sapiens_assembly38_nochr.fasta")):
         raise SystemExit(f"Run `python -m devtools.synth` first (missing {shared_dir})")
     local = s.storage == "local"  # files on this machine: keep resources in place
     if s.is_sqlite:
@@ -78,12 +93,10 @@ def main():
         users[email] = u
     db.flush()
 
-    shared = list(SHARED) + [(f"ldscores_{pop}.tsv.gz", f"LD scores, {pop} (SYNTHETIC)", "GRCh38",
-                               "Synthetic LD scores for local development; production uses Pan-UK Biobank.")
-                              for pop in ("AFR", "AMR", "CSA", "EAS", "EUR", "MID")
-                              if os.path.exists(os.path.join(shared_dir, f"ldscores_{pop}.tsv.gz"))]
-    for key, title, build, desc in shared:
+    for key, title, build, desc in SHARED:
         path = os.path.join(shared_dir, key)
+        if not os.path.exists(path):  # e.g. the LD panels, which synth.py builds only when Docker is available
+            continue
         db.add(Resource(project_id=None, key=key, title=title, description=desc, build=build, size=os.path.getsize(path),
                         sha256=sha256_file(path), version=1, source="Synthetic (devtools/synth.py)",
                         storage_path=store(path, f"resources/shared/{key}/v1/{key}")))
@@ -95,25 +108,9 @@ def main():
             db.add(Membership(user=users[email], project=p, role=role))
     db.flush()
 
-    # HCM: a project resource (BED of synthetic "sarcomere" regions around two HCM loci) and a custom R step.
-    import pandas as pd
-    truth = pd.read_csv(os.path.join(os.path.dirname(shared_dir), "truth_causal.tsv"), sep="\t", dtype={"chr": str})
-    hcm = truth[truth["phenotype"] == "HCM"].head(2)
-    bed_dir = os.path.join(s.storage_dir if local else s.data_dir, "resources", "hcm", "sarcomere_genes_grch38.bed", "v1")
-    os.makedirs(bed_dir, exist_ok=True)
-    bed = os.path.join(bed_dir, "sarcomere_genes_grch38.bed")
-    with open(bed, "w") as f:
-        for i, r in enumerate(hcm.itertuples()):
-            f.write(f"chr{r.chr}\t{int(r.pos38) - 500000}\t{int(r.pos38) + 500000}\tSARC{i + 1}\n")
-    db.add(Resource(project_id="hcm", key="sarcomere_genes_grch38.bed", title="Core sarcomere regions ±500 kb (SYNTHETIC)",
-                    description="Regions removed by the sarcomere-variant filter.", build="GRCh38", size=os.path.getsize(bed),
-                    sha256=sha256_file(bed), version=1, source="Uploaded", added_by=users["tom@example.org"].id,
-                    storage_path=store(bed, "resources/hcm/sarcomere_genes_grch38.bed/v1/sarcomere_genes_grch38.bed")))
     tpl = services.default_template()
     services.save_pipeline(db, "hermes3", tpl, "Created from the default template", users["ama@example.org"].id)
     services.save_pipeline(db, "hcm", tpl, "Created from the default template", users["tom@example.org"].id)
-    hcm_steps = tpl[:6] + [{"step": "hcm/sarcomere_filter"}] + tpl[6:]
-    services.save_pipeline(db, "hcm", hcm_steps, "Added the HCM sarcomere-variant filter (R)", users["tom@example.org"].id)
     db.commit()
     db.close()
     print(f"Seeded {s.data_dir}: {len(USERS)} users, {len(PROJECTS)} projects. Sign in as demo@gwashub.org.")

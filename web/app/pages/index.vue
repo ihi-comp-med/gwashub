@@ -3,7 +3,7 @@ const logoSrc = '/brand/hermes-logo-full.png' // served from public/; bound so V
 const features = [
   { icon: 'pi pi-cloud-upload', title: 'Upload', text: 'Gzipped or plain TSV, CSV or TXT, uploaded directly to secure storage.' },
   { icon: 'pi pi-sliders-h', title: 'Map columns', text: 'Column names are matched to a standard schema; you confirm the mapping.' },
-  { icon: 'pi pi-check-circle', title: 'Standard QC', text: 'Harmonisation, value and allele checks, liftover to GRCh38 and alignment to a reference panel.' },
+  { icon: 'pi pi-check-circle', title: 'Standard QC', text: 'The HERMES 3 pipeline: parsing and filtering, harmonisation to the reference genome with gwas2vcf, liftover to GRCh38, LD score regression and allele-frequency checks.' },
   { icon: 'pi pi-file', title: 'Reports', text: 'Per-step results, λGC, Manhattan and QQ plots, and the cleaned file to download.' },
   { icon: 'pi pi-chart-bar', title: 'Meta-analysis', text: 'Fixed- or random-effects meta-analysis of selected datasets, with a forest plot for each locus.' },
 ]

@@ -76,7 +76,7 @@ async function save() {
       <div class="opts">
         <div>
           <h4>Phenotypes</h4>
-          <table class="ph">
+          <table class="ph compact-ui">
             <thead><tr><th>Code</th><th>Description</th><th /></tr></thead>
             <tbody>
               <tr v-for="(p, i) in form.phenotypes" :key="p">
@@ -88,7 +88,7 @@ async function save() {
               <tr v-if="!form.phenotypes.length"><td colspan="3" class="muted small">None: add at least one.</td></tr>
             </tbody>
           </table>
-          <form v-if="isReviewer" class="row add" @submit.prevent="addPheno">
+          <form v-if="isReviewer" class="row add compact-ui" @submit.prevent="addPheno">
             <InputText v-model="newPheno" placeholder="Code, e.g. HFmrEF" size="small" class="code" />
             <InputText v-model="newDesc" placeholder="Description" size="small" class="grow" />
             <Button type="submit" icon="pi pi-plus" size="small" outlined :disabled="!newPheno.trim()" aria-label="Add phenotype" />
@@ -136,12 +136,12 @@ h4 { margin: 0 0 10px; font-size: 0.8rem; text-transform: uppercase; letter-spac
 .add .code { width: 9rem; }
 .grow { flex: 1; }
 .imp { gap: 6px; margin-top: 4px; }
-.ph { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+.ph { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
 .ph th { text-align: left; font-size: 0.72rem; color: var(--gh-muted); font-weight: 600; padding: 4px 6px; }
 .ph td { padding: 3px 6px; border-top: 1px solid var(--gh-border); }
 .ph td:first-child { white-space: nowrap; }
 .checks { display: flex; flex-direction: column; gap: 8px; }
-.check { flex-wrap: nowrap; gap: 8px; cursor: pointer; font-size: 0.9rem; }
+.check { flex-wrap: nowrap; gap: 8px; cursor: pointer; font-size: 0.8rem; }
 .small { font-size: 0.78rem; }
 .end { justify-content: flex-end; margin-top: 12px; gap: 6px; }
 </style>

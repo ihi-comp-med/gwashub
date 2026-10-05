@@ -291,8 +291,8 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
               <section v-if="plotData">
                 <h3>Plots</h3>
                 <div class="plots">
-                  <div class="plot-card"><ManhattanPlot :data="plotData.manhattan" :gws="plotData.gws" /></div>
-                  <div class="plot-card"><QQPlot :data="plotData.qq" /></div>
+                  <div class="plot-card"><ManhattanPlot :data="plotData.manhattan" :gws="plotData.gws" :height="260" /></div>
+                  <div class="plot-card"><QQPlot :data="plotData.qq" :size="260" /></div>
                 </div>
               </section>
 
@@ -386,6 +386,7 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
           </TabPanel>
         </TabPanels>
       </Tabs>
+      <SupportRef :parts="[project.id, `dataset ${d.id}`, d.run && `run ${d.run.id}`]" :location="d.run?.location || d.upload_location" />
     </div>
     <div v-else class="loading"><ProgressSpinner /></div>
   </Drawer>
@@ -437,7 +438,7 @@ h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: .05em; color:
 .kv dt { color: var(--gh-muted); }
 .kv dd { margin: 0; word-break: break-all; }
 .hist { margin: 0; padding-left: 18px; }
-.plots { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: start; }
+.plots { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: stretch; }
 @media (max-width: 900px) { .plots { grid-template-columns: 1fr; } }
 .plot-card { border: 1px solid var(--gh-border); border-radius: 8px; padding: 12px; }
 .leads :deep(td) { font-size: 0.85rem; }

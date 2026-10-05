@@ -82,11 +82,8 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
     <ProjectHeader :project="project" />
     <div class="container page">
       <div class="head">
+        <h2 class="h2">Meta-analysis</h2>
         <Button v-if="isReviewer && !building" label="New meta-analysis" icon="pi pi-plus" class="new" @click="openBuilder" />
-        <div>
-          <h2 class="h2">Meta-analysis</h2>
-          <p class="page-sub">Meta-analysis of QC'd datasets with GWASHub's own method, GWAMA, METAL or a consortium's method. Every input is already aligned to the reference (effect allele = ALT) on GRCh38.</p>
-        </div>
       </div>
       <Message v-if="!isReviewer" severity="info" :closable="false" icon="pi pi-lock" class="mb">
         You can view results and plots. Only reviewers can run meta-analyses or download full results.
@@ -98,14 +95,14 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
           <div class="field"><label for="ma-name">Name</label><InputText id="ma-name" v-model="name" /></div>
 
           <h3 class="h3">1. Choose datasets</h3>
-          <div class="filters">
-            <Select v-model="filters.phenotype" :options="phenotypes" placeholder="Phenotype" />
-            <MultiSelect v-model="filters.ancestries" :options="[...ANCESTRIES]" placeholder="All ancestries" display="chip" />
-            <Select v-model="filters.sex" :options="[...SEXES]" placeholder="Any sex" show-clear />
+          <div class="filters compact-ui">
+            <Select overlay-class="compact-overlay" v-model="filters.phenotype" :options="phenotypes" placeholder="Phenotype" />
+            <MultiSelect overlay-class="compact-overlay" v-model="filters.ancestries" :options="[...ANCESTRIES]" placeholder="All ancestries" display="chip" />
+            <Select overlay-class="compact-overlay" v-model="filters.sex" :options="[...SEXES]" placeholder="Any sex" show-clear />
             <span class="spacer" />
             <span class="muted small">{{ selectedIds.length }} selected · {{ nCases.toLocaleString() }} cases / {{ nControls.toLocaleString() }} controls · {{ ancestriesSel.join(', ') || '–' }}</span>
           </div>
-          <DataTable v-model:selection="selected" :value="shown" data-key="id" size="small" :row-class="(c: any) => reason(c) ? 'disabled' : ''"
+          <DataTable v-model:selection="selected" :value="shown" data-key="id" class="dt" :row-class="(c: any) => reason(c) ? 'disabled' : ''"
                      :is-data-selectable="(e: any) => !reason(e.data)">
             <Column selection-mode="multiple" header-style="width: 3rem" />
             <Column field="cohort" header="Cohort" />
@@ -122,24 +119,24 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
             </Column>
           </DataTable>
 
-          <h3 class="h3">2. Settings <span class="muted small">(project defaults; change for this run or save as new defaults)</span></h3>
+          <h3 class="h3 step">2. Meta-analysis settings <span class="muted small">(project defaults; change for this run or save as new defaults)</span></h3>
           <div class="grid settings">
             <div class="field method">
-              <label for="ma-method">Method</label>
+              <label for="ma-method">Method <i v-if="method" v-tooltip.right="{ value: `${method.description}\n\n${method.reference}`, class: 'method-tip' }" class="pi pi-info-circle info" aria-label="About this method" /></label>
               <Select v-model="s.method" input-id="ma-method" :options="methodGroups" option-group-label="label" option-group-children="items"
                       option-label="title" option-value="key" :loading="!catalogue" />
-              <small v-if="method" class="muted">{{ method.description }}<br><em>{{ method.reference }}</em><br><span class="mono">{{ method.script }}</span> · image <span class="mono">{{ method.image }}</span></small>
-              <small class="muted">Consortia add methods by pull request to <span class="mono">pipeline/analyses/meta_analysis/&lt;consortium&gt;/</span> (CONTRIBUTING.md, section 6).</small>
+              <small v-if="method" class="muted"><span class="mono">{{ method.script }}</span> · image <span class="mono">{{ method.image }}</span></small>
             </div>
             <div class="field"><label>Eligible QC statuses</label><SelectButton v-model="s.include_statuses" :options="statusChoices" option-label="l" option-value="v" multiple /></div>
           </div>
           <h4 v-if="method?.params?.length" class="h4">{{ method.title }} parameters</h4>
           <ParamForm v-if="method" v-model="methodParams" :schema="method.params" id-prefix="mp" />
-          <h4 class="h4">Results <span class="muted small">(lead loci and heterogeneity flags, the same for every method)</span></h4>
-          <ParamForm v-if="catalogue" v-model="common" :schema="catalogue.common" id-prefix="cp" />
           <Message v-if="inflated.length && hasGc && !methodParams.genomic_control" severity="warn" :closable="false" size="small" class="gcwarn">
             {{ inflated.map(c => `${c.cohort} (λGC ${c.lambda_gc.toFixed(2)})`).join(', ') }} {{ inflated.length > 1 ? 'are' : 'is' }} inflated: consider genomic control, or excluding {{ inflated.length > 1 ? 'them' : 'it' }}.
           </Message>
+
+          <h3 class="h3 step">3. Post-processing <span class="muted small">(lead loci and heterogeneity flags; the same whichever method runs)</span></h3>
+          <ParamForm v-if="catalogue" v-model="common" :schema="catalogue.common" id-prefix="cp" />
           <div class="row end">
             <Button label="Reset to project defaults" text severity="secondary" size="small" @click="resetDefaults" />
             <Button label="Save as project defaults" icon="pi pi-bookmark" text size="small" @click="saveDefaults" />
@@ -153,7 +150,7 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
       <Card>
         <template #title>Analyses</template>
         <template #content>
-          <DataTable :value="analyses ?? []" data-key="id" row-hover class="clickable" @row-click="e => navigateTo(`/projects/${pid}/meta/${e.data.id}`)">
+          <DataTable :value="analyses ?? []" data-key="id" row-hover class="dt clickable" @row-click="e => navigateTo(`/projects/${pid}/meta/${e.data.id}`)">
             <template #empty><div class="muted empty">No meta-analyses yet.{{ isReviewer ? ' Start one with “New meta-analysis”.' : '' }}</div></template>
             <Column field="name" header="Name"><template #body="{ data }"><strong>{{ data.name }}</strong></template></Column>
             <Column header="Datasets"><template #body="{ data }">{{ data.n_datasets }}</template></Column>
@@ -174,11 +171,17 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
 </template>
 
 <style scoped>
+/* Same text size as the Datasets tables. */
+.dt :deep(td), .dt :deep(th) { font-size: 0.78rem; padding: 0.45rem 0.6rem; }
+.dt :deep(.p-tag) { font-size: 0.7rem; padding: 0.1rem 0.4rem; }
 .head { display: flex; align-items: center; gap: 20px; margin-bottom: 16px; }
-.head .new { flex: 0 0 auto; }
-.head .page-sub { margin: 0; }
+.head .h2 { margin: 0; }
+.head .new { flex: 0 0 auto; margin-left: auto; }
+.info { color: var(--p-text-muted-color); cursor: help; font-size: 0.85em; margin-left: 4px; }
 .h2 { font-size: 1.25rem; margin: 0 0 4px; }
 .h3 { font-size: 0.95rem; margin: 18px 0 10px; }
+/* The builder's numbered steps: a rule and space above each one after the first. */
+.h3.step { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--gh-border); }
 .mb { margin-bottom: 16px; }
 .small { font-size: 0.8rem; }
 .tiny { font-size: 0.72rem; }
@@ -194,4 +197,6 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
 .empty { padding: 20px; text-align: center; }
 :deep(tr.disabled td) { color: var(--gh-muted); }
 .clickable :deep(tbody tr) { cursor: pointer; }
+:global(.method-tip) { max-width: 420px; }
+:global(.method-tip .p-tooltip-text) { white-space: pre-line; }
 </style>

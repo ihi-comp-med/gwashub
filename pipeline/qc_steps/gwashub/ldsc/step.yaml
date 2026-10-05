@@ -1,17 +1,21 @@
 name: ldsc
 title: LD score regression
 description: >
-  LD score regression intercept (Bulik-Sullivan et al. 2015): separates inflation from polygenicity
-  (intercept near 1) and from confounding or stratification (intercept above 1). Uses the LD-score
-  reference for the dataset's ancestry; until that reference is uploaded, the step passes and says it didn't run.
+  LD score regression intercept with the authors' LDSC software (bulik/ldsc; Bulik-Sullivan et al. 2015): separates
+  polygenic signal (intercept near 1) from confounding or stratification (intercept above 1). Uses the Pan-UK Biobank
+  LD scores for the dataset's ancestry; until they are uploaded the step passes and says it didn't run.
 command: [python, ldsc.py]
-image: gwashub/base
+image: gwashub/ldsc
 default_on_fail: flag
 resources: []
-optional_resources: [ldscores_AFR.tsv.gz, ldscores_AMR.tsv.gz, ldscores_CSA.tsv.gz, ldscores_EAS.tsv.gz, ldscores_EUR.tsv.gz, ldscores_MID.tsv.gz]
+optional_resources: [w_hm3.snplist,
+  UKBB.AFR.l2.ldscore.gz, UKBB.AFR.l2.M_5_50, UKBB.AMR.l2.ldscore.gz, UKBB.AMR.l2.M_5_50,
+  UKBB.CSA.l2.ldscore.gz, UKBB.CSA.l2.M_5_50, UKBB.EAS.l2.ldscore.gz, UKBB.EAS.l2.M_5_50,
+  UKBB.EUR.l2.ldscore.gz, UKBB.EUR.l2.M_5_50, UKBB.MID.l2.ldscore.gz, UKBB.MID.l2.M_5_50]
+compute: {vcpus: 2, memory_gb: 16}
 params:
   - {key: warn_intercept, label: Warn above intercept, type: number, min: 1, max: 2, default: 1.1,
      help: An intercept above this suggests confounding or population stratification}
-  - {key: min_snps, label: Minimum overlapping SNPs, type: integer, min: 100, default: 5000,
-     help: Fewer SNPs in common with the LD-score reference and the regression is skipped}
-  - {key: jackknife_blocks, label: Jackknife blocks, type: integer, min: 2, max: 1000, default: 200, help: Blocks used for the intercept's standard error}
+  - {key: info_min, label: Minimum INFO (munge), type: number, min: 0, max: 1, default: 0.9, help: munge_sumstats.py --info-min}
+  - {key: maf_min, label: Minimum MAF (munge), type: number, min: 0, max: 0.5, default: 0.01, help: munge_sumstats.py --maf-min}
+  - {key: n_blocks, label: Jackknife blocks, type: integer, min: 2, max: 1000, default: 200, help: ldsc.py --n-blocks}

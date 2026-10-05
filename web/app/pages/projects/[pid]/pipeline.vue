@@ -92,11 +92,12 @@ const warnings = computed(() => {
   const keys = entries.value.map(e => e.step)
   if (keys.some(k => !k)) w.push('Some rows have no step chosen.')
   if (!keys.length) w.push('The pipeline has no steps.')
-  if (keys[0] && keys[0] !== 'gwashub/row_check') w.push('Row check should be the first step: it parses the upload into the working file.')
+  if (keys[0] && keys[0] !== 'gwashub/parse') w.push('Parse should be the first step: it reads the upload into the GWASHub format.')
   if (keys.length && keys.at(-1) !== 'gwashub/qc_report') w.push('QC report should be the last step.')
   ;[...new Set(keys.filter((k, i) => k && keys.indexOf(k) !== i))].forEach(k => w.push(`${stepOf(k)?.title} appears more than once.`))
-  const h = keys.indexOf('gwashub/harmonise_columns')
-  keys.forEach((k, i) => { if (k && k !== 'gwashub/row_check' && k !== 'gwashub/harmonise_columns' && k !== 'gwashub/qc_report' && (h === -1 || i < h)) w.push(`${stepOf(k)?.title} needs harmonised columns: put it after Harmonise columns.`) })
+  // Everything except Parse, Filter and the report works on GRCh38 positions, which Harmonise and liftover produces.
+  const h = keys.indexOf('gwashub/harmonise_liftover')
+  if (h !== -1) keys.forEach((k, i) => { if (k && i < h && !['gwashub/parse', 'gwashub/filter', 'gwashub/qc_report'].includes(k)) w.push(`${stepOf(k)?.title} needs GRCh38 positions: put it after Harmonise and liftover.`) })
   entries.value.forEach((e) => { const m = interpreterMismatch(e); if (m) w.push(`${stepOf(e.step)?.title}: ${m}`) })
   entries.value.forEach(e => stepOf(e.step)?.resources?.filter((k: string) => !resourceKeys.value.has(k)).forEach((k: string) => w.push(`${stepOf(e.step)?.title} needs the resource ${k}, which isn't available. Add it under Resources.`)))
   return [...new Set(w)]
@@ -118,9 +119,15 @@ async function save() {
 
 // --- Resources & code ----------------------------------------------------------
 const resourceFilter = ref<'all' | 'used' | 'project'>('all')
-const usedBy = (key: string) => entries.value.map(e => stepOf(e.step)).filter(s => s?.resources?.includes(key))
-const shownResources = computed(() => (pl.value?.resources ?? []).filter((r: any) =>
-  resourceFilter.value === 'all' || (resourceFilter.value === 'used' ? usedBy(r.key).length > 0 : r.scope === 'project')))
+const usedBy = (key: string) => entries.value.map(e => stepOf(e.step)).filter(s => s?.resources?.includes(key) || s?.optional_resources?.includes(key))
+const resourceSearch = ref('')
+const shownResources = computed(() => {
+  const q = resourceSearch.value.trim().toLowerCase()
+  return (pl.value?.resources ?? []).filter((r: any) =>
+    (resourceFilter.value === 'all' || (resourceFilter.value === 'used' ? usedBy(r.key).length > 0 : r.scope === 'project'))
+    && (!q || [r.key, r.title, r.description, r.source, r.build, r.scope_label, ...usedBy(r.key).map((s: any) => s.title)]
+      .some(v => String(v ?? '').toLowerCase().includes(q))))
+})
 const hostOf = (u: string) => u.replace(/^https?:\/\//, '').split('/')[0]
 const uploadOpen = ref(false)
 async function onResourceSaved(r: any) {
@@ -157,14 +164,14 @@ function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen
             <template #subtitle>Steps run top to bottom on each uploaded file, each in the image shown. Consecutive steps with the same image run together as one job; a new job starts where the image changes.</template>
             <template #content>
               <div class="head-row muted"><span /><span>Step</span><span>Image</span><span>If it fails</span><span /></div>
-              <TransitionGroup name="list" tag="ol" class="rows">
+              <TransitionGroup name="list" tag="ol" class="rows compact-ui">
                 <li v-for="(e, i) in entries" :key="e.uid" :class="['entry', { custom: stepOf(e.step)?.source === 'consortium' }]">
                   <div v-if="i > 0 && jobOf[i] !== jobOf[i - 1]" class="jobsplit muted small"><i class="pi pi-arrow-right-arrow-left" /> New job: image changes to <span class="mono">{{ e.image }}</span></div>
                   <div class="entry-row">
                     <span class="idx">{{ i + 1 }}</span>
                     <Select v-model="e.step" :options="stepOptions" option-label="label" option-value="value"
                             option-group-label="label" option-group-children="items" placeholder="Choose a step…"
-                            :disabled="!isReviewer" filter class="w-full" @change="ev => chooseStep(e, ev.value)">
+                            :disabled="!isReviewer" filter class="w-full" overlay-class="compact-overlay" @change="ev => chooseStep(e, ev.value)">
                       <template #optiongroup="{ option }">
                         <div class="og"><i :class="option.owner === 'gwashub' ? 'pi pi-box' : 'pi pi-users'" /> {{ option.label }}</div>
                       </template>
@@ -176,12 +183,12 @@ function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen
                         <span v-else class="muted">{{ placeholder }}</span>
                       </template>
                     </Select>
-                    <Select v-model="e.image" :options="imageOptions" :disabled="!isReviewer" :invalid="!!interpreterMismatch(e)" class="w-full mono-input">
+                    <Select v-model="e.image" :options="imageOptions" :disabled="!isReviewer" :invalid="!!interpreterMismatch(e)" class="w-full mono-input" overlay-class="compact-overlay">
                       <template #option="{ option }">
                         <div class="opt"><div class="mono">{{ option }}</div><div class="muted small">{{ images.find(x => x.ref === option)?.title }}</div></div>
                       </template>
                     </Select>
-                    <Select v-model="e.on_fail" :options="onFailOptions" :disabled="!isReviewer" class="w-full" />
+                    <Select v-model="e.on_fail" :options="onFailOptions" :disabled="!isReviewer" class="w-full" overlay-class="compact-overlay" />
                     <div class="acts">
                       <Button v-tooltip.top="'View code'" icon="pi pi-code" text rounded size="small" :disabled="!e.step" aria-label="View code" @click="viewCode(e.step)" />
                       <Button v-tooltip.top="'Details & parameters'" icon="pi pi-angle-down" text rounded size="small" :class="{ rot: expanded.has(e.uid) }" aria-label="Details" @click="toggle(e.uid)" />
@@ -223,7 +230,7 @@ function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen
 
           <Card v-if="isReviewer">
             <template #content>
-              <div class="save-row">
+              <div class="save-row compact-ui">
                 <InputText v-model="note" placeholder="What changed? (shown in version history)" fluid :disabled="!dirty" />
                 <Button label="Discard" severity="secondary" text :disabled="!dirty" @click="discard" />
                 <Button :label="`Save as v${pl.version + 1}`" icon="pi pi-check" :loading="saving" :disabled="!dirty || blocking" @click="save" />
@@ -235,7 +242,11 @@ function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen
           <Card>
             <template #title>
               <div class="row"><i class="pi pi-database" /> Resources<span class="spacer" />
-                <SelectButton v-model="resourceFilter" :options="[{ l: 'All', v: 'all' }, { l: 'Used by this pipeline', v: 'used' }, { l: 'Project only', v: 'project' }]"
+                <IconField class="compact-ui rsearch">
+                  <InputIcon class="pi pi-search" />
+                  <InputText v-model="resourceSearch" placeholder="Search files, titles, sources" fluid />
+                </IconField>
+                <SelectButton class="compact-ui" v-model="resourceFilter" :options="[{ l: 'All', v: 'all' }, { l: 'Used by this pipeline', v: 'used' }, { l: 'Project only', v: 'project' }]"
                               option-label="l" option-value="v" :allow-empty="false" size="small" />
               </div>
             </template>
@@ -338,7 +349,10 @@ function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen
 .mono-input :deep(input), .mono-input :deep(.p-select-label) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
 .og { font-weight: 600; display: flex; gap: 6px; align-items: center; }
 .opt { display: flex; flex-direction: column; max-width: 420px; white-space: normal; }
-.details { margin: 10px 0 2px 38px; font-size: 0.85rem; }
+.details { margin: 10px 0 2px 38px; font-size: 0.8rem; }
+.details .mono { font-size: 0.95em; }
+.rsearch { width: 240px; font-weight: 400; }
+.compact-ui.p-selectbutton :deep(.p-togglebutton) { font-size: 0.8rem; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 8px 0; }
 .kv dt { color: var(--gh-muted); }
 .kv dd { margin: 0; word-break: break-all; }

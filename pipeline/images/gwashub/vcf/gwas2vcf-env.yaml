@@ -1,0 +1,28 @@
+# Python 3.7 environment for the edited gwas2vcf in pipeline/qc_steps/gwashub/harmonise_liftover/gwas2vcf.
+# The same pins as that copy's environment.yml (hermes3_dcm); the bcftools packages live in the image instead,
+# and vgraph is pip-installed by the Dockerfile from a checksummed archive of the same commit.
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.7
+  - gcc_linux-64=9.3
+  - gxx_linux-64=9.3
+  - make
+  - zlib
+  - bzip2
+  - libcurl
+  - sysroot_linux-64=2.17
+  - kernel-headers_linux-64=3.10
+  - cython=0.29.17
+  - pysam=0.15.2
+  - attrs=21.4.0
+  - packaging=21.3
+  - pyparsing=3.0.7
+  - more-itertools=8.12.0
+  - numpy=1.15.4
+  - biopython=1.72
+  - wcwidth=0.2.5
+  - pip=22.0.4
+  - pip:
+    - marshmallow==2.18.1

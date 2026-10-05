@@ -12,3 +12,4 @@ web/.output/
 infra/cdk.out/
 infra/cdk-outputs-*.json
 *.pyc
+hermes3_dcm/

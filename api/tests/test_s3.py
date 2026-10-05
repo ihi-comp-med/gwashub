@@ -75,7 +75,7 @@ def test_qc_job_through_s3(s3, synth_small, tmp_path):
     assert {"qc/7/result.json", "qc/7/gwas_qc.tsv", "qc/7/progress.json"} <= keys
     assert not any("/resources/" in k or k.endswith("working.tsv") for k in keys)  # reference files not copied per run
     result = json.loads(s3.get_object(Bucket="gh-res", Key="qc/7/result.json")["Body"].read())
-    assert result["status"] == "completed"
+    assert result["status"] == "completed", (result["stop_reason"], [(s["key"], s["state"], s.get("messages", [])[:2]) for s in result["steps"]])
     progress = json.loads(s3.get_object(Bucket="gh-res", Key="qc/7/progress.json")["Body"].read())
     assert all(p["state"] in ("pass", "warn") for p in progress)
     assert f"qc/7/{result['outputs']['qc_report']}" in keys

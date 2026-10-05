@@ -2,10 +2,11 @@
 import importlib
 import json
 import os
-import shutil
+import re
 
 import pytest
 from fastapi.testclient import TestClient
+
 
 
 @pytest.fixture(scope="module")
@@ -121,16 +122,19 @@ def test_pipeline_permissions_and_versions(client):
     as_user(client, "jonas@example.org")
     p = client.get("/api/projects/hermes3/pipeline").json()
     assert p["version"] == 1 and p["role"] == "uploader"
-    assert any(c["key"] == "gwashub/maf_filter" for c in p["catalog"])
-    assert {r["key"] for r in p["resources"]} >= {"hg19ToHg38.over.chain.gz", "ref_panel_grch38.tsv.gz"}
-    steps = p["steps"][:4] + [{"step": "gwashub/maf_filter", "params": {"maf_threshold": 0.05}}] + p["steps"][4:]
+    assert any(c["key"] == "gwashub/filter" for c in p["catalog"])
+    assert {r["key"] for r in p["resources"]} >= {"hg19ToHg38.over.chain.gz", "dbSNP157_b38_clean.vcf.gz"}
+
+    def with_filter(params):
+        return [p["steps"][0], {"step": "gwashub/filter", "params": params}, *p["steps"][2:]]
+    steps = with_filter({"min_maf": 0.05})
     assert client.put("/api/projects/hermes3/pipeline", json={"steps": steps}).status_code == 403
     as_user(client, "ama@example.org")
     assert client.put("/api/projects/hermes3/pipeline", json={"steps": [{"step": "gwashub/nope"}]}).status_code == 422
-    maf = next(c for c in p["catalog"] if c["key"] == "gwashub/maf_filter")
-    assert maf["param_schema"][0]["type"] == "number" and maf["param_schema"][0]["max"] == 0.5
-    for bad in ({"maf_threshold": 0.9}, {"maf_threshold": "x"}, {"maf_treshold": 0.05}):  # out of range, wrong type, typo
-        r = client.put("/api/projects/hermes3/pipeline", json={"steps": p["steps"][:4] + [{"step": "gwashub/maf_filter", "params": bad}] + p["steps"][4:]})
+    maf = next(f for c in p["catalog"] if c["key"] == "gwashub/filter" for f in c["param_schema"] if f["key"] == "min_maf")
+    assert maf["type"] == "number" and maf["max"] == 0.5
+    for bad in ({"min_maf": 0.9}, {"min_maf": "x"}, {"min_mf": 0.05}):  # out of range, wrong type, typo
+        r = client.put("/api/projects/hermes3/pipeline", json={"steps": with_filter(bad)})
         assert r.status_code == 422, bad
     r =client.put("/api/projects/hermes3/pipeline", json={"steps": steps, "note": "MAF 5%"})
     assert r.json()["version"] == 2
@@ -144,41 +148,32 @@ def test_rerun_uses_new_pipeline_version(client):
     assert client.post(f"/api/datasets/{ok['id']}/rerun").status_code == 200
     d = client.get(f"/api/datasets/{ok['id']}").json()
     assert d["run"]["pipeline_version"] == 2
-    assert any(s["key"] == "gwashub/maf_filter" for s in d["run"]["steps"])
+    assert next(s for s in d["run"]["steps"] if s["key"] == "gwashub/filter")["state"] in ("pass", "warn")
     as_user(client, "jonas@example.org")
     assert client.post(f"/api/datasets/{ok['id']}/rerun").status_code == 403
 
 
 def test_code_viewer_files(client):
     as_user(client, "jonas@example.org")
-    r = client.get("/api/projects/hermes3/steps/files", params={"key": "gwashub/liftover"}).json()
-    assert r["files"][0]["path"] == "pipeline/qc_steps/gwashub/liftover/liftover.py"
-    assert any(f["path"] == "pipeline/qc_steps/_lib/chain.py" for f in r["files"])
-    as_user(client, "demo@gwashub.org")
-    r = client.get("/api/projects/hcm/steps/files", params={"key": "hcm/sarcomere_filter"}).json()
-    assert r["files"][0]["path"] == "pipeline/qc_steps/hcm/sarcomere_filter/sarcomere_filter.R" and "data.table" in r["files"][0]["content"]
+    r = client.get("/api/projects/hermes3/steps/files", params={"key": "gwashub/harmonise_liftover"}).json()
+    assert r["files"][0]["path"] == "pipeline/qc_steps/gwashub/harmonise_liftover/harmonise_liftover.py"
+    paths = {f["path"] for f in r["files"]}
+    assert {"pipeline/qc_steps/gwashub/harmonise_liftover/gwas2vcf/main.py", "pipeline/qc_steps/_lib/common.py"} <= paths
+    r = client.get("/api/projects/hermes3/steps/files", params={"key": "gwashub/parse"}).json()
+    assert r["files"][0]["path"] == "pipeline/qc_steps/gwashub/parse/parse.R" and "data.table" in r["files"][0]["content"]
 
 
 def test_pipeline_lists_consortium_steps_and_images(client):
     as_user(client, "tom@example.org")
     pl = client.get("/api/projects/hcm/pipeline").json()
-    step = next(c for c in pl["catalog"] if c["key"] == "hcm/sarcomere_filter")
-    assert step["owner"] == "hcm" and step["source"] == "consortium" and step["image"] == "gwashub/base-r"
-    assert {"gwashub/base", "gwashub/base-r"} <= {i["ref"] for i in pl["images"]}
-    # The HCM pipeline (R step in the middle) is three image groups.
-    assert [g["image"] for g in pl["groups"]] == ["gwashub/base", "gwashub/base-r", "gwashub/base"]
+    step = next(c for c in pl["catalog"] if c["key"] == "custom_example/hello_world")
+    assert step["owner"] == "custom_example" and step["source"] == "consortium" and step["image"] == "gwashub/base"
+    assert {"gwashub/base", "gwashub/base-r", "gwashub/vcf", "gwashub/ldsc"} <= {i["ref"] for i in pl["images"]}
+    # The default pipeline is one job per change of image.
+    assert [g["image"] for g in pl["groups"]] == ["gwashub/base-r", "gwashub/vcf", "gwashub/ldsc", "gwashub/base"]
     assert client.post("/api/projects/hcm/custom-steps", json={}).status_code in (404, 405)  # git-repo steps are gone
-    bad = client.put("/api/projects/hcm/pipeline", json={"steps": [{"step": "gwashub/row_check", "image": "nobody/nothing"}]})
+    bad = client.put("/api/projects/hcm/pipeline", json={"steps": [{"step": "gwashub/parse", "image": "nobody/nothing"}]})
     assert bad.status_code == 422 and "unknown image" in bad.json()["detail"]
-
-
-@pytest.mark.skipif(not shutil.which("Rscript"), reason="needs R")
-def test_hcm_pipeline_runs_the_r_step(client, synth_small):
-    as_user(client, "demo@gwashub.org")  # uploader in HCM
-    up = upload(client, synth_small, synth_small["manifest"][0], project="hcm", phenotype="HCM")
-    d = client.get(f"/api/datasets/{up['id']}").json()
-    step = next(s for s in d["run"]["steps"] if s["key"] == "hcm/sarcomere_filter")
-    assert step["state"] == "pass" and step["metrics"]["regions"] == 2 and step["image"] == "gwashub/base-r"
 
 
 def test_resources_upload(client, tmp_path):
@@ -195,7 +190,7 @@ def test_resources_upload(client, tmp_path):
     r2 = client.post("/api/projects/hermes3/resources", files={"file": ("exclude.bed", f.open("rb"))}, data={"meta": json.dumps(meta)})
     assert (r1.json()["version"], r2.json()["version"]) == (1, 2)
     shared = client.post("/api/projects/hermes3/resources", files={"file": ("x", f.open("rb"))},
-                         data={"meta": json.dumps({**meta, "key": "ref_panel_grch38.tsv.gz"})})
+                         data={"meta": json.dumps({**meta, "key": "all_afreq_b38.tsv.gz"})})
     assert shared.status_code == 409
 
 
@@ -249,35 +244,46 @@ def test_meta_analysis(client, synth_small):
     assert client.post("/api/projects/hermes3/meta", json={"name": "x", "dataset_ids": eligible[:1]}).status_code == 422
     failed = next(c["id"] for c in cands if c["status"] == "failed")
     assert client.post("/api/projects/hermes3/meta", json={"name": "x", "dataset_ids": eligible + [failed]}).status_code == 422
-    # Settings in the format from before there were several methods still work (read as gwashub/ivw).
-    r = client.post("/api/projects/hermes3/meta", json={"name": "HF all", "dataset_ids": eligible, "settings": {"method": "random"}})
+    r = client.post("/api/projects/hermes3/meta", json={"name": "HF all", "dataset_ids": eligible,
+                                                         "settings": {"params": {"model": "random", "genomic_control_output": True}}})
     assert r.status_code == 201
     ma = client.get(f"/api/meta/{r.json()['id']}").json()
     assert ma["status"] == "completed", ma["error"]
+    assert re.search(rf"/meta/hermes3/{ma['id']}-\d{{8}}-\d{{6}}$", ma["location"]), ma["location"]
     assert ma["summary"]["n_datasets"] == len(eligible) and ma["summary"]["n_loci"] >= 3
     assert ma["lead_loci"] and ma["forest"] and ma["plot_data"]["manhattan"]["x"]
-    assert ma["settings"]["method"] == "gwashub/ivw" and ma["settings"]["params"]["model"] == "random"
-    assert ma["method"]["title"].startswith("Inverse-variance") and ma["settings"]["common"]["gws"] == 5e-8
+    assert ma["settings"]["method"] == "gwashub/gwama" and ma["settings"]["params"]["model"] == "random"  # the default method
+    assert ma["method"]["title"] == "GWAMA" and ma["settings"]["common"]["gws"] == 5e-8
     assert client.get(f"/api/meta/{ma['id']}/files/meta_results.tsv.gz").status_code == 200
+    assert set(ma["files"]) == {"README.txt", "datasets.tsv", "lead_loci.tsv", "signals.tsv", "meta_results.tsv.gz"}
+    # GWAMA's own files are listed and downloadable by every member; nothing else from the run folder is.
+    gwama_files = {f["path"] for f in ma["method_files"]}
+    assert {"gwama_console.txt", "gwama_log.txt"} <= gwama_files
+    assert "--genomic_control_output" in client.get(f"/api/meta/{ma['id']}/files/gwama_console.txt").text
+    assert client.get(f"/api/meta/{ma['id']}/files/inputs.json").status_code == 404
+    ds_tsv = client.get(f"/api/meta/{ma['id']}/files/datasets.tsv")
+    assert ds_tsv.status_code == 200 and ds_tsv.text.startswith("position\tdataset_id")
+    assert "Effect allele" in client.get(f"/api/meta/{ma['id']}/files/README.txt").text
 
     as_user(client, "jonas@example.org")
     assert client.get(f"/api/meta/{ma['id']}").status_code == 200  # uploaders can view results
     assert client.get(f"/api/meta/{ma['id']}/files/manhattan.png").status_code == 200
     assert client.get(f"/api/meta/{ma['id']}/files/meta_results.tsv.gz").status_code == 403
-    assert client.put("/api/projects/hermes3/meta/settings", json={"method": "gwashub/ivw"}).status_code == 403
+    assert client.get(f"/api/meta/{ma['id']}/files/gwama_log.txt").status_code == 200
+    assert client.put("/api/projects/hermes3/meta/settings", json={"method": "gwashub/gwama"}).status_code == 403
     as_user(client, "ama@example.org")
     s = client.put("/api/projects/hermes3/meta/settings", json={"method": "gwashub/metal", "params": {"gwashub/metal": {"scheme": "samplesize"}},
-                                                                 "common": {"clump_kb": 250}}).json()["settings"]
-    assert s["method"] == "gwashub/metal" and s["params"]["gwashub/metal"]["scheme"] == "samplesize" and s["common"]["clump_kb"] == 250
+                                                                 "common": {"merge_kb": 200}}).json()["settings"]
+    assert s["method"] == "gwashub/metal" and s["params"]["gwashub/metal"]["scheme"] == "samplesize" and s["common"]["merge_kb"] == 200
     assert client.put("/api/projects/hermes3/meta/settings", json={"method": "nobody/bayes"}).status_code == 422
-    bad = client.put("/api/projects/hermes3/meta/settings", json={"method": "gwashub/ivw", "params": {"gwashub/ivw": {"model": "bayes"}}})
+    bad = client.put("/api/projects/hermes3/meta/settings", json={"method": "gwashub/gwama", "params": {"gwashub/gwama": {"model": "bayes"}}})
     assert bad.status_code == 422 and "Model" in bad.json()["detail"]
-    assert client.put("/api/projects/hermes3/meta/settings", json={"method": "gwashub/ivw", "params": {}, "common": {}}).status_code == 200
+    assert client.put("/api/projects/hermes3/meta/settings", json={"method": "gwashub/gwama", "params": {}, "common": {}}).status_code == 200
 
     # Every method is offered with typed parameters; the example consortium method runs end to end.
     ms = client.get("/api/meta/methods").json()
-    assert ms["default_method"] == "gwashub/ivw" and ms["methods"][0]["key"] == "gwashub/ivw"
-    assert {"gwashub/gwama", "gwashub/metal", "custom_example/custom_meta_analysis"} <= {m["key"] for m in ms["methods"]}
+    assert ms["default_method"] == "gwashub/gwama" and ms["methods"][0]["key"] == "gwashub/gwama"
+    assert {m["key"] for m in ms["methods"]} == {"gwashub/gwama", "gwashub/metal", "custom_example/custom_meta_analysis"}
     r = client.post("/api/projects/hermes3/meta", json={"name": "Z-score", "dataset_ids": eligible, "settings": {
         "method": "custom_example/custom_meta_analysis", "params": {"weighting": "equal"}}})
     assert r.status_code == 201, r.text
@@ -380,8 +386,12 @@ def test_delete_dataset(client, synth_small):
     as_user(client, "jonas@example.org")
     mine = upload(client, synth_small, synth_small["manifest"][0])
     d = client.get(f"/api/datasets/{mine['id']}").json()
-    run_dir = os.path.join(settings().data_dir, "runs", "qc", str(d["run"]["id"]))
-    upload_dir = os.path.join(settings().storage_dir, "uploads", "hermes3", str(mine["id"]))
+    # Folders are named by project, dataset, run and time, and shown on the page for help requests.
+    run_dir, upload_dir = d["run"]["location"], d["upload_location"]
+    assert re.fullmatch(re.escape(os.path.join(settings().data_dir, "runs", "qc", "hermes3", str(mine["id"]), f"{d['run']['id']}-"))
+                        + r"\d{8}-\d{6}", run_dir), run_dir
+    assert re.fullmatch(re.escape(os.path.join(settings().storage_dir, "uploads", "hermes3", f"{mine['id']}-")) + r"\d{8}-\d{6}",
+                        upload_dir), upload_dir
     assert os.path.isdir(run_dir) and os.path.isdir(upload_dir)
 
     as_user(client, "mei@example.org")  # another uploader can't
@@ -595,6 +605,35 @@ def test_admin_invite_and_projects(client, capsys):
     assert p["role"] == "reviewer" and client.get("/api/projects/lvsys/pipeline").json()["version"] == 1
     admin.main(["remove-member", "new.person@example.org", "lvsys"])
     assert client.get("/api/projects/lvsys").status_code == 404
+
+
+def test_admin_add_resources_from_manifest(client, tmp_path, capsys):
+    """add-resources registers files already in storage; the same sha256 again is a no-op, a new one a new version."""
+    import json
+    from gwashub_api import admin
+    from gwashub_api.storage import sha256_file
+    f = tmp_path / "genes_test.tsv.gz"
+    f.write_bytes(b"gene data")
+    entry = {"key": "genes_test.tsv.gz", "title": "Genes", "description": "v1", "build": "GRCh38", "source": "https://example.org",
+             "sha256": sha256_file(str(f)), "size": f.stat().st_size, "storage_path": str(f)}
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"resources": [entry]}))
+    admin.main(["add-resources", str(manifest)])
+    admin.main(["add-resources", str(manifest)])
+    f.write_bytes(b"gene data, rebuilt")
+    manifest.write_text(json.dumps({"resources": [{**entry, "sha256": sha256_file(str(f)), "size": f.stat().st_size}]}))
+    admin.main(["add-resources", str(manifest)])
+    out = capsys.readouterr().out
+    assert "added as v1" in out and "unchanged (v1)" in out and "added as v2" in out
+    from sqlalchemy import select
+    from gwashub_api.db import SessionLocal
+    from gwashub_api.models import Resource
+    with SessionLocal() as db:
+        rows = db.scalars(select(Resource).where(Resource.key == "genes_test.tsv.gz").order_by(Resource.version)).all()
+        assert [(r.version, r.project_id, r.source) for r in rows] == [(1, None, "https://example.org"), (2, None, "https://example.org")]
+    manifest.write_text(json.dumps({"resources": [{**entry, "storage_path": str(tmp_path / "absent")}]}))
+    with pytest.raises(SystemExit):
+        admin.main(["add-resources", str(manifest)])
 
 
 def test_worker_records_messages_and_reconciles(client, synth_small, monkeypatch):

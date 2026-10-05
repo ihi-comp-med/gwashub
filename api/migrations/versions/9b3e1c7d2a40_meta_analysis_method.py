@@ -17,7 +17,7 @@ depends_on = None
 def upgrade():
     # Every meta-analysis run before there were several methods used GWASHub's inverse-variance method.
     with op.batch_alter_table('meta_analysis', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('method', sa.String(length=200), server_default='gwashub/ivw', nullable=False))
+        batch_op.add_column(sa.Column('method', sa.String(length=200), server_default='gwashub/gwama', nullable=False))
 
 
 def downgrade():

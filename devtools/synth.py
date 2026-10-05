@@ -1,9 +1,11 @@
 """Synthetic genome, reference resources and fake GWAS summary statistics for local development.
 
 Everything here is SYNTHETIC: a made-up GRCh37 -> GRCh38 chain (with gaps and an inverted
-segment), a made-up reference panel with per-ancestry allele frequencies, and simulated
-summary statistics with shared causal loci. It lets the whole pipeline run offline and
-deterministically. Do not use these files for real analyses.
+segment), reference genomes for both builds (all N except the variants' reference alleles),
+a dbSNP-like VCF, 1000 Genomes-like allele frequencies, LD scores in LDSC's format, and
+simulated summary statistics with shared causal loci. Resources use the production file
+names so the default pipeline runs offline and deterministically. Do not use these files for
+real analyses.
 
     python -m devtools.synth --out local/synthetic   # resources + the demo datasets
     python -m devtools.synth --out /tmp/x --small  # tiny version (tests)
@@ -12,7 +14,9 @@ import argparse
 import gzip
 import json
 import os
-from dataclasses import dataclass, field, asdict
+import struct
+import zlib
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -66,8 +70,9 @@ def make_chain(rng, inverted_chroms=("5", "16")):
 
 
 def write_chain(path, segments, q_sizes):
+    """SYNTHETIC chain (not real GRCh37 -> GRCh38). No comment line: bcftools +liftover, like UCSC's own tools, reads
+    only chain records."""
     with gzip.open(path, "wt") as f:
-        f.write("# SYNTHETIC chain file for GWASHub local development. Not real GRCh37->GRCh38.\n")
         for i, s in enumerate(segments):
             t_size = CHR_LEN_37[int(s.chr) - 1]
             q_size = q_sizes[s.chr]
@@ -154,31 +159,264 @@ def make_variants(rng, n_variants, segments, q_sizes, n_hotspots=30, per_hotspot
     return df
 
 
-def write_ref_panel(path, variants):
-    panel = variants[variants["pos38"].notna()].copy()
-    panel["pos"] = panel["pos38"].astype(int)
-    panel = panel.sort_values(["chr", "pos"], key=lambda s: s.astype(int) if s.name == "chr" else s)
-    cols = ["chr", "pos", "rsid", "ref", "alt"] + [f"af_{a}" for a in ANCESTRIES]
-    with gzip.open(path, "wt") as f:
-        f.write("# SYNTHETIC reference panel (GRCh38) for GWASHub local development.\n")
-        panel[cols].to_csv(f, sep="\t", index=False)
-
-
 LD_POPULATIONS = ("AFR", "AMR", "CSA", "EAS", "EUR", "MID")
+LD_FREQ = {"AFR": "AFR", "AMR": "AMR", "CSA": "SAS", "EAS": "EAS", "EUR": "EUR", "MID": "EUR"}  # whose frequencies set M_5_50
 
 
-def write_ld_scores(rng, res_dir, variants):
-    """Synthetic LD scores per population, in the format the gwashub/ldsc step reads: chr, pos (GRCh38), l2.
-    Higher in the hotspots where simulated signal sits, so polygenic signal shows up as slope (as with real
-    LD) rather than intercept. Production uses Pan-UK Biobank LD scores."""
-    panel = variants[variants["pos38"].notna()]
-    hot = panel["hotspot"].to_numpy().astype(float)  # simulated causal variants and their neighbours sit in hotspots
+def write_ldsc_reference(rng, res_dir, variants):
+    """Synthetic LD scores in LDSC's format, named as the Pan-UK Biobank release the gwashub/ldsc step expects:
+    UKBB.<POP>.l2.ldscore.gz (CHR SNP BP L2) and UKBB.<POP>.l2.M_5_50, plus the HapMap 3 list w_hm3.snplist.
+    Higher in the hotspots where simulated signal sits, so polygenic signal shows up as slope (as with real LD)
+    rather than intercept."""
+    panel = variants[variants["pos38"].notna()].sort_values(["chr", "pos38"], key=lambda c: c.astype(int) if c.name == "chr" else c)
+    hot = panel["hotspot"].to_numpy().astype(float)
+    snp = (panel["ref"].str.len() == 1) & (panel["alt"].str.len() == 1)
+    panel[snp][["rsid", "alt", "ref"]].rename(columns={"rsid": "SNP", "alt": "A1", "ref": "A2"}).to_csv(
+        os.path.join(res_dir, "w_hm3.snplist"), sep="\t", index=False)
     for pop in LD_POPULATIONS:
         l2 = rng.gamma(2.0, 10.0, len(panel)) + hot * rng.gamma(4.0, 40.0, len(panel))
-        ld = pd.DataFrame({"chr": panel["chr"].to_numpy(), "pos": panel["pos38"].astype(int).to_numpy(), "l2": np.round(l2, 3)})
-        with gzip.open(os.path.join(res_dir, f"ldscores_{pop}.tsv.gz"), "wt") as f:
-            f.write(f"# SYNTHETIC LD scores ({pop}, GRCh38) for GWASHub local development.\n")
-            ld.to_csv(f, sep="\t", index=False)
+        ld = pd.DataFrame({"CHR": panel["chr"].astype(int).to_numpy(), "SNP": panel["rsid"].to_numpy(),
+                           "BP": panel["pos38"].astype(int).to_numpy(), "L2": np.round(l2, 3)})
+        ld.to_csv(os.path.join(res_dir, f"UKBB.{pop}.l2.ldscore.gz"), sep="\t", index=False, compression="gzip")
+        f = panel[f"af_{LD_FREQ[pop]}"]
+        with open(os.path.join(res_dir, f"UKBB.{pop}.l2.M_5_50"), "w") as fh:
+            fh.write(f"{int(((f > 0.05) & (f < 0.95)).sum())}\n")
+
+
+# --------------------------------------------------------------------------------------
+# Reference genomes, dbSNP and allele frequencies
+# --------------------------------------------------------------------------------------
+FASTA_LINE = 60
+_BGZF_EOF = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
+
+
+def _bgzf_block(data: bytes) -> bytes:
+    c = zlib.compressobj(1, zlib.DEFLATED, -15)
+    body = c.compress(data) + c.flush()
+    header = struct.pack("<BBBBIBBHBBHH", 31, 139, 8, 4, 0, 0, 255, 6, 66, 67, 2, len(body) + 25)
+    return header + body + struct.pack("<II", zlib.crc32(data) & 0xFFFFFFFF, len(data))
+
+
+def write_fasta(path, contigs):
+    """A bgzipped FASTA (+ .fai and .gzi, as `samtools faidx` makes) of N except at the given bases.
+    contigs: [(name, length, {1-based position: base})]. Full-length chromosomes stay a few MB because every
+    all-N block compresses to the same bytes, which are written once and repeated."""
+    width = FASTA_LINE + 1
+    payload = width * 1070  # whole lines per block, so every all-N block is identical
+    n_data = (b"N" * FASTA_LINE + b"\n") * 1070
+    n_block = _bgzf_block(n_data)
+    fai, gzi = [], []
+    coff = uoff = 0
+    with open(path, "wb") as out:
+        def emit(data, block=None):
+            nonlocal coff, uoff
+            block = block or _bgzf_block(data)
+            if uoff:
+                gzi.append((coff, uoff))
+            out.write(block)
+            coff, uoff = coff + len(block), uoff + len(data)
+
+        for name, length, bases in contigs:
+            emit(f">{name}\n".encode())
+            fai.append((name, length, uoff))
+            nbytes = length + (length + FASTA_LINE - 1) // FASTA_LINE
+            edits = sorted(((pos - 1) + (pos - 1) // FASTA_LINE, ord(b)) for pos, b in bases.items())
+            k = 0
+            for start in range(0, nbytes, payload):
+                size = min(payload, nbytes - start)
+                lo = k
+                while k < len(edits) and edits[k][0] < start + size:
+                    k += 1
+                if size == payload and lo == k:
+                    emit(n_data, n_block)
+                    continue
+                arr = np.full(size, ord("N"), dtype=np.uint8)
+                arr[(np.arange(start, start + size) % width) == FASTA_LINE] = 10
+                if start + size == nbytes:
+                    arr[-1] = 10
+                for off, b in edits[lo:k]:
+                    arr[off - start] = b
+                emit(arr.tobytes())
+        out.write(_BGZF_EOF)
+    with open(path + ".fai", "w") as f:
+        for name, length, offset in fai:
+            f.write(f"{name}\t{length}\t{offset}\t{FASTA_LINE}\t{width}\n")
+    with open(path + ".gzi", "wb") as f:
+        f.write(struct.pack("<Q", len(gzi)))
+        for c, u in gzi:
+            f.write(struct.pack("<QQ", c, u))
+
+
+FLANK = 30
+
+
+def reference_bases(variants, build, q_sizes, seed=7):
+    """{chr: {pos: base}} so that each variant's reference allele is in the genome of `build`, with FLANK random bases
+    either side (the same sequence in both builds) so indels have real context to normalise against. GRCh38 forward
+    alleles at pos38; GRCh37 at pos37, reverse-complemented in inverted segments (indels there are left out and fail
+    harmonisation, as they would liftover). Alleles overlapping one already written are left out; flanks never
+    overwrite an allele."""
+    rng = np.random.default_rng(seed)
+    out = {c: {} for c in variants["chr"].unique()}
+    flanks = []
+    for v in variants.itertuples():
+        left, right = "".join(rng.choice(list("ACGT"), FLANK)), "".join(rng.choice(list("ACGT"), FLANK))  # GRCh38 strand
+        if build == "GRCh38":
+            if pd.isna(v.pos38):
+                continue
+            pos, allele, minus = int(v.pos38), v.ref, False
+        else:
+            pos, allele, minus = int(v.pos37), v.ref, v.strand37to38 == "-"
+            if minus:
+                if len(v.ref) > 1 or len(v.alt) > 1:
+                    continue
+                allele = v.ref.translate(COMP)
+                left, right = right[::-1].translate(COMP), left[::-1].translate(COMP)
+        bases = out[v.chr]
+        span = range(pos, pos + len(allele))
+        if any(p in bases for p in span):
+            continue
+        bases.update(zip(span, allele))
+        flanks.append((bases, pos - FLANK, left))
+        flanks.append((bases, pos + len(allele), right))
+    for bases, start, seq in flanks:
+        for p, b in zip(range(start, start + len(seq)), seq):
+            if p > 0:
+                bases.setdefault(p, b)
+    return out
+
+
+def write_reference_genomes(res_dir, variants, q_sizes):
+    chroms = [str(i + 1) for i in range(len(CHR_LEN_37))]
+    for build, name, sizes in (("GRCh37", "human_g1k_v37.fasta", dict(zip(chroms, CHR_LEN_37))),
+                               ("GRCh38", "Homo_sapiens_assembly38_nochr.fasta", q_sizes)):
+        bases = reference_bases(variants, build, q_sizes)
+        write_fasta(os.path.join(res_dir, name), [(c, sizes[c], bases.get(c, {})) for c in chroms])
+
+
+def write_dbsnp(res_dir, variants, q_sizes):
+    """dbSNP-like GRCh38 VCF (bgzipped + tabix index) with the variants' rsIDs."""
+    import pysam
+    panel = variants[variants["pos38"].notna()].copy()
+    panel["pos"] = panel["pos38"].astype(int)
+    panel = panel.sort_values(["chr", "pos"], key=lambda c: c.astype(int) if c.name == "chr" else c)
+    plain = os.path.join(res_dir, "dbSNP157_b38_clean.vcf")
+    with open(plain, "w") as f:
+        f.write("##fileformat=VCFv4.2\n##source=SYNTHETIC dbSNP-like file for GWASHub local development\n")
+        for c in sorted(q_sizes, key=int):
+            f.write(f"##contig=<ID={c},length={q_sizes[c]}>\n")
+        f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+        for v in panel.itertuples():
+            f.write(f"{v.chr}\t{v.pos}\t{v.rsid}\t{v.ref}\t{v.alt}\t.\t.\t.\n")
+    pysam.tabix_index(plain, preset="vcf", force=True)  # -> .vcf.gz + .vcf.gz.tbi
+
+
+def write_allele_frequencies(path, variants):
+    """1000 Genomes-like ALT allele frequencies per super-population (GRCh38), in the format resources/build/kg1000_b38.sh
+    makes and gwashub/eaf_check reads."""
+    panel = variants[variants["pos38"].notna()].copy()
+    panel["pos_b38"] = panel["pos38"].astype(int)
+    panel["id"] = panel["chr"] + ":" + panel["pos_b38"].astype(str) + ":" + panel["ref"] + ":" + panel["alt"]
+    for anc in ANCESTRIES:
+        panel[f"{anc.lower()}_afreq"] = panel[f"af_{anc}"]
+    cols = ["id", "chr", "pos_b38", "ref", "alt"] + [f"{a.lower()}_afreq" for a in ANCESTRIES]
+    panel[cols].to_csv(path, sep="\t", index=False, compression="gzip")
+
+
+def write_genes(rng, path, variants, q_sizes, per_chr=12):
+    """GENCODE-like genes (GRCh38) in the format resources/build/genes_gencode.sh makes: a few per chromosome, with
+    some placed over the hotspots where simulated signals sit, so locus plots have a gene track."""
+    rows, k = [], 0
+    hot = variants[variants["hotspot"] & variants["pos38"].notna()]
+    for c in [str(i) for i in range(1, 23)]:
+        size = q_sizes[c]
+        centres = list(rng.integers(1_000_000, size - 1_000_000, per_chr))
+        centres += list(hot.loc[hot["chr"] == c, "pos38"].astype(int).drop_duplicates().iloc[::40])
+        for centre in sorted(centres):
+            k += 1
+            length = int(rng.integers(5_000, 150_000))
+            start = max(1, int(centre) - length // 2)
+            n_ex = int(rng.integers(2, 12))
+            cuts = np.sort(rng.choice(np.arange(start, start + length, 100), 2 * n_ex, replace=False))
+            exons = ",".join(f"{a}-{b}" for a, b in zip(cuts[0::2], cuts[1::2]))
+            gtype = "protein_coding" if rng.random() < 0.7 else "lncRNA"
+            rows.append((c, start, start + length, "+" if rng.random() < 0.5 else "-", f"ENSGSYN{k:06d}", f"SYN{k}", gtype, exons))
+    pd.DataFrame(rows, columns=["chr", "start", "end", "strand", "gene_id", "gene_name", "gene_type", "exons"]).to_csv(
+        path, sep="\t", index=False, compression="gzip")
+
+
+PANEL_POPS = ("AFR", "AMR", "EAS", "EUR", "SAS")
+
+
+def panel_haplotypes(rng, variants, pop, n_samples, block_bp=100_000, n_founders=4, n_patterns=3, shared=0.7, mutation=0.01):
+    """Phased haplotypes (2 × n_samples, variants) with realistic LD. Within each ~100 kb block every haplotype copies one
+    of a few founder haplotypes; most variants (`shared`) follow one of a few allele patterns across the founders, so
+    variants on the same pattern are in strong LD (r² near 1) and others partial; the rest take independent founder
+    alleles from their frequency. Blocks are independent."""
+    af = variants[f"af_{pop}"].to_numpy()
+    block = (variants["chr"].astype(int).to_numpy() * 10_000 + variants["pos38"].to_numpy() // block_bp).astype(int)
+    _, block_idx = np.unique(block, return_inverse=True)
+    n_blocks, n_var = block_idx.max() + 1, len(variants)
+    patterns = rng.random((n_blocks, n_patterns, n_founders)) < 0.5  # allele pattern across founders, per block
+    patterns[:, :, 0] = ~patterns[:, :, 1:].all(axis=2)  # avoid all-same patterns (monomorphic)
+    pick = rng.integers(0, n_patterns, n_var)
+    flip = rng.random(n_var) < 0.5
+    founder_alleles = (patterns[block_idx, pick].T ^ flip)  # (n_founders, n_var)
+    independent = rng.random(n_var) >= shared
+    founder_alleles[:, independent] = rng.random((n_founders, int(independent.sum()))) < af[independent]
+    choice = rng.integers(0, n_founders, (2 * n_samples, n_blocks))  # which founder each haplotype copies, per block
+    haps = founder_alleles[choice[:, block_idx], np.arange(n_var)]
+    return (haps ^ (rng.random(haps.shape) < mutation)).astype(np.uint8)
+
+
+def write_ld_panels(rng, res_dir, variants, n_samples=60):
+    """1000 Genomes-like LD reference panels (1kg_b38_<POP>.pgen/.pvar.zst/.psam), built from a synthetic VCF with
+    the same PLINK 2 commands as resources/build/kg1000_b38.sh. Needs Docker and the gwashub/base image; without them
+    the panels are skipped (meta-analysis lead loci then fall back to a distance window)."""
+    import shutil
+    import subprocess
+    import tempfile
+    if not shutil.which("docker") or subprocess.run(["docker", "image", "inspect", "gwashub/base"], capture_output=True).returncode:
+        print("synth: no Docker image gwashub/base; skipping the LD panels")
+        return
+    panel = variants[variants["pos38"].notna()].copy()
+    panel["pos38"] = panel["pos38"].astype(int)
+    panel = panel.sort_values(["chr", "pos38"], key=lambda c: c.astype(int) if c.name == "chr" else c).reset_index(drop=True)
+    tmp = tempfile.mkdtemp(prefix="synth_panels_", dir=res_dir)
+    samples, gts = [], []
+    for pop in PANEL_POPS:
+        haps = panel_haplotypes(rng, panel, pop, n_samples)
+        gts.append(np.char.add(np.char.add(haps[0::2].T.astype(str), "|"), haps[1::2].T.astype(str)))
+        samples += [(f"{pop}{i:03d}", pop) for i in range(n_samples)]
+    gt = np.concatenate(gts, axis=1)
+    with open(os.path.join(tmp, "panel.vcf"), "w") as f:
+        f.write("##fileformat=VCFv4.2\n##source=SYNTHETIC LD reference panel for GWASHub local development\n")
+        f.write('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n')
+        for c in sorted(panel["chr"].unique(), key=int):
+            f.write(f"##contig=<ID={c}>\n")
+        f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + "\t".join(s for s, _ in samples) + "\n")
+        for v, row in zip(panel.itertuples(), gt):
+            f.write(f"{v.chr}\t{v.pos38}\t.\t{v.ref}\t{v.alt}\t.\t.\t.\tGT\t" + "\t".join(row) + "\n")
+    with open(os.path.join(tmp, "panel.psam"), "w") as f:
+        f.write("#IID\tSEX\tSuperPop\n" + "".join(f"{s}\t2\t{p}\n" for s, p in samples))
+    res = os.path.realpath(res_dir)
+    tmp = os.path.realpath(tmp)
+    cmd = f"""set -e
+plink2 --vcf panel.vcf --psam panel.psam --make-pgen vzs --out all >/dev/null
+plink2 --pfile all vzs --keep-founders --chr 1-22,X --max-alleles 2 --output-chr MT --set-all-var-ids @:#:\\$r:\\$a \\
+       --new-id-max-allele-len 1000 missing --rm-dup exclude-all --make-pgen vzs --out founders >/dev/null
+for pop in {' '.join(PANEL_POPS)}; do
+  plink2 --pfile founders vzs --keep-if SuperPop==$pop --mac 1 --make-pgen vzs --out {res}/1kg_b38_$pop >/dev/null
+done"""
+    proc = subprocess.run(["docker", "run", "--rm", "-u", f"{os.getuid()}:{os.getgid()}", "-v", f"{res}:{res}", "-w", tmp,
+                           "--entrypoint", "bash", "gwashub/base", "-c", cmd], capture_output=True, text=True)
+    shutil.rmtree(tmp)
+    for pop in PANEL_POPS:
+        for ext in (".log",):
+            if os.path.exists(os.path.join(res, f"1kg_b38_{pop}{ext}")):
+                os.remove(os.path.join(res, f"1kg_b38_{pop}{ext}"))
+    if proc.returncode:
+        raise RuntimeError(f"building the synthetic LD panels failed: {proc.stderr[-1500:]}")
 
 
 # --------------------------------------------------------------------------------------
@@ -364,8 +602,12 @@ def generate(out, n_variants=40000, small=False, seed=20261002):
     segments, q_sizes = make_chain(rng)
     write_chain(os.path.join(res_dir, "hg19ToHg38.over.chain.gz"), segments, q_sizes)
     variants = make_variants(rng, n_variants, segments, q_sizes, n_hotspots=hotspots)
-    write_ref_panel(os.path.join(res_dir, "ref_panel_grch38.tsv.gz"), variants)
-    write_ld_scores(rng, res_dir, variants)
+    write_reference_genomes(res_dir, variants, q_sizes)
+    write_dbsnp(res_dir, variants, q_sizes)
+    write_allele_frequencies(os.path.join(res_dir, "all_afreq_b38.tsv.gz"), variants)
+    write_ldsc_reference(rng, res_dir, variants)
+    write_ld_panels(np.random.default_rng(seed + 1), res_dir, variants, n_samples=40 if small else 100)
+    write_genes(np.random.default_rng(seed + 2), os.path.join(res_dir, "genes_b38.tsv.gz"), variants, q_sizes)
     variants.to_csv(os.path.join(out, "truth_variants.tsv.gz"), sep="\t", index=False)
     traits, truth = {}, []
     for pheno, n_loci in (("All-cause HF", 6 if small else 20), ("HCM", 3 if small else 8)):

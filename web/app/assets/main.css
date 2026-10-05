@@ -50,3 +50,13 @@ h1, h2, h3, .page-title { letter-spacing: -0.01em; }
 .p-dialog.code-dialog.p-dialog-maximized { width: 100vw; height: 100vh; }
 .p-dialog.code-dialog .cd-content { flex: 1; min-height: 0; display: flex; flex-direction: column; padding-bottom: 16px; }
 .p-dialog.code-dialog .cd-content > * { flex: 1; min-height: 0; }
+/* Controls that sit with tables (filter bars, the pipeline editor): the tables' text size. Their option lists are
+   teleported to <body>, so a Select/MultiSelect there also gets overlay-class="compact-overlay". */
+.compact-ui .p-inputtext, .compact-ui .p-select-label, .compact-ui .p-multiselect-label,
+.compact-ui .p-togglebutton, .compact-ui .p-button-sm { font-size: 0.8rem; }
+.compact-ui .p-inputtext, .compact-ui .p-select-label, .compact-ui .p-multiselect-label { padding: 0.35rem 0.6rem; }
+.compact-ui .p-select-dropdown, .compact-ui .p-multiselect-dropdown, .compact-ui .p-select-clear-icon { width: 2rem; }
+.compact-ui .p-iconfield .p-inputtext { padding-left: 2rem; }
+.compact-ui label { font-size: 0.8rem; }
+.compact-overlay .p-select-option, .compact-overlay .p-select-option-group, .compact-overlay .p-multiselect-option,
+.compact-overlay .p-select-filter, .compact-overlay .p-select-empty-message { font-size: 0.8rem; }

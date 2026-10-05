@@ -195,8 +195,7 @@ Realistic peak use for a large file is **20–40 GB**. Fargate tops out at 120 G
 - Bake all default steps into `gwashub/base` (the Dockerfile in `images/base` needs only `pipeline/`
   and its requirements added).
 - Add a small entrypoint that downloads the input and pinned resources from S3, calls the existing
-  `pipeline.runner.executor.run_pipeline`, and uploads `results/<run-id>/`. Much of the S3 code is already in
-  `pipeline/runner/aws/s3io.py`.
+  `pipeline.runner.executor.run_pipeline`, and uploads `results/<run-id>/` (as built: `pipeline/runner/jobspec.py`).
 - Custom steps run in the same container and clone their repo at the pinned commit (`pipeline/runner/aws/repo_fetch.py`).
 - This works today for Python steps, and for R steps if R is added to the image.
 

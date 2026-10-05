@@ -21,24 +21,22 @@ const id = (f: ParamField) => `${props.idPrefix}-${f.key}`
   <div class="pf" :class="{ compact }">
     <div v-if="inputs.length" class="pf-grid">
       <div v-for="f in inputs" :key="f.key" class="field">
-        <label :for="id(f)">{{ f.label }}</label>
+        <label :for="id(f)">{{ f.label }} <i v-if="f.help" v-tooltip.top="f.help" class="pi pi-info-circle info" :aria-label="f.help" /></label>
         <Select v-if="f.type === 'select'" :input-id="id(f)" :model-value="value(f)" :options="f.options" :disabled="disabled" size="small" @update:model-value="v => set(f, v)" />
         <InputNumber v-else-if="f.type === 'integer'" :input-id="id(f)" :model-value="value(f)" :min="f.min" :max="f.max" :use-grouping="false" :disabled="disabled"
                      size="small" show-buttons @update:model-value="v => set(f, v)" />
         <InputNumber v-else-if="f.type === 'number'" :input-id="id(f)" :model-value="value(f)" :min="f.min" :max="f.max" :min-fraction-digits="0" :max-fraction-digits="12"
                      :use-grouping="false" :disabled="disabled" size="small" @update:model-value="v => set(f, v)" />
         <InputText v-else :id="id(f)" :model-value="value(f)" :disabled="disabled" size="small" @update:model-value="v => set(f, v)" />
-        <small v-if="f.help || small(value(f)) || changed(f)" class="muted">
-          <span v-if="small(value(f))">{{ Number(value(f)).toExponential(0) }}. </span>{{ f.help }}<span v-if="changed(f)"> (default {{ f.default }})</span>
+        <small v-if="small(value(f)) || changed(f)" class="muted">
+          <span v-if="small(value(f))">{{ Number(value(f)).toExponential(0) }}</span><span v-if="small(value(f)) && changed(f)">. </span><span v-if="changed(f)">Default {{ f.default }}</span>
         </small>
       </div>
     </div>
     <div v-for="f in toggles" :key="f.key" class="toggle">
       <ToggleSwitch :model-value="!!value(f)" :input-id="id(f)" :disabled="disabled" @update:model-value="v => set(f, v)" />
-      <div>
-        <label :for="id(f)">{{ f.label }}</label>
-        <small v-if="f.help" class="muted help">{{ f.help }}</small>
-      </div>
+      <label :for="id(f)">{{ f.label }}</label>
+      <i v-if="f.help" v-tooltip.top="f.help" class="pi pi-info-circle info" :aria-label="f.help" />
     </div>
   </div>
 </template>
@@ -51,7 +49,7 @@ const id = (f: ParamField) => `${props.idPrefix}-${f.key}`
 .pf-grid :deep(.p-inputnumber), .pf-grid :deep(.p-select), .pf-grid :deep(input) { width: 100%; }
 .toggle { display: flex; align-items: center; gap: 10px; font-size: 0.9rem; }
 .toggle :deep(.p-toggleswitch) { flex: 0 0 auto; }
-.toggle small { font-size: 0.78rem; }
-.toggle .help { display: block; line-height: 1.3; }
 .toggle label { cursor: pointer; }
+.info { color: var(--p-text-muted-color); cursor: help; font-size: 0.85em; }
+.toggle .info { margin-left: -4px; }
 </style>

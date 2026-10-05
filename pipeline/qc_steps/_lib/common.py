@@ -7,7 +7,6 @@ they only need to honour the contract (see steps/README.md).
 import argparse
 import csv
 import gzip
-import io
 import json
 import math
 import os
@@ -15,10 +14,12 @@ import os
 import numpy as np
 import pandas as pd
 
-# Columns of the harmonised working file (after harmonise_columns).
-STANDARD = ["chr", "pos", "ea", "oa", "beta", "se", "p", "eaf", "n", "rsid", "info"]
+# GWASHub format: the working file every step after gwashub/parse reads and writes (tab-separated, header,
+# "NA" for missing). REQUIRED columns are always there; the others when the upload or the study details gave them.
+# Positions are in the uploaded build until gwashub/harmonise_liftover, GRCh38 (ea = ALT) after it.
+STANDARD = ["chr", "pos", "ea", "oa", "beta", "se", "p", "eaf", "n", "ncase", "ncontrol", "rsid", "info"]
 REQUIRED = ["chr", "pos", "ea", "oa", "beta", "se", "p"]
-CHROMS = [str(i) for i in range(1, 23)] + ["X"]
+CHROMS_XY = [str(i) for i in range(1, 23)] + ["X", "Y"]  # chromosomes the format allows
 
 
 def parse_args(extra=()):
@@ -84,10 +85,6 @@ def read_working(path):
     return pd.read_csv(path, sep="\t", dtype={"chr": str, "ea": str, "oa": str, "rsid": str}, low_memory=False)
 
 
-def write_working(df, path):
-    df.to_csv(path, sep="\t", index=False, na_rep="NA")
-
-
 def _clean(o):
     if isinstance(o, dict):
         return {str(k): _clean(v) for k, v in o.items()}
@@ -113,23 +110,3 @@ def write_log(path, step, verdict, metrics=None, messages=None, artifacts=None):
             "messages": messages or [],
             "artifacts": artifacts or [],
         }), f, indent=2)
-
-
-def worst(*verdicts):
-    order = {"pass": 0, "warn": 1, "fail": 2}
-    return max(verdicts, key=lambda v: order[v])
-
-
-COMPLEMENT = str.maketrans("ACGT", "TGCA")
-
-
-def complement(s):
-    return s.translate(COMPLEMENT)
-
-
-def is_palindromic(ea, oa):
-    return len(ea) == 1 and len(oa) == 1 and complement(ea) == oa
-
-
-def open_text(path):
-    return gzip.open(path, "rt") if is_gzip(path) else io.open(path, "rt")

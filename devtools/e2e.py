@@ -97,7 +97,7 @@ def main():
     c = reviewer["hermes3"]
     eur = [x["id"] for x in c.get("/api/projects/hermes3/meta/candidates").json() if x["ancestry"] == "EUR" and x["status"] == "passed"]
     r = c.post("/api/projects/hermes3/meta", json={"name": "All-cause HF, EUR only (random effects)", "dataset_ids": eur,
-                                                     "settings": {"method": "gwashub/ivw", "params": {"model": "random"}}})
+                                                     "settings": {"method": "gwashub/gwama", "params": {"model": "random"}}})
     r.raise_for_status()
     print("queued EUR-only random-effects analysis", r.json()["id"])
 

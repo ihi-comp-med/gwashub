@@ -1,5 +1,6 @@
 import io
 import json
+import re
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,28 +11,52 @@ from sqlalchemy.orm import Session
 from gwashub_api import jobs, storage
 from gwashub_api.auth import current_user, require_member
 from gwashub_api.db import get_db
-from gwashub_api.models import Dataset, MetaAnalysis, Project, User
+from gwashub_api.models import Dataset, MetaAnalysis, Project, QCRun, User
+from gwashub_api.routers.datasets import qc_metrics
 from pipeline.runner import params as P
 from pipeline.runner.catalog import load_analyses
 
 router = APIRouter(prefix="/api", tags=["meta-analysis"])
 
-DEFAULT_METHOD = "gwashub/ivw"
-# Settings every method shares: GWASHub's post-processing (lead loci, heterogeneity flag) uses them.
+DEFAULT_METHOD = "gwashub/gwama"
+# Settings every method shares: GWASHub's post-processing (lead loci by LD clumping, _metalib/loci.py; the
+# heterogeneity flag) uses them. The defaults are those of the HERMES 3 analyses (define_loci_plink.R).
 COMMON_PARAMS = P.normalise([
     {"key": "gws", "label": "Genome-wide significance threshold", "type": "number", "min": 1e-12, "max": 0.05, "default": 5e-8},
-    {"key": "clump_kb", "label": "Lead-locus window (kb)", "type": "integer", "min": 10, "max": 10000, "default": 500,
-     "help": "Significant variants within this distance of a stronger one belong to the same locus"},
+    {"key": "ld_panel", "label": "LD reference panel", "type": "select", "options": ["EUR", "AFR", "AMR", "EAS", "SAS"], "default": "EUR",
+     "help": "1000 Genomes super-population whose LD clumps the lead loci; the others are tried for leads with no LD partner in it"},
+    {"key": "iss_r2", "label": "Independent signals: r² below", "type": "number", "min": 0, "max": 1, "default": 0.6,
+     "help": "Genome-wide significant variants are clumped at this r² into independent significant SNPs"},
+    {"key": "lead_r2", "label": "Lead SNPs: r² below", "type": "number", "min": 0, "max": 1, "default": 0.1,
+     "help": "Independent significant SNPs are clumped again at this r² into lead SNPs"},
+    {"key": "locus_p", "label": "LD cloud: P below", "type": "number", "min": 0, "max": 1, "default": 0.05,
+     "help": "Variants with P below this and in LD with a lead (next two settings) set the locus bounds"},
+    {"key": "boundary_r2", "label": "LD cloud: r² at least", "type": "number", "min": 0, "max": 1, "default": 0.1},
+    {"key": "boundary_kb", "label": "LD cloud: within (kb)", "type": "integer", "min": 10, "max": 10000, "default": 500,
+     "help": "Also the window between lead loci when no LD panel has been uploaded"},
+    {"key": "merge_kb", "label": "Merge loci within (kb)", "type": "integer", "min": 0, "max": 10000, "default": 250},
+    {"key": "min_locus_kb", "label": "Locus with no LD cloud: ± (kb)", "type": "integer", "min": 0, "max": 10000, "default": 250},
+    {"key": "min_maf", "label": "Lead loci: minimum MAF", "type": "number", "min": 0, "max": 0.5, "default": 0.01,
+     "help": "Only variants with this minor allele frequency or more are considered for lead loci"},
+    {"key": "min_studies", "label": "Lead loci: minimum datasets", "type": "integer", "min": 1, "default": 2,
+     "help": "Only variants in at least this many datasets are considered for lead loci"},
     {"key": "het_p_threshold", "label": "Heterogeneity flag (P)", "type": "number", "min": 0, "max": 1, "default": 1e-3,
      "help": "Lead loci with Cochran's Q P below this are flagged as heterogeneous"},
 ])
 STATUSES = ("passed", "review")
-PUBLIC_FILES = {"manhattan.png", "qq.png", "plot_data.json", "forest.json", "lead_loci.tsv", "summary.json", "datasets.tsv", "README.txt"}
+PUBLIC_FILES = {"manhattan.png", "qq.png", "plot_data.json", "forest.json", "lead_loci.tsv", "signals.tsv", "summary.json", "datasets.tsv",
+                "README.txt"}
 REVIEWER_FILES = {"meta_results.tsv.gz"}
 
 
 def methods() -> dict:
     return load_analyses()
+
+
+def method_files(ma) -> list:
+    """Files the method itself wrote for download (e.g. GWAMA's and METAL's logs), from its log: [{path, label}]."""
+    files = ((ma.result or {}).get("log") or {}).get("files") or []
+    return [f for f in files if isinstance(f, dict) and "/" not in str(f.get("path", "")) and f.get("path")]
 
 
 def method_view(md) -> dict:
@@ -40,16 +65,8 @@ def method_view(md) -> dict:
 
 
 def normalise(raw: dict | None) -> dict:
-    """Settings as {method, params, common, include_statuses}. Meta-analyses and project defaults saved before
-    there were several methods have flat settings ({"method": "fixed", "maf_threshold": ...}); read them as
-    gwashub/ivw."""
+    """Settings as {method, params, common, include_statuses}."""
     raw = dict(raw or {})
-    if "params" not in raw and "common" not in raw and raw.get("method") in (None, "fixed", "random"):
-        params = {"model": raw.get("method", "fixed"), "min_studies": raw.get("min_studies", 2), "maf_min": raw.get("maf_threshold", 0.01),
-                  "genomic_control": raw.get("genomic_control", False), "drop_palindromic": raw.get("drop_palindromic", False)}
-        common = {k: raw[k] for k in ("gws", "clump_kb", "het_p_threshold") if k in raw}
-        raw = {"method": DEFAULT_METHOD, "params": {DEFAULT_METHOD: params} if raw else {}, "common": common,
-               "include_statuses": raw.get("include_statuses", ["passed"])}
     method = raw.get("method") or DEFAULT_METHOD
     params = raw.get("params") or {}
     if params and not all(isinstance(v, dict) for v in params.values()):  # one method's params, not per method
@@ -140,17 +157,30 @@ def meta_view(db, ma: MetaAnalysis, detail=False):
          "method": method_view(md) if md else {"key": settings["method"], "title": settings["method"], "params": []},
          "common_params": COMMON_PARAMS,
          "created_by": db.get(User, ma.created_by).name, "created_at": ma.created_at,
-         "finished_at": ma.finished_at, "error": ma.error, "lambda_gc": ma.lambda_gc,
+         "finished_at": ma.finished_at, "error": ma.error, "lambda_gc": ma.lambda_gc, "location": ma.run_dir,
          "summary": {k: v for k, v in ((ma.result or {}).get("summary") or {}).items() if k != "settings"}}
     if detail and ma.status == "completed":
         lead = storage.read_bytes(storage.join(ma.run_dir, "lead_loci.tsv"))
         v["lead_loci"] = pd.read_csv(io.BytesIO(lead), sep="\t", dtype={"chr": str}).fillna("").to_dict("records")
         v["forest"] = json.loads(storage.read_bytes(storage.join(ma.run_dir, "forest.json")))
         v["plot_data"] = json.loads(storage.read_bytes(storage.join(ma.run_dir, "plot_data.json")))
+        v["files"] = [n for n in ("README.txt", "datasets.tsv", "lead_loci.tsv", "signals.tsv", "meta_results.tsv.gz")
+                      if storage.exists(storage.join(ma.run_dir, n))]
+        v["method_files"] = method_files(ma)
     if detail:
-        v["datasets"] = [{"id": d.id, "cohort": d.cohort, "phenotype": d.phenotype, "ancestry": d.ancestry, "sex": d.sex,
-                          "status": d.status, "n_cases": d.n_cases, "n_controls": d.n_controls}
-                         for d in (db.get(Dataset, i) for i in ma.dataset_ids) if d]
+        # Each dataset's QC as it went in: the run whose cleaned file was used (recorded by the post-processing).
+        run_of = {st.get("id"): st.get("qc_run_id") for st in ((ma.result or {}).get("summary") or {}).get("studies") or []}
+        v["datasets"] = []
+        for d in (db.get(Dataset, i) for i in ma.dataset_ids):
+            if not d:
+                continue
+            run = db.get(QCRun, run_of[d.id]) if run_of.get(d.id) else None
+            warned = [s.get("title") or s.get("key") for s in ((run.result or {}).get("steps") or [])
+                      if s.get("verdict") == "warn"] if run else []
+            v["datasets"].append({"id": d.id, "cohort": d.cohort, "phenotype": d.phenotype, "ancestry": d.ancestry, "sex": d.sex,
+                                  "status": d.status, "n_cases": d.n_cases, "n_controls": d.n_controls,
+                                  "ldsc_intercept": qc_metrics(run).get("ldsc_intercept") if run else None,
+                                  "qc_warnings": warned})
     return v
 
 
@@ -209,8 +239,14 @@ def meta_file(meta_id: int, name: str, user: User = Depends(current_user), db: S
     ma, m = require_meta(db, user, meta_id)
     if name in REVIEWER_FILES and m.role != "reviewer":
         raise HTTPException(403, "Only reviewers can download full meta-analysis results")
-    if name not in PUBLIC_FILES | REVIEWER_FILES or ma.status != "completed":
+    region = re.fullmatch(r"region_\d+\.json", name) is not None  # a locus plot's data (_metalib/regions.py)
+    if not (region or name in PUBLIC_FILES | REVIEWER_FILES | {f["path"] for f in method_files(ma)}) or ma.status != "completed":
         raise HTTPException(404, "No such file")
+    if region:  # small, and read by the page itself: returned directly rather than via a (cross-origin) S3 redirect
+        loc = storage.join(ma.run_dir, name)
+        if not storage.exists(loc):
+            raise HTTPException(404, "No such file")
+        return json.loads(storage.read_bytes(loc))
     from gwashub_api.routers.datasets import send_file
     return send_file(storage.join(ma.run_dir, name), f"meta_{ma.id}_{name}")
 

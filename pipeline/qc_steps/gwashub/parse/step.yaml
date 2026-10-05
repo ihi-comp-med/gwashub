@@ -1,0 +1,21 @@
+name: parse
+title: Parse
+description: >
+  Reads the upload as received through the column mapping: recodes chromosomes, alleles, sample sizes and odds ratios,
+  checks every value, and writes the GWASHub format. Rows missing a required value (CHR, POS, EA, OA, BETA, SE, P) are
+  removed. The first step of every pipeline. Refactored from the HERMES 3 DCM pipeline (gwas_qc_parse.R).
+command: [Rscript, parse.R]
+image: gwashub/base-r
+default_on_fail: block
+resources: []
+compute: {vcpus: 2, memory_gb: 32}
+params:
+  - {key: fill_counts, label: Fill sample sizes from the study details, type: boolean, default: true,
+     help: Rows without N, cases or controls get the dataset's totals}
+  - {key: p_from_log10p, label: P from -log10 P, type: select, options: [beta_se, log10p], default: beta_se,
+     help: "When only -log10 P is mapped: recompute P from BETA/SE (as the HERMES 3 pipeline) or take 10^-x"}
+  - {key: neglog10p_fraction, label: -log10 P detection, type: number, min: 0, max: 1, default: 0.01,
+     help: If more than this share of P values are above 1 the step fails and asks for the column to be mapped as -log10 P}
+  - {key: min_rows, label: Minimum rows, type: integer, min: 1, default: 1000}
+  - {key: warn_drop_fraction, label: Warn above removed fraction, type: number, min: 0, max: 1, default: 0.01}
+  - {key: fail_drop_fraction, label: Fail above removed fraction, type: number, min: 0, max: 1, default: 0.5}

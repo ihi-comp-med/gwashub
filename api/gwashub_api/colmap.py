@@ -11,7 +11,10 @@ SYNONYMS = {
     "beta": ["beta", "effect", "b", "logor", "or", "oddsratio", "estimate", "betas"],
     "se": ["se", "standarderror", "stderr", "selogor", "sebeta", "sterr"],
     "p": ["p", "pval", "pvalue", "pvalues", "pv", "pval1", "pwald", "plrt", "pvaluegc"],
+    "log10p": ["log10p", "mlog10p", "neglog10p", "minuslog10p", "lp", "log10pval", "logp", "mlogp"],
     "n": ["n", "ntotal", "totaln", "neff", "samplesize", "nsamples", "nobs"],
+    "ncase": ["ncase", "ncases", "cases", "ncas", "nca", "numcases"],
+    "ncontrol": ["ncontrol", "ncontrols", "controls", "nctrl", "ncon", "nco", "numcontrols"],
     "info": ["info", "rsq", "r2", "imputationinfo", "infoscore", "impinfo"],
 }
 

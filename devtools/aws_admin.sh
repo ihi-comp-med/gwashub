@@ -5,6 +5,7 @@
 #   ./devtools/aws_admin.sh dev invite someone@uni.ac.uk "Full Name" --institution "Uni"
 #   ./devtools/aws_admin.sh dev add-member someone@uni.ac.uk hermes3 reviewer
 #   ./devtools/aws_admin.sh dev seed-demo        # demo projects + synthetic resources (empty database only)
+#   ./devtools/aws_admin.sh dev add-resources s3://BUCKET/resources/shared/_manifests/T.json  # see aws_upload_resources.py
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ENV_NAME=${1:?usage: aws_admin.sh ENV COMMAND [ARGS...]}; shift

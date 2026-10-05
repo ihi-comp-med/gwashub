@@ -1,0 +1,109 @@
+# Reference files GWASHub uses: where each comes from and the script that builds it (resources/build/<script>).
+# keys are the file names steps declare in step.yaml (resources / optional_resources) and find in --resources.
+# A test (pipeline/tests/test_resources_catalog.py) fails if a step declares a key that isn't listed here.
+# check: something to confirm (against the HERMES 3 HPC copy, or a licence) before the first real run.
+resources:
+  - keys: [hg19ToHg38.over.chain.gz]
+    title: liftOver chain, GRCh37 to GRCh38
+    build: Any
+    used_by: [gwashub/harmonise_liftover]
+    source: https://hgdownload.soe.ucsc.edu/goldenPath/hg19/liftOver/hg19ToHg38.over.chain.gz
+    version: UCSC hg19ToHg38 (md5 35887f73fe5e2231656504d1f6430900)
+    licence: UCSC Genome Browser downloads; confirm the conditions of use
+    script: chain.sh
+
+  - keys: [human_g1k_v37.fasta, human_g1k_v37.fasta.fai]
+    title: Reference genome, GRCh37 (1000 Genomes)
+    build: GRCh37
+    used_by: [gwashub/harmonise_liftover]
+    source: https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/human_g1k_v37.fasta.gz
+    version: 1000 Genomes human_g1k_v37 (2011)
+    licence: 1000 Genomes data reuse (open)
+    script: fasta_grch37.sh
+
+  - keys: [human_g1k_v37.fasta.gzi, Homo_sapiens_assembly38_nochr.fasta.gzi]
+    title: bgzip index of a compressed FASTA (synthetic data only)
+    build: Any
+    used_by: [gwashub/harmonise_liftover]
+    source: devtools/synth.py
+    version: only the synthetic FASTAs are bgzipped; the built FASTAs are plain text and need no .gzi
+    script: none
+
+  - keys: [Homo_sapiens_assembly38_nochr.fasta, Homo_sapiens_assembly38_nochr.fasta.fai]
+    title: Reference genome, GRCh38 (Broad), contigs without "chr"
+    build: GRCh38
+    used_by: [gwashub/harmonise_liftover]
+    source: https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/Homo_sapiens_assembly38.fasta
+    version: Broad GATK resource bundle hg38 v0 (md5 7ff134953dcca8c8997453bbb80b6b5e); "chr" removed from contig names
+    licence: Broad GATK resource bundle (public); confirm the terms
+    script: fasta_grch38.sh
+    check: same contig names and lengths as the HERMES 3 HPC file (compare the .fai files)
+
+  - keys: [dbSNP157_b38_clean.vcf.gz, dbSNP157_b38_clean.vcf.gz.tbi]
+    title: dbSNP build 157 rsIDs, GRCh38
+    build: GRCh38
+    used_by: [gwashub/harmonise_liftover]
+    source: https://ftp.ncbi.nih.gov/snp/archive/b157/VCF/GCF_000001405.40.gz
+    version: dbSNP b157 (md5 6a6f313e92a39c337571174dad12cfe1); primary chromosomes renamed 1..22, X, Y, MT; INFO dropped;
+      multi-allelic records split
+    licence: NCBI, public domain
+    script: dbsnp157_b38.sh
+    check: same cleaning as the HERMES 3 HPC file (compare record counts on one chromosome)
+
+  - keys: [all_afreq_b38.tsv.gz]
+    title: 1000 Genomes allele frequencies by super-population, GRCh38
+    build: GRCh38
+    used_by: [gwashub/eaf_check]
+    source: https://www.cog-genomics.org/plink/2.0/resources#phase3_1kg
+    version: 1000 Genomes high-coverage GRCh38 callset (Byrska-Bishop et al. 2022, PLINK 2.0 files dated 2022-08-04);
+      founders, chr1-22 and X, biallelic; ALT frequency per AFR, AMR, EAS, EUR, SAS
+    licence: 1000 Genomes data reuse (open)
+    citation: Byrska-Bishop M et al. (2022) Cell 185:3426
+    script: kg1000_b38.sh
+    check: HERMES 3 used a phase 3 frequency file lifted to GRCh38; frequencies can differ slightly
+
+  - keys: [1kg_b38_AFR.pgen, 1kg_b38_AFR.pvar.zst, 1kg_b38_AFR.psam, 1kg_b38_AMR.pgen, 1kg_b38_AMR.pvar.zst, 1kg_b38_AMR.psam,
+           1kg_b38_EAS.pgen, 1kg_b38_EAS.pvar.zst, 1kg_b38_EAS.psam, 1kg_b38_EUR.pgen, 1kg_b38_EUR.pvar.zst, 1kg_b38_EUR.psam,
+           1kg_b38_SAS.pgen, 1kg_b38_SAS.pvar.zst, 1kg_b38_SAS.psam]
+    title: 1000 Genomes LD reference panels by super-population, GRCh38 (PLINK 2)
+    build: GRCh38
+    used_by: [meta-analysis lead loci (clumping)]
+    source: https://www.cog-genomics.org/plink/2.0/resources#phase3_1kg
+    version: as all_afreq_b38.tsv.gz; variant IDs chr:pos:ref:alt; variants polymorphic in the super-population
+    licence: 1000 Genomes data reuse (open)
+    citation: Byrska-Bishop M et al. (2022) Cell 185:3426
+    script: kg1000_b38.sh
+
+  - keys: [genes_b38.tsv.gz]
+    title: Genes, GRCh38 (GENCODE 50 basic)
+    build: GRCh38
+    used_by: [meta-analysis locus plots (gene track) and lead loci (nearest genes)]
+    source: https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_50/gencode.v50.basic.annotation.gtf.gz
+    version: GENCODE release 50, basic annotation (md5 11e77cf1d4b78b43f57d608e3f7f2202); one row per gene on 1-22, X, Y with the
+      exons of its Ensembl canonical transcript
+    licence: GENCODE (open)
+    citation: Frankish A et al. (2023) Nucleic Acids Res 51:D942
+    script: genes_gencode.sh
+
+  - keys: [UKBB.AFR.l2.ldscore.gz, UKBB.AFR.l2.M_5_50, UKBB.AMR.l2.ldscore.gz, UKBB.AMR.l2.M_5_50,
+           UKBB.CSA.l2.ldscore.gz, UKBB.CSA.l2.M_5_50, UKBB.EAS.l2.ldscore.gz, UKBB.EAS.l2.M_5_50,
+           UKBB.EUR.l2.ldscore.gz, UKBB.EUR.l2.M_5_50, UKBB.MID.l2.ldscore.gz, UKBB.MID.l2.M_5_50]
+    title: Pan-UK Biobank LD scores (LDSC format, rsIDs)
+    build: Any
+    used_by: [gwashub/ldsc]
+    source: https://pan-ukb-us-east-1.s3.amazonaws.com/ld_release/UKBB.ALL.ldscore.tar.gz
+    version: Pan-UKB LD score release (2023-02-23); UKBB.<POP>.rsid.l2.ldscore.gz renamed UKBB.<POP>.l2.ldscore.gz;
+      GRCh37 positions, matched to the summary statistics on rsID
+    licence: Pan-UKB release terms; confirm (the summary statistics are CC BY 4.0)
+    citation: Pan-UKB team (2020) https://pan.ukbb.broadinstitute.org
+    script: ldsc_panukb.sh
+
+  - keys: [w_hm3.snplist]
+    title: HapMap 3 SNP list for LDSC
+    build: Any
+    used_by: [gwashub/ldsc]
+    source: https://github.com/mglev1n/ldscr/blob/d6b23694d8d4f6f2120c98a2c410cf1e455b9246/inst/extdata/w_hm3.snplist
+    version: LDSC w_hm3.snplist (1,217,311 SNPs, rsIDs; sha256 ec73fca0...), the copy bundled with ldscr; the authors' Broad link is gone
+    licence: GPL-3 (LDSC, ldscr)
+    citation: Bulik-Sullivan BK et al. (2015) Nat Genet 47:291
+    script: w_hm3.sh

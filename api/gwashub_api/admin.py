@@ -6,6 +6,12 @@
     python -m gwashub_api.admin remove-member EMAIL PROJECT_ID
     python -m gwashub_api.admin add-project ID "Name" SHORT --phenotype "All-cause HF" [--phenotype ...]
     python -m gwashub_api.admin db-readonly-user        # Postgres: (re)create gwashub_readonly for browsing
+    python -m gwashub_api.admin add-resources MANIFEST  # register shared resources already in storage
+
+`add-resources` takes a JSON manifest written by devtools/aws_upload_resources.py (which copies the
+reference files to the resources bucket): {"resources": [{key, title, description, build, source,
+sha256, size, storage_path}]}. Each file becomes the next version of its shared resource, unless the
+latest version already has the same sha256.
 
 `invite` creates the GWASHub user and, in Cognito mode, the Cognito account: Cognito emails a
 temporary password, and the person sets their own password and authenticator app at first sign-in.
@@ -13,16 +19,17 @@ Reviewers can do the same for their project from the website; platform admins (-
 create projects there.
 """
 import argparse
+import json
 import os
 import sys
 
 from sqlalchemy import select
 
-from gwashub_api import services
+from gwashub_api import services, storage
 from gwashub_api.accounts import cognito_invite
 from gwashub_api.config import settings
 from gwashub_api.db import SessionLocal, create_all
-from gwashub_api.models import Membership, Project, User
+from gwashub_api.models import Membership, Project, Resource, User
 
 
 def find_user(db, email: str) -> User:
@@ -61,6 +68,24 @@ def readonly_user():
     print(f"Read-only user gwashub_readonly {'updated' if exists else 'created'}; password in {os.environ['GWASHUB_DB_READONLY_SECRET']}")
 
 
+def add_resources(db, entries: list[dict]):
+    missing = [e["storage_path"] for e in entries if storage.size(e["storage_path"]) != e["size"]]
+    if missing:
+        sys.exit("Not in storage (or a different size): " + ", ".join(missing))
+    for e in entries:
+        prev = db.scalar(select(Resource).where(Resource.project_id.is_(None), Resource.key == e["key"])
+                         .order_by(Resource.version.desc()).limit(1))
+        if prev and prev.sha256 == e["sha256"]:
+            print(f"{e['key']:45} unchanged (v{prev.version})")
+            continue
+        version = prev.version + 1 if prev else 1
+        db.add(Resource(project_id=None, key=e["key"], title=e["title"], description=e.get("description", ""),
+                        build=e.get("build", "Any"), size=e["size"], sha256=e["sha256"], version=version,
+                        source=e.get("source", ""), storage_path=e["storage_path"]))
+        print(f"{e['key']:45} added as v{version}")
+    db.commit()
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m gwashub_api.admin")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -85,6 +110,8 @@ def main(argv=None):
     m.add_argument("email")
     m.add_argument("project")
     m.add_argument("role", choices=["uploader", "reviewer"])
+    ar = sub.add_parser("add-resources", help="register shared resources listed in a manifest (files already in storage)")
+    ar.add_argument("manifest", help="location of the manifest JSON (s3://... or a local path)")
     args = ap.parse_args(argv)
 
     create_all()
@@ -135,6 +162,8 @@ def main(argv=None):
                 db.add(Membership(user_id=user.id, project_id=args.project, role=args.role))
             db.commit()
             print(f"{user.email} is now {args.role} in {args.project}")
+        elif args.cmd == "add-resources":
+            add_resources(db, json.loads(storage.read_bytes(args.manifest))["resources"])
     finally:
         db.close()
 

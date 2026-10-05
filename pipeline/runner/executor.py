@@ -11,8 +11,11 @@ Layout of a run directory:
     <out>/profile_input.json     column profile of the upload as received (_lib/profile.py)
     <out>/result.json            machine-readable roll-up
 
-The AWS Batch executor will stage the same layout (input/resources from S3) and run each
-step in its image; scripts can't tell the difference.
+On AWS Batch the job already runs in the step's image, so steps run as plain subprocesses. Locally they
+do too, with this machine's Python/R, unless GWASHUB_STEP_RUNNER=docker: then each step runs in its own
+image (`docker run`, built locally with devtools/build_images.sh) with the repository's current
+pipeline/ code mounted over the image's copy, the run directory and the step's resources mounted at the
+same paths, and no network. Scripts can't tell the difference.
 """
 import json
 import os
@@ -21,8 +24,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 ORDER = {"pass": 0, "warn": 1, "fail": 2}
+CONTAINER_PIPELINE = "/app/pipeline"  # where images keep pipeline/ (pipeline/images/*/Dockerfile)
 
 
 def _profiler():
@@ -47,6 +52,67 @@ def _interpreter(cmd):
     return [found, *cmd[1:]]
 
 
+def step_runner():
+    """"host" (default; also inside Batch jobs) or "docker" (local runs in each step's image)."""
+    mode = os.environ.get("GWASHUB_STEP_RUNNER", "host")
+    if mode not in ("host", "docker"):
+        raise RunError(f"GWASHUB_STEP_RUNNER must be host or docker, not {mode!r}")
+    return mode
+
+
+def _image_platforms():
+    if not hasattr(_image_platforms, "cache"):
+        from pipeline.runner.catalog import load_images
+        _image_platforms.cache = {ref: i["platform"] for ref, i in load_images().items()}
+    return _image_platforms.cache
+
+
+def missing_local_images(refs):
+    """The image refs that aren't built locally (devtools/build_images.sh builds them)."""
+    out = []
+    for ref in sorted(set(refs)):
+        if subprocess.run(["docker", "image", "inspect", ref], capture_output=True).returncode != 0:
+            out.append(ref)
+    return out
+
+
+def docker_command(image, command, workdir, args, env, name, writable=(), readable=(), pythonpath=("qc_steps",)):
+    """`docker run` for one step or meta-analysis method in its image: the image's own interpreter, the repository's
+    current pipeline/ code mounted over the image's copy, no network, and only the given host paths mounted (at the
+    same paths, so arguments pass through unchanged)."""
+    from pipeline.runner.catalog import PIPELINE_DIR
+    mounts = [f"{PIPELINE_DIR}:{CONTAINER_PIPELINE}:ro"]
+    if os.path.commonpath([PIPELINE_DIR, workdir]) == PIPELINE_DIR:
+        container_workdir = os.path.join(CONTAINER_PIPELINE, os.path.relpath(workdir, PIPELINE_DIR))
+    else:  # a folder outside the repository (tests)
+        container_workdir = workdir
+        mounts.append(f"{workdir}:{workdir}:ro")
+    # Each path is mounted where symlinks resolve to and where the arguments name it (e.g. /var -> /private/var on macOS).
+    for paths, mode in ((writable, ""), (readable, ":ro")):
+        for p in paths:
+            real = os.path.realpath(p)
+            mounts += [f"{real}:{target}{mode}" for target in dict.fromkeys([real, os.path.abspath(p)])]
+    passed = {k: v for k, v in env.items() if k.startswith("GWASHUB_")}
+    passed.update(PYTHONPATH=":".join(["/app", *(f"{CONTAINER_PIPELINE}/{p}" for p in pythonpath)]), MPLCONFIGDIR="/tmp/mpl", HOME="/tmp")
+    cmd = ["docker", "run", "--rm", "--name", name, "--network", "none", "-w", container_workdir]
+    platform = _image_platforms().get(image)
+    if platform:
+        cmd += ["--platform", platform]
+    for m in dict.fromkeys(mounts):
+        cmd += ["-v", m]
+    for k, v in sorted(passed.items()):
+        cmd += ["-e", f"{k}={v}"]
+    return [*cmd, image, *command, *args]
+
+
+def step_docker_command(entry, step_args, env, out_dir, res_dir, name):
+    """docker_command for a QC step: the run directory writable, its resources readable."""
+    readable = [] if os.path.commonpath([out_dir, res_dir]) == out_dir else [res_dir]
+    readable += [os.path.join(res_dir, f) for f in sorted(os.listdir(res_dir))]
+    return docker_command(entry.image, entry.step.command, entry.step.workdir, step_args, env, name,
+                          writable=[out_dir], readable=readable)
+
+
 def _count_rows(path):
     with open(path, "rb") as f:
         return max(sum(1 for _ in f) - 1, 0)
@@ -66,7 +132,7 @@ def start_run(input_path, out_dir, run_params=None):
     open(os.path.join(out_dir, "step_logs.jsonl"), "w").close()
     try:
         prof = _profiler().profile_upload(input_path, (run_params or {}).get("column_mapping"))
-    except Exception:  # an unreadable upload is row_check's to report
+    except Exception:  # an unreadable upload is gwashub/parse's to report
         prof = None
     with open(os.path.join(out_dir, "profile_input.json"), "w") as f:
         json.dump(prof, f)
@@ -107,7 +173,7 @@ def run_steps(resolved, state, run_params, resource_dir, out_dir, indexes=None, 
                     continue
                 dst = os.path.join(res_dir, key)
                 if not os.path.exists(dst):
-                    os.symlink(os.path.abspath(src), dst)
+                    os.symlink(os.path.realpath(src), dst)
             if missing:
                 status, stop_reason = "failed", f"{entry.step.title}: missing resource(s) {', '.join(missing)}"
                 results.append({**base, "state": "error", "verdict": "fail", "messages": [stop_reason]})
@@ -130,16 +196,21 @@ def run_steps(resolved, state, run_params, resource_dir, out_dir, indexes=None, 
             if on_step:
                 on_step(entry.index, "running", None)
             t0 = time.time()
+            step_args = ["--input", working, "--resources", res_dir, "--params", params_path, "--log", log_path]
+            container = f"gwashub-step-{uuid.uuid4().hex[:12]}"
             try:
-                cmd = _interpreter(entry.step.command)
+                if step_runner() == "docker":
+                    argv = step_docker_command(entry, step_args, env, out_dir, res_dir, container)
+                else:
+                    argv = [*_interpreter(entry.step.command), *step_args]
                 with open(os.path.join(step_dir, "output.txt"), "w") as out:
-                    proc = subprocess.run(
-                        [*cmd, "--input", working, "--resources", res_dir, "--params", params_path, "--log", log_path],
-                        cwd=entry.step.workdir, env=env, stdout=out, stderr=subprocess.STDOUT, timeout=timeout,
-                    )
+                    proc = subprocess.run(argv, cwd=entry.step.workdir, env=env, stdout=out, stderr=subprocess.STDOUT,
+                                          timeout=timeout)
                 code = proc.returncode
             except subprocess.TimeoutExpired:
                 code = "timeout"
+                if step_runner() == "docker":
+                    subprocess.run(["docker", "kill", container], capture_output=True)
             except RunError as e:
                 code = str(e)
             duration = round(time.time() - t0, 2)

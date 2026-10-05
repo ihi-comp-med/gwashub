@@ -1,2 +1,2 @@
 title: Python 3.12 (GWASHub base)
-description: pandas, numpy, scipy, matplotlib. The default QC steps run in this image.
+description: pandas, numpy, scipy, matplotlib, PLINK 2.0 and bcftools 1.22. Most default QC steps run in this image; images built FROM it inherit PLINK 2.0.

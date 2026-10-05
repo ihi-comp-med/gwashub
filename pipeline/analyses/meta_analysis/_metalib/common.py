@@ -4,10 +4,10 @@ The method contract (see CONTRIBUTING.md):
 
     <command> --inputs inputs.json --params params.json --out OUT_DIR --log log.json
 
-inputs.json: [{"id", "label", "path" (QC'd TSV: chr pos ea oa beta se p [eaf n rsid info]), "n_cases",
+inputs.json: [{"id", "label", "path" (QC'd TSV in the GWASHub format: chr pos ea oa beta se p [eaf n ncase ncontrol rsid info]), "n_cases",
 "n_controls", "ancestry", "sex"}]. params.json: the method's own parameters (analysis.yaml).
 A method must write OUT_DIR/meta_results.tsv.gz with at least  chr pos ea oa p n_studies  and either
-beta + se or z; optional: rsid eaf n q het_p i2 direction tau2. GWASHub's post-processing
+beta + se or z; optional: rsid eaf n q het_p i2 direction. GWASHub's post-processing
 (publish.py) then adds lead loci, forest-plot data, Manhattan/QQ plots and summary.json for every method.
 """
 import argparse
@@ -17,11 +17,10 @@ import os
 import numpy as np
 import pandas as pd
 
-from _lib.common import complement
 from _lib.plotting import lambda_gc
 
 RESULT_COLUMNS = ["chr", "pos", "rsid", "ea", "oa", "beta", "se", "z", "p", "n_studies", "n", "eaf", "q", "het_p", "i2",
-                  "direction", "tau2"]
+                  "direction"]
 
 
 def parse_args():
@@ -39,7 +38,7 @@ def parse_args():
     return a, specs, params
 
 
-def load_study(spec, maf_min=0.0, drop_palindromic=False, genomic_control=False):
+def load_study(spec, maf_min=0.0):
     """One QC'd dataset, filtered. Returns (DataFrame, info for the per-study table)."""
     df = pd.read_csv(spec["path"], sep="\t", dtype={"chr": str})
     info = {"id": spec["id"], "label": spec["label"], "variants_in": len(df)}
@@ -50,19 +49,11 @@ def load_study(spec, maf_min=0.0, drop_palindromic=False, genomic_control=False)
     info["removed_missing_beta_se"] = n - len(df)
     lam = lambda_gc(df["p"]) if "p" in df else float("nan")
     info["lambda_gc"] = round(lam, 4) if np.isfinite(lam) else None
-    if genomic_control and np.isfinite(lam) and lam > 1:
-        df["se"] = df["se"] * np.sqrt(lam)
-        info["gc_applied"] = round(lam, 4)
     if maf_min and "eaf" in df:
         n = len(df)
         maf = np.minimum(df["eaf"], 1 - df["eaf"])
         df = df[maf.isna() | (maf >= maf_min)]
         info["removed_maf"] = n - len(df)
-    if drop_palindromic:
-        n = len(df)
-        snp = (df["ea"].str.len() == 1) & (df["oa"].str.len() == 1)
-        df = df[~(snp & (df["ea"].map(complement) == df["oa"]))]
-        info["removed_palindromic"] = n - len(df)
     if "n" not in df or df["n"].isna().all():
         df["n"] = (spec.get("n_cases") or 0) + (spec.get("n_controls") or 0)
     info["variants_used"] = len(df)
@@ -94,8 +85,11 @@ def write_results(res, out_dir):
                                    float_format="%.6g")
 
 
-def write_log(path, method, verdict, metrics=None, messages=None, studies=None):
-    """The method's log (like a QC step log). `studies` (optional): per-dataset rows for the results page."""
+def write_log(path, method, verdict, metrics=None, messages=None, studies=None, files=None):
+    """The method's log (like a QC step log). `studies` (optional): per-dataset rows for the results page.
+    `files` (optional): [{"path", "label"}] for files the method wrote in OUT_DIR (e.g. the program's own logs),
+    offered for download with the results."""
     with open(path, "w") as f:
         json.dump({"method": method, "verdict": verdict, "metrics": metrics or {}, "messages": messages or [],
-                   **({"studies": studies} if studies is not None else {})}, f, indent=2, default=float)
+                   **({"studies": studies} if studies is not None else {}),
+                   **({"files": files} if files else {})}, f, indent=2, default=float)
