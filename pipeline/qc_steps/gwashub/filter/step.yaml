@@ -1,8 +1,12 @@
 name: filter
 title: Filter
-description: >
-  Removes variants by chromosome, EAF/MAF, BETA, SE, INFO, N, indels and duplicates. The defaults are those of the
-  HERMES 3 DCM pipeline (chromosomes 1-22, X, Y; |BETA| < 20; 0 < EAF < 1; EAF, N and INFO required), plus duplicate removal.
+description: "Removes variants by chromosome, |BETA|, SE, INFO, MAF and N, and optionally indels and duplicates."
+narrative: >
+  Reads the dataset (GWASHub format) and applies each filter in turn to what is left, counting the variants each one
+  removes: chromosomes outside the kept set; |BETA|, SE, INFO, MAF and N outside their limits (each filter only when
+  switched on, and only the limits switched on); indels if asked; and duplicates (the
+  same chr:pos:alleles, alleles in either order; the first is kept). Missing INFO is set to 1 first, or those variants
+  removed. Writes the remaining variants and a table of removals; warns when more than the set share is removed.
 command: [Rscript, filter.R]
 image: gwashub/base-r
 default_on_fail: flag
@@ -10,15 +14,23 @@ resources: []
 compute: {vcpus: 2, memory_gb: 32}
 params:
   - {key: chromosomes, label: Chromosomes kept, type: select, options: ["1-22", "1-22, X", "1-22, X, Y"], default: "1-22, X, Y"}
-  - {key: max_abs_beta, label: Maximum |BETA|, type: number, min: 0, default: 20, help: Variants with |BETA| at or above this are removed (0 = no limit)}
-  - {key: max_se, label: Maximum SE, type: number, min: 0, default: 0, help: Variants with SE above this are removed (0 = no limit)}
-  - {key: min_info, label: Minimum INFO, type: number, min: 0, max: 1, default: 0}
-  - {key: drop_missing_info, label: Remove variants without INFO, type: boolean, default: true, help: Only when the dataset has an INFO column}
-  - {key: min_maf, label: Minimum MAF, type: number, min: 0, max: 0.5, default: 0}
-  - {key: drop_monomorphic, label: Remove EAF of 0 or 1, type: boolean, default: true}
-  - {key: require_eaf, label: Require EAF, type: boolean, default: true, help: Remove variants without EAF}
-  - {key: require_n, label: Require N, type: boolean, default: true, help: Remove variants without N (after filling from the study details)}
-  - {key: min_n, label: Minimum N, type: integer, min: 0, default: 0}
-  - {key: drop_indels, label: Remove indels, type: boolean, default: false}
-  - {key: drop_duplicates, label: Remove duplicate variants, type: boolean, default: true, help: Same chromosome, position and alleles; the first is kept}
-  - {key: warn_removed_fraction, label: Warn above removed fraction, type: number, min: 0, max: 1, default: 0.5}
+  - {key: beta, label: "|BETA|", type: range, sides: [max], min: 0, default: {on: true, max_on: true, max: 20},
+     help: "Keeps variants whose absolute effect is at most the maximum (HERMES 3: below 20)"}
+  - {key: se, label: SE, type: range, sides: [min, max], min: 0,
+     default: {on: false, min_on: false, min: 0, max_on: true, max: 10}, help: Keeps variants whose standard error is within the limits}
+  - {key: info, label: INFO, type: range, sides: [min, max], min: 0, max: 1,
+     default: {on: false, min_on: true, min: 0.8, max_on: false, max: 1}, help: Keeps variants whose imputation quality (INFO) is within the limits}
+  - {key: missing_info, label: Missing INFO, type: select, options: [fill with 1, remove the variant], default: fill with 1,
+     help: "What to do with variants that have no INFO value (when the dataset has an INFO column): treat them as perfectly
+       imputed (INFO 1), or remove them"}
+  - {key: maf, label: MAF, type: range, sides: [min, max], min: 0, max: 0.5,
+     default: {on: false, min_on: true, min: 0.01, max_on: false, max: 0.5},
+     help: "Minor allele frequency: the smaller of EAF and 1 - EAF, so 0 to 0.5 whichever allele is the effect allele.
+       EAF (effect allele frequency) is the frequency of the effect allele itself, 0 to 1."}
+  - {key: n, label: N, type: range, sides: [min, max], min: 0,
+     default: {on: false, min_on: true, min: 100, max_on: false, max: 10000000}, help: Keeps variants whose sample size is within the limits}
+  - {key: drop_indels, label: Remove indels, type: boolean, default: false, help: Variants whose effect or other allele is longer than one base}
+  - {key: drop_duplicates, label: Remove duplicate variants, type: boolean, default: true,
+     help: "Variants with the same ID, chr:pos:alleles with the two alleles in either order (1:1000:A:G and 1:1000:G:A are
+       the same variant); the first one in the file is kept"}
+  - {key: warn_removed_fraction, label: Warn above removed fraction, type: number, min: 0, max: 1, default: 0.05}

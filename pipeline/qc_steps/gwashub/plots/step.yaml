@@ -1,6 +1,9 @@
 name: plots
 title: Manhattan & QQ plots
-description: Manhattan and QQ plots, plus data for interactive plots.
+description: "Manhattan and QQ plots, plus data for the interactive plots."
+narrative: >
+  Draws a Manhattan plot and a QQ plot (with λGC) of the dataset as it stands after the earlier steps, and writes the
+  data the website uses for its interactive versions.
 command:
 - python
 - plots.py

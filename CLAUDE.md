@@ -6,10 +6,10 @@ datasets that pass. This directory is the whole product (one monorepo).
 
 Read before substantial work:
 - `README.md`: how to run and test (`./devtools/dev.sh`, `.venv/bin/python -m pytest`)
-- `docs/PROGRESS.md`: what is built, decisions taken, known gaps
-- `docs/AWS_FULL.md`: the AWS deployment as built (gwashub-dev), deploying, admin commands
+- `docs/PROGRESS.md`: where it stands: what is built, decisions, known gaps
+- `docs/AWS_FULL.md`: the AWS deployment (gwashub-dev): design reasons, deploying, admin commands, production checklist, costs
 - `CONTRIBUTING.md`: how consortia add QC steps, meta-analysis methods and images
-- `docs/AWS_DEPLOYMENT.md` (design and production checklist), `docs/AWS_ACCOUNT_SETUP.md` (accounts)
+- `docs/AWS_ACCOUNT_SETUP.md` (accounts), `docs/VALIDATION_PLAN.md` (validation tests)
 
 ## Layout
 
@@ -24,10 +24,12 @@ Read before substantial work:
 | `pipeline/analyses/` | `meta_analysis/<owner>/<method>/` (`analysis.yaml` + script): `gwashub/gwama` (default), `gwashub/metal`, consortium methods by PR; shared `_metalib/` (inputs, `publish.py` post-processing) |
 | `pipeline/tests/` | Runner, grouping, meta-analysis, resource catalogue tests |
 | `resources/` | Reference files: `catalog.yaml` (source, version, licence, which steps use each), `build/*.sh` download/build scripts, `README.md`; built files go to `local/resources/` and are uploaded as shared resources |
+| `practice/` | Synthetic files for the Practice project (`api/gwashub_api/practice.py`), with `files.json` (what to enter for each) |
+| `client/` | `gwashub_upload.py`: the bulk upload script (standard library only; served by the site with its address filled in) and its tests |
 | `images/app/` | The site image (API and worker) |
 | `infra/` | AWS CDK app (Network, Data, App stacks); see `docs/AWS_FULL.md` |
 | `devtools/` | `dev.sh`, `build_images.sh`, `synth.py` (synthetic data and references), `seed.py`, `e2e.py`, `run_demo.py`; AWS: `aws_cdk_deploy.sh` (deploy), `aws_admin.sh` (admin commands), `aws_upload_resources.py` (reference files to S3), `aws_db_tunnel.sh`, `aws_bookmarks.py` |
-| `docs/` | Progress, AWS guides, `ARCHITECTURE_IMAGE_PROMPT.md` (prompt for an architecture poster), `VALIDATION_PLAN.md` (five validation tests; basis for a Validation page) |
+| `docs/` | `PROGRESS.md`, AWS guides, `VALIDATION_PLAN.md`; `images/` (posters shown in the README) |
 | `local/` | Git-ignored local state: `synthetic/` (fake data + resources), `app/` (dev DB, uploads, run outputs), `runs/` (CLI runs) |
 
 The original sources were git clones that have been removed; they remain on GitHub if anything else
@@ -44,7 +46,7 @@ copyright notice for any code ported from them). Useful there: liftover worker
   The runner stages the input and only the resources the step declares. On AWS, consecutive steps
   sharing an image run as one Batch job (sized by the steps' `compute:`, x86-64 images on their own queue);
   a new job starts where the image changes. Locally, steps run in their images too (`GWASHUB_STEP_RUNNER=docker`).
-- **Default QC = the HERMES 3 DCM pipeline** (from `hermes3_dcm`, a git-ignored clone): `parse` (the only step that
+- **Default QC = the HERMES 3 DCM pipeline** (from `nicksunderland/hermes3_dcm` on GitHub, commit ff35109): `parse` (the only step that
   reads the upload) → `filter` → `harmonise_liftover` (the edited gwas2vcf + bcftools liftover; all VCF work inside it)
   → `eaf_check` → `ldsc` (bulik/ldsc) → `stats_summary` → `plots` → `qc_report`. Every step after `parse` takes the
   GWASHub format in and writes it out (`_lib/common.py` `STANDARD`); GRCh38 with EA = ALT after `harmonise_liftover`.
@@ -55,7 +57,9 @@ copyright notice for any code ported from them). Useful there: liftover worker
   `GWASHUB_STEP_LOGS`, `GWASHUB_RUN_DIR`). Steps never touch the database or the network.
 - **Permissions are enforced server-side** (`api/gwashub_api/auth.py`): uploaders open only their own
   datasets; reviewers do everything else in their project, including managing members; platform admins
-  (`is_admin`) can also create projects; non-members get 404.
+  (`is_admin`) can also create projects and upload resources, but need a reviewer role for
+  reviewer actions (the creator of a project is its first reviewer); non-members get 404. Personal API tokens (for the
+  upload script) are accepted only by endpoints that use `auth.upload_caller`; everything else is cookie-only.
 - **Local vs AWS** is configuration only (`config.py`): storage local/S3, database SQLite/Postgres
   (Alembic migrations in `api/migrations`), jobs threads/Batch, sign-in dev (pick a user)/Cognito.
 - **Meta-analysis methods:** `<command> --inputs --params --out --log`; write `meta_results.tsv.gz`
@@ -63,9 +67,21 @@ copyright notice for any code ported from them). Useful there: liftover worker
   plots and summary. Each runs as one job in its own image. Any project can use any method.
 - **Typed params** (`pipeline/runner/params.py`): `params:` in step.yaml and analysis.yaml is a list of
   `{key, label, type, default, min, max, options, help}`; the website draws forms from it and the API validates.
+- **Trait types**: each project phenotype is case/control (default) or quantitative (`Project.phenotype_types`,
+  `services.trait_type`). Case/control datasets give cases and controls (`n_total` = their sum); quantitative ones
+  give `n_total` only and BETA effects. QC (parse N fill, λ1000) and meta-analysis (fallback N) use these counts.
 - **Study metadata**: every field (HERMES and SGC) is defined once in `api/gwashub_api/metadata_schema.py`,
   each section per cohort or per dataset; projects choose which are shown and required (Project.metadata_config).
   Datasets inherit their **cohort's** values and may override them (`metadata_schema.effective`).
+- **Named pipelines:** a project has several QC pipelines, each versioned, one the default; a dataset follows the
+  default unless a reviewer pins it (`Dataset.pipeline_id`). Changing pipeline only advises a re-run (out of date =
+  latest run on another version). A step always runs in its step.yaml image.
+- **Custom metadata fields** (`Project.metadata_custom`) sit beside the built-in ones; hidden, never deleted.
+- **Uploads wait as pending:** every upload (wizard or script) lands as "Pending QC"; the uploader or a reviewer starts QC.
+- **Bulk upload:** `client/gwashub_upload.py` (standard library only) + an Excel manifest (`manifest_xlsx.py`: template
+  and reader) + `routers/bulk.py` (parse, check every row with the wizard's own rules in `datasets.check_upload`,
+  status). Nothing guessed; duplicates refused; the script sends nothing unless the whole manifest passes.
+- **Practice project** (`practice.py`): created at start-up, every user a reviewer, for the guided tours in the Help menu.
 - **Reproducibility:** pipeline versions pin resource versions; each run records the pipeline version
   and the image digests it used.
 
@@ -77,3 +93,5 @@ copyright notice for any code ported from them). Useful there: liftover worker
 - No credentials in code or git. Locally: env vars. In AWS: IAM roles, Secrets Manager, GitHub OIDC.
 - The local dev login (`/api/auth/login`, `/api/auth/users`) must never be reachable in production.
 - UI copy: plain and specific; no em dashes.
+- Guided tours (`web/app/utils/tours.ts`) point at `data-tour="…"` markers: keep a marker when changing its element
+  (or update the tour); `api/tests/test_tours.py` checks they match.

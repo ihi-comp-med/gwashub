@@ -1,7 +1,10 @@
 name: qc_report
 title: QC report
-description: Roll up every step's verdict, metrics and plots into one HTML report.
-  Keep last.
+description: "Rolls up every step's verdict, metrics and plots into one HTML report (keep last)."
+narrative: >
+  Collects every step's verdict, metrics, messages, tables and plots, and the before/after profile of the data, into one
+  HTML report: the file contributors download. Always runs, even when an earlier step stopped the pipeline, so the
+  report says what happened.
 command:
 - python
 - qc_report.py

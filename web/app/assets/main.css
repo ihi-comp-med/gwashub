@@ -60,3 +60,13 @@ h1, h2, h3, .page-title { letter-spacing: -0.01em; }
 .compact-ui label { font-size: 0.8rem; }
 .compact-overlay .p-select-option, .compact-overlay .p-select-option-group, .compact-overlay .p-multiselect-option,
 .compact-overlay .p-select-filter, .compact-overlay .p-select-empty-message { font-size: 0.8rem; }
+
+/* Guided tours (driver.js; composables/useTours.ts) */
+.driver-popover.gh-tour { font-family: inherit; border-radius: 10px; max-width: 360px; padding: 14px 16px; color: var(--gh-text); }
+.gh-tour .driver-popover-title { font-size: 1rem; font-weight: 600; }
+.gh-tour .driver-popover-description { font-size: 0.88rem; color: var(--gh-muted); line-height: 1.45; }
+.gh-tour .driver-popover-progress-text { font-size: 0.75rem; color: var(--gh-muted); }
+.gh-tour .driver-popover-footer button { text-shadow: none; font: inherit; font-size: 0.82rem; padding: 4px 12px; border-radius: 6px;
+  border: 1px solid var(--gh-border); background: var(--gh-surface); color: var(--gh-text); }
+.gh-tour .driver-popover-footer .driver-popover-next-btn { background: var(--gh-accent); border-color: var(--gh-accent); color: #fff; }
+.gh-tour-wait { margin: 8px 0 0; color: #b45309; font-size: 0.84rem; }

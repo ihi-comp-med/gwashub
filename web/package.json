@@ -12,6 +12,7 @@
   "dependencies": {
     "@primeuix/themes": "^2.0.3",
     "@primevue/nuxt-module": "^4.5.5",
+    "driver.js": "^1.9.0",
     "nuxt": "^4.5.2",
     "primeicons": "^7.0.0",
     "primevue": "^4.5.5"

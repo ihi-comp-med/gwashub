@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gwashub_api import jobs, storage
+from gwashub_api import jobs, services, storage
 from gwashub_api.auth import current_user, require_member
 from gwashub_api.db import get_db
 from gwashub_api.models import Dataset, MetaAnalysis, Project, QCRun, User
@@ -137,7 +137,8 @@ def candidates(project_id: str, user: User = Depends(current_user), db: Session 
         run = jobs.latest_completed_run(ds)
         stats = next((s for s in (run.result or {}).get("steps", []) if s["key"] == "gwashub/stats_summary"), {}) if run else {}
         out.append({"id": ds.id, "cohort": ds.cohort, "phenotype": ds.phenotype, "ancestry": ds.ancestry, "sex": ds.sex,
-                    "status": ds.status, "n_cases": ds.n_cases, "n_controls": ds.n_controls, "eligible": run is not None,
+                    "status": ds.status, "n_cases": ds.n_cases, "n_controls": ds.n_controls, "n_total": ds.n_total,
+                    "trait_type": services.trait_type(ds.project, ds.phenotype), "eligible": run is not None,
                     "rows": ((run.result or {}).get("outputs") or {}).get("rows") if run else None,
                     "lambda_gc": (stats.get("metrics") or {}).get("lambda_gc")})
     return out
@@ -158,6 +159,7 @@ def meta_view(db, ma: MetaAnalysis, detail=False):
          "common_params": COMMON_PARAMS,
          "created_by": db.get(User, ma.created_by).name, "created_at": ma.created_at,
          "finished_at": ma.finished_at, "error": ma.error, "lambda_gc": ma.lambda_gc, "location": ma.run_dir,
+         "batch_note": jobs.batch_note(ma.batch_state) if ma.status in ("queued", "running") else None,
          "summary": {k: v for k, v in ((ma.result or {}).get("summary") or {}).items() if k != "settings"}}
     if detail and ma.status == "completed":
         lead = storage.read_bytes(storage.join(ma.run_dir, "lead_loci.tsv"))
@@ -178,7 +180,8 @@ def meta_view(db, ma: MetaAnalysis, detail=False):
             warned = [s.get("title") or s.get("key") for s in ((run.result or {}).get("steps") or [])
                       if s.get("verdict") == "warn"] if run else []
             v["datasets"].append({"id": d.id, "cohort": d.cohort, "phenotype": d.phenotype, "ancestry": d.ancestry, "sex": d.sex,
-                                  "status": d.status, "n_cases": d.n_cases, "n_controls": d.n_controls,
+                                  "status": d.status, "n_cases": d.n_cases, "n_controls": d.n_controls, "n_total": d.n_total,
+                                  "trait_type": services.trait_type(d.project, d.phenotype),
                                   "ldsc_intercept": qc_metrics(run).get("ldsc_intercept") if run else None,
                                   "qc_warnings": warned})
     return v
@@ -213,6 +216,9 @@ def create_meta(project_id: str, body: MetaIn, user: User = Depends(current_user
             raise HTTPException(422, f"{ds.cohort} ({ds.ancestry}, {ds.sex}) has no completed QC run")
         if ds.status not in settings["include_statuses"]:
             raise HTTPException(422, f"{ds.cohort} ({ds.ancestry}, {ds.sex}) has status '{ds.status}', which these settings exclude")
+    types = {services.trait_type(m.project, db.get(Dataset, i).phenotype) for i in ids}
+    if len(types) > 1:
+        raise HTTPException(422, "These datasets mix case/control and quantitative phenotypes; meta-analyse each kind separately")
     ma = MetaAnalysis(project_id=project_id, name=body.name.strip() or "Meta-analysis", settings=settings, dataset_ids=ids,
                       method=settings["method"], created_by=user.id, status="queued")
     db.add(ma)

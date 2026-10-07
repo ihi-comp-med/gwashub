@@ -37,6 +37,7 @@ ensure_repo $REPO
 docker build --platform linux/arm64 -f images/app/Dockerfile -t "$REGISTRY/$REPO:$TAG" .
 aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null
 docker push -q "$REGISTRY/$REPO:$TAG"
+docker rmi "$REGISTRY/$REPO:$TAG" >/dev/null  # it's in ECR now; no need to keep a copy per deploy on this machine
 fi
 
 echo "== pipeline images"
@@ -49,12 +50,18 @@ for LINE in $(.venv/bin/python -c "from pipeline.runner.catalog import build_ord
   if ! aws ecr describe-images --repository-name "$IREPO" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
     docker build -q --platform "$PLATFORM" -f "pipeline/images/$REF/Dockerfile" -t "$REF" -t "$REGISTRY/$IREPO:$TAG" . >/dev/null
     docker push -q "$REGISTRY/$IREPO:$TAG" >/dev/null
+    docker rmi "$REGISTRY/$IREPO:$TAG" >/dev/null  # in ECR now; the local <owner>/<image> tag stays (images build FROM it)
   fi
   DIGEST=$(aws ecr describe-images --repository-name "$IREPO" --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text)
   echo "  $REF $DIGEST ($PLATFORM)"
   PIPELINE_IMAGES="$PIPELINE_IMAGES\"$REF\": {\"digest\": \"$DIGEST\", \"platform\": \"$PLATFORM\"},"
 done
 PIPELINE_IMAGES="${PIPELINE_IMAGES%,}}"
+
+# Keep the build cache from filling the disk (it grows with every build), but big enough that the next build is fast.
+for b in $(docker buildx ls --format '{{.Name}}' 2>/dev/null | sort -u); do
+  docker buildx prune -f --builder "$b" --max-used-space 15gb >/dev/null 2>&1 || true
+done
 
 echo "== infrastructure"
 [ -x infra/.venv/bin/python ] || { python3 -m venv infra/.venv && infra/.venv/bin/pip install -q -r infra/requirements.txt; }

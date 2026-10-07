@@ -18,7 +18,7 @@ import pandas as pd
 # "NA" for missing). REQUIRED columns are always there; the others when the upload or the study details gave them.
 # Positions are in the uploaded build until gwashub/harmonise_liftover, GRCh38 (ea = ALT) after it.
 STANDARD = ["chr", "pos", "ea", "oa", "beta", "se", "p", "eaf", "n", "ncase", "ncontrol", "rsid", "info"]
-REQUIRED = ["chr", "pos", "ea", "oa", "beta", "se", "p"]
+REQUIRED = ["chr", "pos", "ea", "oa", "beta", "se", "p", "eaf"]  # parse removes rows without any of these
 CHROMS_XY = [str(i) for i in range(1, 23)] + ["X", "Y"]  # chromosomes the format allows
 
 

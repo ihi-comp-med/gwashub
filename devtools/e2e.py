@@ -52,6 +52,7 @@ def main():
         with open(path, "rb") as f:
             r = c.post(f"/api/projects/{project}/datasets", files={"file": (d["file"], f)}, data={"meta": json.dumps(meta)})
         r.raise_for_status()
+        c.post(f"/api/datasets/{r.json()['id']}/rerun").raise_for_status()  # uploads wait as pending: start QC
         ids[name] = (project, r.json()["id"], UPLOADERS[name])
         print(f"uploaded {name:<28} → {project}/{r.json()['id']}  suggested-mapping-diffs={mismatch or 'none'} "
               f"effect={sug['effect_type']} (truth {d['effect_type']})")
@@ -60,12 +61,12 @@ def main():
     deadline = time.time() + 900
     reviewer = {"hermes3": session(a.api, "ama@example.org"), "hcm": session(a.api, "tom@example.org")}
     while time.time() < deadline:
-        pending = [n for n, (p, i, _) in ids.items() if reviewer[p].get(f"/api/datasets/{i}").json()["status"] == "processing"]
-        if not pending:
+        running = [n for n, (p, i, _) in ids.items() if reviewer[p].get(f"/api/datasets/{i}").json()["status"] == "processing"]
+        if not running:
             break
         time.sleep(3)
     else:
-        sys.exit(f"timed out waiting for {pending}")
+        sys.exit(f"timed out waiting for {running}")
 
     print(f"\n{'dataset':<28} {'status':<9} {'run':<10} steps")
     for name, (p, i, _) in ids.items():

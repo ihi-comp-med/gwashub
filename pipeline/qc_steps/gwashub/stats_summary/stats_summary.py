@@ -67,7 +67,8 @@ def main():
 
     metrics = {"lambda_gc": round(lam, 4), "n_variants": len(df), "n_genome_wide_sig": int((df["p"] < opts["gws"]).sum()),
                "n_suggestive": int((df["p"] < opts["suggestive"]).sum()), "n_loci": len(leads), "z_p_inconsistent": inconsistent}
-    lam1000 = lambda_1000(lam, params.get("n_cases"), params.get("n_controls"))
+    lam1000 = lambda_1000(lam, params.get("n_cases"), params.get("n_controls"), params.get("n_total"),
+                          params.get("trait_type", "binary"))
     if lam1000 is not None:
         metrics["lambda_1000"] = round(lam1000, 4)
     if "eaf" in df.columns:
@@ -78,9 +79,13 @@ def main():
     write_log(args.log, "stats_summary", verdict, metrics, messages, artifacts)
 
 
-def lambda_1000(lam, n_cases, n_controls):
-    """λ rescaled to a study of 1,000 cases and 1,000 controls (de Bakker et al. 2008); None without both counts."""
+def lambda_1000(lam, n_cases, n_controls, n_total=None, trait_type="binary"):
+    """λ rescaled to a study of 1,000 cases and 1,000 controls (de Bakker et al. 2008), or for a quantitative trait to a
+    study of 1,000 people: 1 + (λ - 1) × 1000 / N. None without the counts it needs."""
     try:
+        if trait_type == "quantitative":
+            total = float(n_total)
+            return 1 + (lam - 1) * 1000 / total if total > 0 else None
         cases, controls = float(n_cases), float(n_controls)
     except (TypeError, ValueError):
         return None

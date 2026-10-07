@@ -1,9 +1,11 @@
 name: ldsc
 title: LD score regression
-description: >
-  LD score regression intercept with the authors' LDSC software (bulik/ldsc; Bulik-Sullivan et al. 2015): separates
-  polygenic signal (intercept near 1) from confounding or stratification (intercept above 1). Uses the Pan-UK Biobank
-  LD scores for the dataset's ancestry; until they are uploaded the step passes and says it didn't run.
+description: "LD score regression with the authors' LDSC software: intercept, heritability and ratio."
+narrative: >
+  Runs the authors' LDSC software (bulik/ldsc, Python 2.7): munge_sumstats prepares the dataset (HapMap 3 SNPs, INFO and
+  MAF limits), then LD score regression with the Pan-UK Biobank LD scores of the dataset's ancestry estimates the
+  intercept, SNP heritability and ratio. An intercept near 1 means the inflation is polygenic signal; above the set
+  threshold it suggests confounding or population stratification, and the step warns.
 command: [python, ldsc.py]
 image: gwashub/ldsc
 default_on_fail: flag

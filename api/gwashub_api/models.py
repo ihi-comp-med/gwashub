@@ -28,8 +28,13 @@ class Project(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     phenotypes: Mapped[list] = mapped_column(JSON, default=list)  # codes, e.g. "HF"
     phenotype_descriptions: Mapped[dict] = mapped_column(JSON, default=dict)  # code -> description
+    # code -> "binary" (case/control) or "quantitative"; a phenotype not listed is binary (services.trait_type).
+    phenotype_types: Mapped[dict] = mapped_column(JSON, default=dict)
     # Which metadata fields (metadata_schema.py) are shown and which are required at upload; null = defaults.
     metadata_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The project's own metadata fields: [{key, label, level (cohort | dataset), type, options, hidden}]
+    # (metadata_schema.custom_sections). Keys never change; deleting a field hides it and keeps its values.
+    metadata_custom: Mapped[list] = mapped_column(JSON, default=list)
     # Upload options: which ancestries and sex strata may be chosen when uploading.
     ancestries: Mapped[list] = mapped_column(JSON, default=lambda: ["EUR", "AFR", "EAS", "SAS", "AMR", "Multi"])
     sexes: Mapped[list] = mapped_column(JSON, default=lambda: ["Combined", "Female", "Male"])
@@ -67,17 +72,35 @@ class Resource(Base):
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class Pipeline(Base):
+    """A named QC pipeline of a project, with its own versions. One is the project default: datasets follow it unless a
+    reviewer pins them to another (Dataset.pipeline_id)."""
+    __tablename__ = "pipeline"
+    __table_args__ = (UniqueConstraint("project_id", "name"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("project.id"))
+    name: Mapped[str] = mapped_column(String(100))
+    description: Mapped[str] = mapped_column(Text, default="")
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("user.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class PipelineVersion(Base):
+    """One saved version of a pipeline. Version numbers are unique within the project (across its pipelines), so
+    "pipeline version N" names one thing."""
     __tablename__ = "pipeline_version"
     __table_args__ = (UniqueConstraint("project_id", "version"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("project.id"))
+    pipeline_id: Mapped[int | None] = mapped_column(ForeignKey("pipeline.id"), nullable=True, index=True)
     version: Mapped[int] = mapped_column(Integer)
     steps: Mapped[list] = mapped_column(JSON)  # [{step, image, on_fail, params}]
     resolved: Mapped[list] = mapped_column(JSON, default=list)  # pinned sources/resources at save time
     note: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[int | None] = mapped_column(ForeignKey("user.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    pipeline: Mapped["Pipeline | None"] = relationship()
 
 
 class Cohort(Base):
@@ -93,6 +116,23 @@ class Cohort(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class ApiToken(Base):
+    """A personal token for the upload script: acts as its user, in one project, for uploading only (auth.upload_caller).
+    Only a hash of the token is stored; the token itself is shown once, when it is made."""
+    __tablename__ = "api_token"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("user.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("project.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)  # sha256 hex of the token
+    prefix: Mapped[str] = mapped_column(String(12))  # the token's first characters, to recognise it in lists
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    user: Mapped[User] = relationship()
+
+
 class Dataset(Base):
     __tablename__ = "dataset"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -105,8 +145,12 @@ class Dataset(Base):
     sex: Mapped[str] = mapped_column(String(20))
     build: Mapped[str] = mapped_column(String(20))
     effect_type: Mapped[str] = mapped_column(String(10), default="beta")
+    # Case/control phenotypes: cases and controls, and n_total their sum. Quantitative phenotypes: n_total only.
     n_cases: Mapped[int | None] = mapped_column(Integer, nullable=True)
     n_controls: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    n_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The QC pipeline a reviewer pinned it to; None = follows the project's default pipeline.
+    pipeline_id: Mapped[int | None] = mapped_column(ForeignKey("pipeline.id"), nullable=True)
     column_mapping: Mapped[dict] = mapped_column(JSON)
     # Dataset-level metadata plus any overrides of cohort-level fields (see metadata_schema.effective).
     study_meta: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -115,12 +159,16 @@ class Dataset(Base):
     file_size: Mapped[int] = mapped_column(BigInteger)
     storage_path: Mapped[str] = mapped_column(Text)  # location: local path or s3:// URI (see storage.py)
     upload_id: Mapped[str] = mapped_column(String(300), default="")  # multipart upload in progress
-    status: Mapped[str] = mapped_column(String(20), default="processing")  # uploading|processing|passed|review|failed
+    uploaded_with_token: Mapped[int | None] = mapped_column(ForeignKey("api_token.id", ondelete="SET NULL"), nullable=True)
+    sha256: Mapped[str] = mapped_column(String(64), default="")  # as reported by the upload script (duplicate checks)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # uploading|pending (QC not started)|processing|passed|review|failed
     review: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {decision, note, by, at}
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     runs: Mapped[list["QCRun"]] = relationship(back_populates="dataset", order_by="QCRun.id", cascade="all, delete-orphan")
     uploader: Mapped[User] = relationship()
     cohort_ref: Mapped["Cohort | None"] = relationship()
+    project: Mapped[Project] = relationship()
+    pipeline: Mapped["Pipeline | None"] = relationship()
 
 
 class QCRun(Base):
@@ -134,6 +182,9 @@ class QCRun(Base):
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     run_dir: Mapped[str] = mapped_column(Text, default="")  # output location
     batch_job_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # The latest AWS Batch state of the job that is working on it: {group, status (RUNNABLE | STARTING | RUNNING),
+    # attempt, max_attempts, previous (why earlier attempts ended), at}. Shown while it runs (jobs.batch_note).
+    batch_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -153,6 +204,9 @@ class MetaAnalysis(Base):
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     run_dir: Mapped[str] = mapped_column(Text, default="")
     batch_job_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # The latest AWS Batch state of the job that is working on it: {group, status (RUNNABLE | STARTING | RUNNING),
+    # attempt, max_attempts, previous (why earlier attempts ended), at}. Shown while it runs (jobs.batch_note).
+    batch_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[int] = mapped_column(ForeignKey("user.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

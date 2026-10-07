@@ -30,11 +30,23 @@ const hasCount = (k: string) => studies.value.some((s: any) => s[k] != null)
 const has = (name: string) => (ma.value?.files ?? []).includes(name)
 const fileUrl = (name: string) => `/api/meta/${id.value}/files/${name}`
 const s = computed(() => ma.value?.summary ?? {})
+// Sample-size box: summed over the included datasets (a meta-analysis is all case/control or all quantitative).
+const sampleTile = computed(() => {
+  const rows: any[] = datasetRows.value ?? []
+  if (!rows.length) return null
+  const given = (vals: any[]) => vals.filter(v => v != null).map(Number)
+  const fmt = (vals: number[]) => vals.reduce((t, v) => t + v, 0).toLocaleString()
+  const totals = given(rows.map(r => r.n_total ?? (r.n_cases != null && r.n_controls != null ? Number(r.n_cases) + Number(r.n_controls) : null)))
+  const note = totals.length < rows.length ? ` (${totals.length} of ${rows.length} datasets)` : ''
+  const value = fmt(totals), label = `Total sample size${note}`
+  if (rows.every(r => r.trait_type === 'quantitative')) return { value, label, detail: '' }
+  return { value, label, detail: `${fmt(given(rows.map(r => r.n_cases)))} cases · ${fmt(given(rows.map(r => r.n_controls)))} controls` }
+})
 const studies = computed(() => s.value.studies ?? [])
 // Per-dataset rows: the post-processing's counts joined with each dataset's details and QC (from the API).
 const datasetRows = computed(() => studies.value.map((st: any) => ({ ...(ma.value?.datasets ?? []).find((d: any) => d.id === st.id), ...st })))
 const HELP = {
-  n: 'Cases and controls given at upload.',
+  n: 'Cases and controls given at upload, or the total sample size for a quantitative trait.',
   covered: 'How many of the lead loci (their lead SNP) this dataset has. Low coverage can mean a different genotyping or imputation panel, or a problem such as the wrong genome build.',
   direction: 'Of the lead loci this dataset has, the share where its effect points the same way as the meta-analysis. Well below 100% suggests swapped effect and other alleles.',
   outliers: "Lead loci where this dataset's effect differs from the pooled effect by more than 3 of its own standard errors: the datasets driving heterogeneity.",
@@ -131,12 +143,13 @@ const num = (x: any, d = 4) => x === '' || x == null || Number.isNaN(Number(x)) 
           </div>
         </div>
 
-        <Message v-if="['queued', 'running'].includes(ma.status)" severity="info" :closable="false" icon="pi pi-spin pi-spinner">Running…</Message>
+        <Message v-if="['queued', 'running'].includes(ma.status)" :severity="ma.batch_note ? 'warn' : 'info'" :closable="false" icon="pi pi-spin pi-spinner">{{ ma.batch_note || 'Running…' }}</Message>
         <Message v-if="ma.status === 'failed'" severity="error" :closable="false"><pre class="err">{{ ma.error }}</pre></Message>
 
         <template v-if="ma.status === 'completed'">
           <div class="grid tiles">
             <Card><template #content><div class="stat">{{ s.n_datasets }}</div><div class="stat-label">Datasets</div></template></Card>
+            <Card v-if="sampleTile"><template #content><div class="stat">{{ sampleTile.value }}</div><div class="stat-label">{{ sampleTile.label }}</div><div v-if="sampleTile.detail" class="stat-detail">{{ sampleTile.detail }}</div></template></Card>
             <Card><template #content><div class="stat">{{ s.n_variants?.toLocaleString() }}</div><div class="stat-label">Variants meta-analysed</div></template></Card>
             <Card><template #content><div class="stat">{{ s.n_loci }}</div><div class="stat-label">Genome-wide loci</div></template></Card>
             <Card><template #content><div class="stat">{{ s.lambda_gc?.toFixed(3) }}</div><div class="stat-label">λGC</div></template></Card>
@@ -203,8 +216,11 @@ const num = (x: any, d = 4) => x === '' || x == null || Number.isNaN(Number(x)) 
                 <Column header="#"><template #body="{ index }">{{ index + 1 }}</template></Column>
                 <Column header="Dataset"><template #body="{ data }"><span v-tooltip.top="`${cnt(data.variants_used)} variants used`">{{ data.label }}</span></template></Column>
                 <Column>
-                  <template #header><span>Cases / controls <i v-tooltip.top="HELP.n" class="pi pi-info-circle hint" /></span></template>
-                  <template #body="{ data }">{{ cnt(data.n_cases) }} / {{ cnt(data.n_controls) }}</template>
+                  <template #header><span>Cases / controls or N <i v-tooltip.top="HELP.n" class="pi pi-info-circle hint" /></span></template>
+                  <template #body="{ data }">
+                    <template v-if="data.trait_type === 'quantitative'">N {{ cnt(data.n_total) }}</template>
+                    <template v-else>{{ cnt(data.n_cases) }} / {{ cnt(data.n_controls) }}</template>
+                  </template>
                 </Column>
                 <Column>
                   <template #header><span>Lead loci <i v-tooltip.top="HELP.covered" class="pi pi-info-circle hint" /></span></template>
@@ -257,6 +273,7 @@ const num = (x: any, d = 4) => x === '' || x == null || Number.isNaN(Number(x)) 
 .small { font-size: 0.8rem; }
 .err { white-space: pre-wrap; font-size: 0.75rem; margin: 0; max-height: 200px; overflow: auto; }
 .tiles { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-bottom: 16px; }
+.stat-detail { font-size: 0.75rem; color: var(--gh-muted); margin-top: 2px; }
 .plots { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: stretch; margin-bottom: 16px; }
 .hits { margin-bottom: 16px; }
 .hint { color: var(--gh-muted); cursor: help; font-size: 0.85em; margin-left: 3px; font-weight: 400; }

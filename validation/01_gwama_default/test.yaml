@@ -1,0 +1,35 @@
+# Test 1: GWAMA meta-analysis, default settings (docs/VALIDATION_PLAN.md).
+title: GWAMA meta-analysis, default settings
+claim: A fixed-effect meta-analysis on GWASHub gives the same results as GWAMA run by hand on the same files.
+
+inputs: [UKB, HERMES, FINNGEN]   # names in validation/sources.yaml; also the file names uploaded and downloaded
+
+recipe:                        # validation/_lib/subset.R
+  lead_snps: [rs1556516, rs17042102, rs55730499]   # CONFIRM against HERMES 2019 (9p21 CDKN2B-AS1, 4q25 PITX2, 6q25 LPA)
+  window_kb: 1000
+  random_n: 50000
+  seed: 2026
+
+site:                          # what to choose on the site (record what you actually did in site_run.yaml)
+  project: validation
+  qc: default pipeline, default settings
+  meta_analysis:
+    method: gwashub/gwama
+    params: {model: fixed, min_studies: 2, maf_min: 0, genomic_control: false, genomic_control_output: false,
+             direction_threshold: 1, sex_differentiated: false}
+
+reference:
+  gwama_image: gwashub/gwama   # the site's own image, so the same GWAMA release (2.2.2)
+  gwama_args: [-qt, --indel_alleles, --threshold, "1"]
+  min_studies: 2
+
+thresholds:                    # read by 3_compare.R and shown on the Validation page
+  variant_sets_identical: true          # site vs GWAMA by hand
+  beta_se_max_abs_diff: 1.0e-6          # site vs GWAMA by hand (GWAMA's printed precision)
+  p_max_rel_diff: 1.0e-4                # site vs GWAMA by hand, p > 1e-300
+  n_studies_direction_identical: true   # site vs GWAMA by hand
+  het_max_abs_diff: 1.0e-6              # Q, its p and I², site vs GWAMA by hand
+  n_eaf_max_abs_diff: 1.0e-6            # total N and EAF, site vs GWAMA by hand
+  rerun_identical: true                 # two site runs, same sha256
+
+archive: null                  # Zenodo DOI or S3 location of local/validation/01_gwama_default/, once archived

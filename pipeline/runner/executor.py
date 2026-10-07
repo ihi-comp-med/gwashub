@@ -20,6 +20,7 @@ same paths, and no network. Scripts can't tell the difference.
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,16 @@ def _profiler():
 
 class RunError(Exception):
     pass
+
+
+class Interrupted(Exception):
+    """The job was told to stop (SIGTERM; on AWS Batch, the Spot machine is being reclaimed). Nothing is recorded or
+    handed over, so the retried job runs its group of steps again from the start, not a "crashed" step."""
+
+
+# A step stopped by SIGTERM: -15 when it runs as a process here, 143 (128 + 15) from `docker run`. (SIGKILL, e.g. the
+# kernel's out-of-memory killer, stays a crash: running it again would fail the same way.)
+INTERRUPTED = (-signal.SIGTERM, 128 + signal.SIGTERM)
 
 
 def _interpreter(cmd):
@@ -213,6 +224,8 @@ def run_steps(resolved, state, run_params, resource_dir, out_dir, indexes=None, 
                     subprocess.run(["docker", "kill", container], capture_output=True)
             except RunError as e:
                 code = str(e)
+            if isinstance(code, int) and code in INTERRUPTED:
+                raise Interrupted(f"{entry.step.title} was stopped (SIGTERM)")
             duration = round(time.time() - t0, 2)
 
             log = None

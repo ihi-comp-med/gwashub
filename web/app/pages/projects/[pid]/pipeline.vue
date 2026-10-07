@@ -1,18 +1,29 @@
 <script setup lang="ts">
-// Pipeline builder: an ordered list of steps, each = (step from the catalog, image, on_fail, params).
-// Edits are local until "Save", which creates a new pipeline version on the server.
+// Pipeline builder: a project's named pipelines, each an ordered list of steps (step from the catalog, on_fail, params;
+// each step runs in the image its step.yaml names). Edits are local until "Save", which creates a new version of the
+// selected pipeline. Datasets follow the default pipeline unless a reviewer pins them to another.
 const toast = useToast()
+const route = useRoute()
+const router = useRouter()
 const { pid, project, error: projectError, isReviewer, refresh: refreshProject } = useProject()
-const { data: pl, refresh } = useApiGet<any>(() => `/projects/${pid.value}/pipeline`)
+// The pipeline shown: ?pipeline=<id>, else the project default.
+const selectedId = computed(() => (route.query.pipeline ? Number(route.query.pipeline) : null))
+const { data: pl, refresh } = useApiGet<any>(() => `/projects/${pid.value}/pipeline${selectedId.value ? `?pipeline_id=${selectedId.value}` : ''}`, { keep: true })
+function selectPipeline(id: number) { router.replace({ query: { ...route.query, pipeline: String(id) } }) }
 
-interface Entry { uid: string, step: string | null, image: string, on_fail: string, params: Record<string, any> }
+interface Entry { uid: string, step: string | null, on_fail: string, params: Record<string, any> }
 let uidN = 0
 const uid = () => `e${++uidN}`
-const toEntries = (steps: any[]): Entry[] => steps.map(s => ({ uid: uid(), step: s.step, image: s.image ?? stepOf(s.step)?.image ?? 'gwashub/base', on_fail: s.on_fail ?? stepOf(s.step)?.on_fail ?? 'flag', params: { ...(s.params ?? {}) } }))
+// Settings a step no longer has (its step.yaml changed since the pipeline was saved) are dropped, so saving works.
+const knownParams = (step: string, params: Record<string, any> = {}) => {
+  const keys = new Set((stepOf(step)?.param_schema ?? []).map((f: any) => f.key))
+  return Object.fromEntries(Object.entries(params).filter(([k]) => keys.has(k)))
+}
+const toEntries = (steps: any[]): Entry[] => steps.map(s => ({ uid: uid(), step: s.step, on_fail: s.on_fail ?? stepOf(s.step)?.on_fail ?? 'flag', params: knownParams(s.step, s.params) }))
+const imageOf = (e: Entry) => stepOf(e.step)?.image ?? ''
 const fromEntries = (es: Entry[]) => es.map(e => {
   const s = stepOf(e.step)!
   const out: any = { step: e.step }
-  if (e.image !== s.image) out.image = e.image
   if (e.on_fail !== s.on_fail) out.on_fail = e.on_fail
   const p = Object.fromEntries(Object.entries(e.params).filter(([k, v]) => v !== '' && v != null && JSON.stringify(v) !== JSON.stringify(s.params?.[k])))
   if (Object.keys(p).length) out.params = p
@@ -22,6 +33,10 @@ const fromEntries = (es: Entry[]) => es.map(e => {
 const entries = ref<Entry[]>([])
 const saved = ref('')
 const note = ref('')
+// "show the format" / "show an example" in the step contract: one pop-out panel, filled with whichever was asked for
+const contractPop = ref()
+const popWhat = ref<'input' | 'log'>('input')
+function showContract(event: Event, what: 'input' | 'log') { popWhat.value = what; contractPop.value?.toggle(event) }
 const expanded = ref<Set<string>>(new Set())
 watch(pl, (v) => {
   if (!v) return
@@ -38,11 +53,10 @@ const stepOptions = computed(() => owners.value.map(o => ({
   items: catalog.value.filter(s => s.owner === o).map(s => ({ label: s.title, value: s.key, desc: s.description })),
 })))
 const images = computed<any[]>(() => pl.value?.images ?? [])
-const imageOptions = computed(() => images.value.map(i => i.ref))
 // On AWS, consecutive steps with the same image run as one Batch job; a new job starts where the image changes.
 const jobOf = computed(() => {
   let job = 0
-  return entries.value.map((e, i) => (i > 0 && e.image !== entries.value[i - 1]!.image ? ++job : job))
+  return entries.value.map((e, i) => (i > 0 && imageOf(e) !== imageOf(entries.value[i - 1]!) ? ++job : job))
 })
 const onFailOptions = ['block', 'flag', 'continue']
 const dirty = computed(() => entries.value.some(e => !e.step) || JSON.stringify(fromEntries(entries.value.filter(e => e.step))) !== saved.value)
@@ -50,7 +64,7 @@ const dirty = computed(() => entries.value.some(e => !e.step) || JSON.stringify(
 // --- Editing -------------------------------------------------------------
 function chooseStep(e: Entry, key: string) {
   const s = stepOf(key)
-  if (s) { e.image = s.image; e.on_fail = s.on_fail; e.params = {} }
+  if (s) { e.on_fail = s.on_fail; e.params = {} }
 }
 function move(i: number, d: number) {
   const a = entries.value, j = i + d
@@ -62,7 +76,7 @@ function insertBeforeReport(e: Entry) {
   const r = entries.value.findIndex(x => x.step === 'gwashub/qc_report')
   entries.value.splice(r === -1 ? entries.value.length : r, 0, e)
 }
-function addStep() { insertBeforeReport({ uid: uid(), step: null, image: 'gwashub/base', on_fail: 'flag', params: {} }) }
+function addStep() { insertBeforeReport({ uid: uid(), step: null, on_fail: 'flag', params: {} }) }
 function toggle(id: string) {
   const s = new Set(expanded.value)
   s.has(id) ? s.delete(id) : s.add(id)
@@ -77,15 +91,6 @@ function discard() { if (pl.value) entries.value = toEntries(pl.value.steps) }
 const contributeOpen = ref(false)
 
 // --- Validation --------------------------------------------------------------
-function interpreterMismatch(e: Entry): string | null {
-  const s = stepOf(e.step)
-  if (!s) return null
-  const isR = /\.r$/i.test(s.script ?? ''), isPy = /\.py$/i.test(s.script ?? '')
-  const rImage = /(-r$|-r:|\/r-|rocker\/|r-base)/i.test(e.image), pyImage = !rImage || /python/i.test(e.image)
-  if (isR && pyImage && !rImage) return 'R script in a Python image: Rscript is probably not installed.'
-  if (isPy && rImage && !pyImage) return 'Python script in an R image: python is probably not installed.'
-  return null
-}
 const resourceKeys = computed(() => new Set((pl.value?.resources ?? []).map((r: any) => r.key)))
 const warnings = computed(() => {
   const w: string[] = []
@@ -98,7 +103,6 @@ const warnings = computed(() => {
   // Everything except Parse, Filter and the report works on GRCh38 positions, which Harmonise and liftover produces.
   const h = keys.indexOf('gwashub/harmonise_liftover')
   if (h !== -1) keys.forEach((k, i) => { if (k && i < h && !['gwashub/parse', 'gwashub/filter', 'gwashub/qc_report'].includes(k)) w.push(`${stepOf(k)?.title} needs GRCh38 positions: put it after Harmonise and liftover.`) })
-  entries.value.forEach((e) => { const m = interpreterMismatch(e); if (m) w.push(`${stepOf(e.step)?.title}: ${m}`) })
   entries.value.forEach(e => stepOf(e.step)?.resources?.filter((k: string) => !resourceKeys.value.has(k)).forEach((k: string) => w.push(`${stepOf(e.step)?.title} needs the resource ${k}, which isn't available. Add it under Resources.`)))
   return [...new Set(w)]
 })
@@ -107,14 +111,55 @@ const saving = ref(false)
 async function save() {
   saving.value = true
   try {
-    const r = await api(`/projects/${pid.value}/pipeline`, { method: 'PUT', body: { steps: fromEntries(entries.value), note: note.value } })
-    toast.add({ severity: 'success', summary: `Saved as version ${r.version}`, detail: 'New uploads and re-runs will use it.', life: 3500 })
+    const r = await api(`/projects/${pid.value}/pipeline`, { method: 'PUT', body: { steps: fromEntries(entries.value), note: note.value, pipeline_id: pl.value.pipeline.id } })
+    toast.add({ severity: 'success', summary: `${pl.value.pipeline.name}: saved as version ${r.version}`,
+      detail: 'New uploads and re-runs of its datasets use it; its existing datasets are now out of date (re-run advised).', life: 5000 })
     note.value = ''
     await refresh()
     refreshProject()
   }
   catch (e: any) { toast.add({ severity: 'error', summary: 'Save failed', detail: e.message, life: 5000 }) }
   finally { saving.value = false }
+}
+
+// --- Pipelines: add, rename, make default; re-run out-of-date datasets ---------------------------------
+const pipeline = computed(() => pl.value?.pipeline)
+const pipelines = computed<any[]>(() => pl.value?.pipelines ?? [])
+const current = computed(() => pipelines.value.find(p => p.id === pipeline.value?.id))
+const newOpen = ref(false)
+const newForm = reactive({ name: '', description: '', copy_from: null as number | null })
+function openNew() { Object.assign(newForm, { name: '', description: '', copy_from: pipeline.value?.id ?? null }); newOpen.value = true }
+async function createPipeline() {
+  try {
+    const r = await api(`/projects/${pid.value}/pipelines`, { method: 'POST', body: { ...newForm } })
+    newOpen.value = false
+    toast.add({ severity: 'success', summary: `Pipeline ${r.name} added`, detail: 'Pin datasets to it from the datasets table or a dataset\'s panel.', life: 4000 })
+    selectPipeline(r.id)
+  }
+  catch (e: any) { toast.add({ severity: 'error', summary: 'Could not add the pipeline', detail: e.message, life: 5000 }) }
+}
+const renaming = ref(false)
+const renameForm = reactive({ name: '', description: '' })
+function startRename() { Object.assign(renameForm, { name: pipeline.value.name, description: pipeline.value.description }); renaming.value = true }
+async function editPipeline(body: Record<string, any>, done: string) {
+  try {
+    await api(`/pipelines/${pipeline.value.id}`, { method: 'PATCH', body })
+    renaming.value = false
+    toast.add({ severity: 'success', summary: done, life: 3000 })
+    await refresh()
+  }
+  catch (e: any) { toast.add({ severity: 'error', summary: 'Could not change the pipeline', detail: e.message, life: 5000 }) }
+}
+const rerunning = ref(false)
+async function rerunOutOfDate() {
+  rerunning.value = true
+  try {
+    const r = await api(`/projects/${pid.value}/datasets/rerun`, { method: 'POST', body: { ids: current.value.out_of_date_ids } })
+    toast.add({ severity: 'success', summary: `QC re-run started for ${r.started} dataset${r.started === 1 ? '' : 's'}`, life: 4000 })
+    await refresh()
+  }
+  catch (e: any) { toast.add({ severity: 'error', summary: 'Could not re-run', detail: e.message, life: 5000 }) }
+  finally { rerunning.value = false }
 }
 
 // --- Resources & code ----------------------------------------------------------
@@ -147,26 +192,58 @@ function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen
       <Message v-if="!isReviewer" severity="info" :closable="false" icon="pi pi-lock" class="mb">
         Only project reviewers can change these settings. You're viewing them read-only.
       </Message>
-      <UploadOptions :project="project" class="mb" @saved="refreshProject" />
-      <MetadataConfig :project="project" class="mb" @saved="refreshProject" />
+      <UploadOptions :project="project" class="mb" data-tour="setup-upload-options" @saved="refreshProject" />
+      <MetadataConfig :project="project" class="mb" data-tour="setup-metadata" @saved="refreshProject" />
 
       <div class="layout">
         <div class="main">
-          <Card>
+          <Card class="mb pipes" data-tour="setup-pipelines">
+            <template #title><div class="row"><i class="pi pi-sitemap" /> QC pipelines<span class="spacer" />
+              <Button v-if="isReviewer" label="New pipeline" icon="pi pi-plus" size="small" outlined @click="openNew" /></div></template>
+            <template #subtitle>Datasets run against the default pipeline unless a reviewer pins them to another (in the datasets table or a dataset's panel). A dataset is out of date when its latest QC used another pipeline or an older version.</template>
+            <template #content>
+              <div class="plist">
+                <button v-for="p in pipelines" :key="p.id" :class="['pcard', { on: p.id === pipeline?.id }]" @click="selectPipeline(p.id)">
+                  <div class="row"><strong>{{ p.name }}</strong><Tag v-if="p.is_default" value="default" severity="info" class="mini" /><span class="spacer" /><span class="muted small">v{{ p.version }}</span></div>
+                  <div class="small muted">{{ p.datasets }} dataset{{ p.datasets === 1 ? '' : 's' }}<span v-if="p.out_of_date" class="ood"> · {{ p.out_of_date }} out of date</span></div>
+                </button>
+              </div>
+              <Message v-if="current?.out_of_date" severity="warn" size="small" :closable="false" class="oodmsg">
+                <div class="row">
+                  <span><strong>{{ current.out_of_date }} dataset{{ current.out_of_date === 1 ? '' : 's' }}</strong> on {{ pipeline.name }} {{ current.out_of_date === 1 ? 'was' : 'were' }} last QC'd with another pipeline or an older version. Re-run advised.</span>
+                  <span class="spacer" />
+                  <Button v-if="isReviewer" label="Re-run all out of date" icon="pi pi-refresh" size="small" text severity="warn" class="oodbtn" :loading="rerunning" @click="rerunOutOfDate" />
+                </div>
+              </Message>
+            </template>
+          </Card>
+          <Card data-tour="setup-steps">
             <template #title>
               <div class="row">
-                Pipeline <Tag :value="`v${pl.version}`" severity="secondary" />
+                {{ pipeline?.name }} <Tag v-if="pipeline?.is_default" value="default" severity="info" /> <Tag :value="`v${pl.version}`" severity="secondary" />
                 <Tag v-if="dirty" value="Unsaved changes" severity="warn" />
                 <span class="spacer" />
-                <Button v-if="isReviewer" label="Reset to default" icon="pi pi-replay" size="small" text severity="secondary" @click="resetTemplate" />
+                <template v-if="isReviewer">
+                  <Button label="Rename" icon="pi pi-pencil" size="small" text severity="secondary" @click="startRename" />
+                  <Button v-if="!pipeline?.is_default" label="Make default" icon="pi pi-star" size="small" text severity="secondary"
+                          @click="editPipeline({ is_default: true }, `${pipeline.name} is now the default pipeline`)" />
+                  <Button label="Reset to template" icon="pi pi-replay" size="small" text severity="secondary" @click="resetTemplate" />
+                </template>
               </div>
+              <div v-if="pipeline?.description && !renaming" class="pdesc muted">{{ pipeline.description }}</div>
+              <form v-if="renaming" class="row rename" @submit.prevent="editPipeline({ ...renameForm }, 'Pipeline updated')">
+                <InputText v-model="renameForm.name" size="small" placeholder="Name" />
+                <InputText v-model="renameForm.description" size="small" placeholder="Description (optional)" class="grow" />
+                <Button type="submit" label="Save" size="small" :disabled="!renameForm.name.trim()" />
+                <Button label="Cancel" size="small" text severity="secondary" @click="renaming = false" />
+              </form>
             </template>
             <template #subtitle>Steps run top to bottom on each uploaded file, each in the image shown. Consecutive steps with the same image run together as one job; a new job starts where the image changes.</template>
             <template #content>
               <div class="head-row muted"><span /><span>Step</span><span>Image</span><span>If it fails</span><span /></div>
               <TransitionGroup name="list" tag="ol" class="rows compact-ui">
                 <li v-for="(e, i) in entries" :key="e.uid" :class="['entry', { custom: stepOf(e.step)?.source === 'consortium' }]">
-                  <div v-if="i > 0 && jobOf[i] !== jobOf[i - 1]" class="jobsplit muted small"><i class="pi pi-arrow-right-arrow-left" /> New job: image changes to <span class="mono">{{ e.image }}</span></div>
+                  <div v-if="i > 0 && jobOf[i] !== jobOf[i - 1]" class="jobsplit muted small"><i class="pi pi-arrow-right-arrow-left" /> New job: image changes to <span class="mono">{{ imageOf(e) }}</span></div>
                   <div class="entry-row">
                     <span class="idx">{{ i + 1 }}</span>
                     <Select v-model="e.step" :options="stepOptions" option-label="label" option-value="value"
@@ -183,11 +260,7 @@ function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen
                         <span v-else class="muted">{{ placeholder }}</span>
                       </template>
                     </Select>
-                    <Select v-model="e.image" :options="imageOptions" :disabled="!isReviewer" :invalid="!!interpreterMismatch(e)" class="w-full mono-input" overlay-class="compact-overlay">
-                      <template #option="{ option }">
-                        <div class="opt"><div class="mono">{{ option }}</div><div class="muted small">{{ images.find(x => x.ref === option)?.title }}</div></div>
-                      </template>
-                    </Select>
+                    <span v-tooltip.top="images.find(x => x.ref === imageOf(e))?.title ?? 'Set in the step\'s step.yaml'" class="mono img">{{ imageOf(e) || '–' }}</span>
                     <Select v-model="e.on_fail" :options="onFailOptions" :disabled="!isReviewer" class="w-full" overlay-class="compact-overlay" />
                     <div class="acts">
                       <Button v-tooltip.top="'View code'" icon="pi pi-code" text rounded size="small" :disabled="!e.step" aria-label="View code" @click="viewCode(e.step)" />
@@ -200,21 +273,55 @@ function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen
                     </div>
                   </div>
                   <div v-if="expanded.has(e.uid) && stepOf(e.step)" class="details">
-                    <p class="m0">{{ stepOf(e.step).description }}</p>
                     <dl class="kv">
                       <dt>Owner</dt><dd>{{ stepOf(e.step).owner === 'gwashub' ? 'GWASHub (default step)' : stepOf(e.step).owner }}</dd>
-                      <dt>Script</dt><dd class="mono">{{ stepOf(e.step).script }}</dd>
-                      <dt>Runs</dt><dd class="mono">{{ stepOf(e.step).command }} --input … --resources … --params … --log …</dd>
-                      <dt>Resources</dt>
-                      <dd>
-                        <span v-if="!stepOf(e.step).resources?.length" class="muted">None</span>
-                        <Tag v-for="k in stepOf(e.step).resources" :key="k" :value="k" :severity="resourceKeys.has(k) ? 'secondary' : 'danger'" class="mono rtag" />
-                      </dd>
+                      <dt>Script path</dt><dd class="mono">{{ stepOf(e.step).script }}</dd>
+                      <dt>Image</dt><dd class="mono">{{ imageOf(e) }} <span class="muted">(set in step.yaml)</span></dd>
                     </dl>
-                    <div v-if="stepOf(e.step).param_schema?.length" class="params">
-                      <div class="ph muted">Parameters <span class="small">(defaults from step.yaml; changes are saved with the pipeline)</span></div>
-                      <ParamForm :schema="stepOf(e.step).param_schema" :model-value="e.params" :disabled="!isReviewer" :id-prefix="e.uid" compact
-                                 @update:model-value="v => e.params = v" />
+                    <div class="contract">
+                      <div class="ph muted">The step contract <span class="small">(what the step is given and must write; parameter changes are saved with the pipeline)</span></div>
+                      <table class="ct">
+                        <tbody>
+                          <tr><td class="mono arg">{{ stepOf(e.step).interpreter }}</td><td>{{ stepOf(e.step).language }}</td></tr>
+                          <tr><td class="mono arg in1">{{ stepOf(e.step).script_name }}</td><td class="narr">{{ stepOf(e.step).narrative }}</td></tr>
+                          <tr>
+                            <td class="mono arg in2">--input</td>
+                            <td>
+                              The dataset in the standard GWASHub format: tab-separated, one variant per row.
+                              <button class="more" @click="e2 => showContract(e2, 'input')"><i class="pi pi-info-circle" /> the format</button>
+                            </td>
+                          </tr>
+                          <tr>
+                            <td class="mono arg in2">--resources</td>
+                            <td>
+                              <span v-if="!stepOf(e.step).resources?.length && !stepOf(e.step).optional_resources?.length" class="muted">None</span>
+                              <template v-else>
+                                <span class="small muted">A folder with only the reference files this step declares:</span>
+                                <div class="rlist">
+                                  <Tag v-for="k in stepOf(e.step).resources" :key="k" v-tooltip.top="resourceKeys.has(k) ? 'Required' : 'Required, but not uploaded to this project yet'"
+                                       :value="k" :severity="resourceKeys.has(k) ? 'secondary' : 'danger'" class="mono rtag" />
+                                  <Tag v-for="k in stepOf(e.step).optional_resources" :key="k" v-tooltip.top="'Optional: used when available'" :value="`${k} (optional)`" severity="secondary" class="mono rtag opt" />
+                                </div>
+                              </template>
+                            </td>
+                          </tr>
+                          <tr>
+                            <td class="mono arg in2">--params</td>
+                            <td>
+                              <span v-if="!stepOf(e.step).param_schema?.length" class="muted">None</span>
+                              <ParamForm v-else :schema="stepOf(e.step).param_schema" :model-value="e.params" :disabled="!isReviewer" :id-prefix="e.uid" compact
+                                         @update:model-value="v => e.params = v" />
+                            </td>
+                          </tr>
+                          <tr>
+                            <td class="mono arg in2">--log</td>
+                            <td>
+                              A JSON step log. Exit code 0 means the step ran (its verdict says how it went).
+                              <button class="more" @click="e2 => showContract(e2, 'log')"><i class="pi pi-info-circle" /> an example</button>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
                     </div>
                   </div>
                 </li>
@@ -228,7 +335,7 @@ function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen
 
           <Message v-for="w in warnings" :key="w" severity="warn" :closable="false" size="small" icon="pi pi-exclamation-triangle">{{ w }}</Message>
 
-          <Card v-if="isReviewer">
+          <Card v-if="isReviewer" data-tour="setup-save">
             <template #content>
               <div class="save-row compact-ui">
                 <InputText v-model="note" placeholder="What changed? (shown in version history)" fluid :disabled="!dirty" />
@@ -239,7 +346,7 @@ function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen
             </template>
           </Card>
 
-          <Card>
+          <Card data-tour="setup-resources">
             <template #title>
               <div class="row"><i class="pi pi-database" /> Resources<span class="spacer" />
                 <IconField class="compact-ui rsearch">
@@ -259,7 +366,7 @@ function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen
                     <div class="muted small rdesc">{{ data.title }} · {{ data.build === 'Any' ? 'any build' : data.build }} · {{ fmtSize(data.size) }}</div>
                   </template>
                 </Column>
-                <Column header="Scope"><template #body="{ data }"><Tag :value="data.scope_label" :severity="data.scope === 'shared' ? 'secondary' : 'info'" /></template></Column>
+                <Column header="Scope"><template #body="{ data }"><Tag :value="data.scope_label" :severity="data.scope === 'shared' ? 'secondary' : 'info'" class="scope" /></template></Column>
                 <Column header="Version"><template #body="{ data }"><span v-tooltip.top="`sha256 ${data.sha256}`">v{{ data.version }}</span></template></Column>
                 <Column header="Used by">
                   <template #body="{ data }">
@@ -319,6 +426,30 @@ function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen
     <ContributeDialog v-model:visible="contributeOpen" :images="images" :contributing-url="pl?.contributing_url" />
     <ResourceUploadDialog v-model:visible="uploadOpen" :project-id="pid" :project-short="project.short" :existing="pl?.resources ?? []" @saved="onResourceSaved" />
     <CodeViewer v-model:visible="codeOpen" :project-id="pid" :step-key="codeKey" />
+    <Dialog v-model:visible="newOpen" header="New pipeline" modal :style="{ width: '30rem' }">
+      <form class="stack" @submit.prevent="createPipeline">
+        <div class="field"><label for="np-name">Name</label><InputText id="np-name" v-model="newForm.name" fluid placeholder="e.g. Custom QC for imputed arrays" /></div>
+        <div class="field"><label for="np-desc">Description (optional)</label><InputText id="np-desc" v-model="newForm.description" fluid /></div>
+        <div class="field"><label for="np-copy">Start from</label>
+          <Select input-id="np-copy" v-model="newForm.copy_from" :options="[{ id: null, name: 'The default template' }, ...pipelines]" option-label="name" option-value="id" fluid />
+          <small class="muted">Its current steps and settings are copied; edit and save them afterwards.</small></div>
+        <div class="row end"><Button label="Cancel" text severity="secondary" @click="newOpen = false" /><Button type="submit" label="Add pipeline" :disabled="!newForm.name.trim()" /></div>
+      </form>
+    </Dialog>
+    <Popover ref="contractPop" class="contract-pop">
+      <div v-if="pl && popWhat === 'input'" class="pop">
+        <strong>The GWASHub format</strong>
+        <div class="small muted">Tab-separated, one variant per row. Always: {{ pl.contract.required_columns.join(', ') }}; when the upload or study details give them: {{ pl.contract.standard_columns.filter((c: string) => !pl.contract.required_columns.includes(c)).join(', ') }}.</div>
+        <pre class="mono">{{ [pl.contract.standard_columns, ...pl.contract.input_sample].map((r: string[]) => r.join('\t')).join('\n') }}</pre>
+      </div>
+      <div v-else-if="pl" class="pop">
+        <strong>A step log (example)</strong>
+        <ul class="small">
+          <li v-for="f in pl.contract.log_fields" :key="f.key"><span class="mono">{{ f.key }}</span>: {{ f.about }}</li>
+        </ul>
+        <pre class="mono">{{ JSON.stringify(pl.contract.log_example, null, 2) }}</pre>
+      </div>
+    </Popover>
   </div>
   <ProjectError v-if="!project" :error="projectError" />
 </template>
@@ -328,6 +459,7 @@ function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen
 .m0 { margin: 0; }
 .small { font-size: 0.78rem; }
 .tiny { font-size: 0.7rem; }
+.rtable .scope { font-size: 0.75rem; padding: 0.15rem 0.45rem; }
 .strong { font-weight: 600; }
 .jobsplit { display: flex; align-items: center; gap: 6px; padding: 2px 0 6px 34px; }
 .otag { font-size: 0.7rem; padding: 1px 6px; }
@@ -357,7 +489,34 @@ function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen
 .kv dt { color: var(--gh-muted); }
 .kv dd { margin: 0; word-break: break-all; }
 .rtag { font-size: 0.7rem; margin: 0 4px 4px 0; }
-.params { border-top: 1px dashed var(--gh-border); padding-top: 8px; margin-top: 4px; display: flex; flex-direction: column; gap: 6px; }
+.pipes { margin-bottom: 16px; }
+.plist { display: flex; flex-wrap: wrap; gap: 10px; }
+.pcard { text-align: left; border: 1px solid var(--gh-border); border-radius: 8px; background: var(--p-content-background, #fff); padding: 8px 12px; min-width: 200px; cursor: pointer; font: inherit; color: inherit; display: flex; flex-direction: column; gap: 4px; }
+.pcard.on { border-color: var(--gh-accent); box-shadow: 0 0 0 1px var(--gh-accent); }
+.pcard .row { gap: 6px; }
+.ood { color: #b45309; font-weight: 600; }
+.oodmsg { margin-top: 12px; }
+.oodmsg .row { gap: 10px; width: 100%; }
+.oodbtn { padding-top: 0; padding-bottom: 0; }
+.pcard .mini { font-size: 0.7rem; padding: 0 6px; }
+.pdesc { font-size: 0.85rem; font-weight: 400; margin-top: 2px; }
+.rename { gap: 6px; margin-top: 6px; font-weight: 400; }
+.img { font-size: 0.8rem; padding: 0 4px; color: var(--gh-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stack { display: flex; flex-direction: column; gap: 12px; }
+.contract { border-top: 1px dashed var(--gh-border); padding-top: 8px; margin-top: 4px; display: flex; flex-direction: column; gap: 6px; }
+.ct { border-collapse: collapse; width: 100%; font-size: inherit; }
+.ct td { padding: 6px 10px 6px 0; vertical-align: top; border-bottom: 1px solid var(--gh-border); }
+.ct tr:last-child td { border-bottom: 0; }
+.ct .arg { white-space: nowrap; width: 1%; color: var(--gh-accent); }
+.ct .in1 { padding-left: 14px; }
+.ct .in2 { padding-left: 28px; }
+.ct .narr { white-space: pre-line; }
+.pop { display: flex; flex-direction: column; gap: 6px; max-width: min(760px, 90vw); }
+.pop pre { background: var(--gh-bg); border: 1px solid var(--gh-border); border-radius: 6px; padding: 8px; font-size: 0.75rem; overflow-x: auto; margin: 0; }
+.pop ul { margin: 0; padding-left: 18px; }
+.rlist { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.rtag.opt { opacity: 0.75; }
+.more { background: none; border: 0; color: var(--gh-accent); cursor: pointer; font: inherit; padding: 0; margin-left: 4px; }
 .add { margin-top: 12px; gap: 8px; }
 .save-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
 .save-row :deep(.p-button) { white-space: nowrap; flex-shrink: 0; }

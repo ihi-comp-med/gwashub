@@ -28,9 +28,9 @@ const isActive = (to: string) => route.path === to || (to.endsWith('/meta') && r
           </div>
         </div>
         <span class="spacer" />
-        <Button label="Upload dataset" icon="pi pi-upload" @click="navigateTo(`${base}/upload`)" />
+        <Button label="Upload dataset" icon="pi pi-upload" data-tour="upload-button" @click="navigateTo(`${base}/upload`)" />
       </div>
-      <nav class="tabs">
+      <nav class="tabs" data-tour="project-tabs">
         <NuxtLink v-for="t in tabs" :key="t.to" :to="t.to" :class="['tab', { active: isActive(t.to) }]">
           <i :class="t.icon" /> {{ t.label }}
         </NuxtLink>

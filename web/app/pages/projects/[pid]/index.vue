@@ -2,6 +2,7 @@
 const { pid, project, error: projectError, isReviewer, refresh } = useProject()
 const toast = useToast()
 const inviteOpen = ref(false)
+const deleteOpen = ref(false)
 async function setRole(m: any, role: string) {
   try {
     await api(`/projects/${pid.value}/members/${m.id}`, { method: 'PATCH', body: { role } })
@@ -28,7 +29,7 @@ const menuItems = computed(() => !menuFor.value ? [] : [
   { label: 'Remove from project', icon: 'pi pi-user-minus', command: () => removeMember(menuFor.value) },
 ])
 function openMenu(ev: Event, m: any) { menuFor.value = m; memberMenu.value.toggle(ev) }
-const statuses: DatasetStatus[] = ['passed', 'review', 'failed', 'processing']
+const statuses: DatasetStatus[] = ['passed', 'review', 'failed', 'processing', 'pending']
 const groupings = [
   { label: 'Phenotype × ancestry × sex', value: 'phenotype_ancestry_sex' },
   { label: 'Ancestry × sex', value: 'ancestry_sex' },
@@ -64,8 +65,9 @@ const uploaders = computed(() => project.value?.members.filter((m: any) => m.rol
               </div>
             </template>
           </Card>
+          <PracticeFiles v-if="project.is_practice" />
 
-          <Card>
+          <Card data-tour="overview-summary">
             <template #title>
               <div class="row">Dataset summary<span class="spacer" />
                 <Select v-model="groupBy" :options="groupings" option-label="label" option-value="value" size="small" aria-label="Group by" />
@@ -109,17 +111,18 @@ const uploaders = computed(() => project.value?.members.filter((m: any) => m.rol
         </div>
 
         <aside class="side">
-          <Card>
+          <Card data-tour="overview-members">
             <template #title><div class="row">Members<span class="spacer" />
-              <Button v-if="isReviewer" label="Invite" icon="pi pi-user-plus" size="small" outlined @click="inviteOpen = true" /></div></template>
+              <Button v-if="isReviewer && !project.is_practice" label="Invite" icon="pi pi-user-plus" size="small" outlined @click="inviteOpen = true" /></div></template>
             <template #content>
+              <p v-if="project.is_practice" class="muted small m0">Everyone is a reviewer in the Practice project; you see only yourself here.</p>
               <h4 class="grp">Reviewers</h4>
               <ul class="members">
                 <li v-for="m in reviewers" :key="m.id" class="row">
                   <Avatar :label="initials(m.name)" shape="circle" class="av rev" />
                   <div class="who"><div class="strong">{{ m.name }}<span v-if="m.is_me" class="muted"> (you)</span></div><div class="muted small">{{ m.email ?? m.institution }}</div></div>
                   <span class="spacer" /><span class="muted small">{{ m.uploads }} {{ m.uploads === 1 ? 'file' : 'files' }}</span>
-                  <Button v-if="isReviewer" icon="pi pi-ellipsis-v" text rounded size="small" :aria-label="`Manage ${m.name}`" @click="openMenu($event, m)" />
+                  <Button v-if="isReviewer && !project.is_practice" icon="pi pi-ellipsis-v" text rounded size="small" :aria-label="`Manage ${m.name}`" @click="openMenu($event, m)" />
                 </li>
               </ul>
               <h4 class="grp">Uploaders</h4>
@@ -129,7 +132,7 @@ const uploaders = computed(() => project.value?.members.filter((m: any) => m.rol
                   <Avatar :label="initials(m.name)" shape="circle" class="av" />
                   <div class="who"><div class="strong">{{ m.name }}<span v-if="m.is_me" class="muted"> (you)</span></div><div class="muted small">{{ m.email ?? m.institution }}</div></div>
                   <span class="spacer" /><span class="muted small">{{ m.uploads }} {{ m.uploads === 1 ? 'file' : 'files' }}</span>
-                  <Button v-if="isReviewer" icon="pi pi-ellipsis-v" text rounded size="small" :aria-label="`Manage ${m.name}`" @click="openMenu($event, m)" />
+                  <Button v-if="isReviewer && !project.is_practice" icon="pi pi-ellipsis-v" text rounded size="small" :aria-label="`Manage ${m.name}`" @click="openMenu($event, m)" />
                 </li>
               </ul>
             </template>
@@ -145,11 +148,19 @@ const uploaders = computed(() => project.value?.members.filter((m: any) => m.rol
               <NuxtLink :to="`/projects/${pid}/pipeline`" class="small">{{ isReviewer ? 'Pipeline settings' : 'View pipeline settings' }} →</NuxtLink>
             </template>
           </Card>
+          <Card v-if="project.is_admin" class="danger">
+            <template #title>Delete project</template>
+            <template #content>
+              <p class="muted small m0">Platform admins only. Deletes the project, its datasets, QC and meta-analysis results and their files.</p>
+              <Button label="Delete project…" icon="pi pi-trash" severity="danger" size="small" outlined class="delbtn" @click="deleteOpen = true" />
+            </template>
+          </Card>
         </aside>
       </div>
     </div>
     <Menu ref="memberMenu" :model="menuItems" popup />
     <InviteMemberDialog v-model:visible="inviteOpen" :project-id="pid" :project-name="project.short" @added="refresh" />
+    <DeleteProjectDialog v-if="project.is_admin" v-model:visible="deleteOpen" :project="project" :datasets="summary?.totals?.total ?? 0" />
   </div>
   <ProjectError v-else :error="projectError" />
 </template>
@@ -159,6 +170,8 @@ const uploaders = computed(() => project.value?.members.filter((m: any) => m.rol
 @media (max-width: 960px) { .layout { grid-template-columns: 1fr; } }
 .main, .side { display: flex; flex-direction: column; gap: 16px; }
 .m0 { margin: 0; }
+.danger { border: 1px solid var(--p-red-200, #fecaca); }
+.delbtn { margin-top: 10px; }
 .phen { margin-top: 14px; gap: 6px; }
 .tile { text-decoration: none; color: inherit; }
 .tile :deep(.p-card) { height: 100%; transition: box-shadow .15s; }
@@ -175,7 +188,7 @@ const uploaders = computed(() => project.value?.members.filter((m: any) => m.rol
 .zero { color: #c3ccd3; }
 .cnt { text-decoration: none; color: var(--gh-text); padding: 2px 8px; border-radius: 10px; }
 .cnt:hover { background: var(--gh-bg); }
-.cnt.passed { color: #15803d; } .cnt.review { color: #b45309; } .cnt.failed { color: #b91c1c; } .cnt.processing { color: #0369a1; }
+.cnt.passed { color: #15803d; } .cnt.review { color: #b45309; } .cnt.failed { color: #b91c1c; } .cnt.processing { color: #0369a1; } .cnt.pending { color: var(--gh-muted); }
 .grp { margin: 0 0 8px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: .04em; color: var(--gh-muted); }
 .members { list-style: none; padding: 0; margin: 0 0 16px; display: flex; flex-direction: column; gap: 10px; }
 .members li { flex-wrap: nowrap; }

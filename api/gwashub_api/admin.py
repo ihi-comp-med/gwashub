@@ -4,7 +4,7 @@
     python -m gwashub_api.admin invite EMAIL "Full Name" [--institution X] [--admin] [--resend]
     python -m gwashub_api.admin add-member EMAIL PROJECT_ID uploader|reviewer
     python -m gwashub_api.admin remove-member EMAIL PROJECT_ID
-    python -m gwashub_api.admin add-project ID "Name" SHORT --phenotype "All-cause HF" [--phenotype ...]
+    python -m gwashub_api.admin add-project ID "Name" SHORT --phenotype "All-cause HF" [--phenotype ...] [--quantitative LVEF]
     python -m gwashub_api.admin db-readonly-user        # Postgres: (re)create gwashub_readonly for browsing
     python -m gwashub_api.admin add-resources MANIFEST  # register shared resources already in storage
 
@@ -104,6 +104,7 @@ def main(argv=None):
     pr.add_argument("name")
     pr.add_argument("short", help="short display name, e.g. HERMES 3")
     pr.add_argument("--phenotype", action="append", required=True)
+    pr.add_argument("--quantitative", action="append", default=[], help="a phenotype that is quantitative (the rest are case/control)")
     pr.add_argument("--description", default="")
     sub.add_parser("db-readonly-user", help="Postgres: create or update the read-only user (password from Secrets Manager)")
     m = sub.add_parser("add-member", help="give a user a role in a project")
@@ -145,7 +146,10 @@ def main(argv=None):
         elif args.cmd == "add-project":
             if db.get(Project, args.id):
                 sys.exit(f"Project {args.id} already exists")
-            p = Project(id=args.id, name=args.name, short=args.short, description=args.description, phenotypes=args.phenotype)
+            if set(args.quantitative) - set(args.phenotype):
+                sys.exit("--quantitative names a phenotype not given with --phenotype")
+            p = Project(id=args.id, name=args.name, short=args.short, description=args.description, phenotypes=args.phenotype,
+                        phenotype_types={ph: "quantitative" for ph in args.quantitative})
             db.add(p)
             db.flush()
             services.ensure_project_pipeline(db, p)

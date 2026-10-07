@@ -1,9 +1,16 @@
 name: parse
 title: Parse
-description: >
-  Reads the upload as received through the column mapping: recodes chromosomes, alleles, sample sizes and odds ratios,
-  checks every value, and writes the GWASHub format. Rows missing a required value (CHR, POS, EA, OA, BETA, SE, P) are
-  removed. The first step of every pipeline. Refactored from the HERMES 3 DCM pipeline (gwas_qc_parse.R).
+description: "Reads the upload through the column mapping, reports on it, wrangles it into the GWASHub format and removes the rows it can't recover."
+narrative: >
+  Reads only the mapped columns of the upload (any delimiter, gzipped or not) and recodes them as the HERMES 3 DCM
+  pipeline did: chromosomes without a "chr" prefix (23 = X, 24 = Y), upper-case A/C/G/T alleles, sample sizes as
+  numbers ("<=40" becomes 40), odds ratios as log-odds. It counts, for every column, the values missing and out of
+  bounds (for example P outside 0 to 1, EAF outside 0 to 1, SE of 0 or below, non-numeric values), lists the
+  chromosomes present and counts indels (kept). It then fills what it can: P from BETA/SE (or -log10 P) where P is
+  missing, N from each row's cases + controls, and missing N, cases or controls from the study details. Finally it
+  removes the rows it can't recover: a required value (chromosome 1-22/X/Y, position, alleles, BETA, SE, P, EAF)
+  missing or out of bounds, identical alleles, or EAF of exactly 0 or 1. Writes the GWASHub format and two tables
+  (columns, chromosomes); warns or fails when too many rows go.
 command: [Rscript, parse.R]
 image: gwashub/base-r
 default_on_fail: block
@@ -12,8 +19,8 @@ compute: {vcpus: 2, memory_gb: 32}
 params:
   - {key: fill_counts, label: Fill sample sizes from the study details, type: boolean, default: true,
      help: Rows without N, cases or controls get the dataset's totals}
-  - {key: p_from_log10p, label: P from -log10 P, type: select, options: [beta_se, log10p], default: beta_se,
-     help: "When only -log10 P is mapped: recompute P from BETA/SE (as the HERMES 3 pipeline) or take 10^-x"}
+  - {key: p_from_log10p, label: Missing P from, type: select, options: [beta_se, log10p], default: beta_se,
+     help: "Where P is missing: compute it from BETA/SE (as the HERMES 3 pipeline), or take 10^-x from the -log10 P column when one is mapped"}
   - {key: neglog10p_fraction, label: -log10 P detection, type: number, min: 0, max: 1, default: 0.01,
      help: If more than this share of P values are above 1 the step fails and asks for the column to be mapped as -log10 P}
   - {key: min_rows, label: Minimum rows, type: integer, min: 1, default: 1000}

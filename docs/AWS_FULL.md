@@ -1,8 +1,22 @@
 # GWASHub on AWS: the full deployment
 
-How the AWS version of GWASHub is built, deployed and run. The design and its reasoning are in
-`docs/AWS_DEPLOYMENT.md`; this file is the practical guide. (An interim single-server pilot ran on
-2026-10-03 and was deleted once this deployment was live.)
+How the AWS version of GWASHub is built, deployed and run, why it's built that way, and what's left before
+production. The AWS accounts themselves are described in `docs/AWS_ACCOUNT_SETUP.md`.
+
+## Why it's built this way
+
+- **Files never pass through the API.** Browsers upload straight to S3 in 64 MB parts with presigned URLs, and
+  downloads are presigned links, so multi-GB files don't tie up the API or hit timeouts. S3 objects can be 5 TB.
+- **Batch on EC2, not Fargate, for jobs.** A harmonised GWAS takes about 265 bytes per variant in memory, so a
+  20-million-variant file is ~5 GB per copy and 20 to 40 GB at peak; EC2 gives more memory and disk per dollar. Spot,
+  scaling to zero, so idle costs nothing.
+- **Jobs survive deploys.** The API submits Batch jobs and returns; a separate worker records results from Batch
+  events (EventBridge → SQS), so restarts lose nothing.
+- **One domain.** CloudFront serves the website and forwards `/api/*` to an internal load balancer, so there's no CORS,
+  no third-party cookies and no public address for the API.
+- **Tokens stay server-side.** The API does the Cognito code exchange and keeps a short-lived session cookie.
+- **Separate accounts** for dev and prod (and audit, log archive), so dev mistakes can't touch production data.
+- **Region:** eu-west-2 (London).
 
 ## What runs where
 
@@ -110,8 +124,8 @@ The first deploy takes 25–35 minutes (database and CloudFront); later ones 5�
 is printed at the end and saved in `infra/cdk-outputs-dev.json` (git-ignored; the admin, tunnel and
 bookmarks scripts read it). `GWASHUB_IMAGE_TAG=<tag>` redeploys images already in ECR without rebuilding.
 
-**dev today:** https://d3ap1iypuvmxl8.cloudfront.net (gwashub-dev). The database was reset on 2026-10-05: one
-project (`testing`), no demo data, and the real reference files registered as shared resources (dbSNP to follow).
+**dev today:** https://d3ap1iypuvmxl8.cloudfront.net (gwashub-dev). Projects for testing and validation, the Practice
+project, no demo data, and all 37 real reference files (incl. dbSNP 157) registered as shared resources.
 
 ## Running it
 
@@ -120,7 +134,14 @@ project (`testing`), no demo data, and the real reference files registered as sh
   (someone new gets a GWASHub account and a Cognito invitation email; someone with an account is just
   added), and per member **Make reviewer/uploader** and **Remove from project**. A project always keeps a reviewer.
 - **Platform admins** (users with `is_admin`) create projects with **New project** on the Projects page;
-  the creator becomes the first reviewer and the project gets the default pipeline.
+  the creator becomes the first reviewer and the project gets the default pipeline. They can also delete a project
+  (Overview → Delete project), which removes its records and all its files; for other reviewer actions they need a
+  reviewer role in the project.
+- **Everyone** can learn the site with the guided tours (Help menu, top right) in the **Practice project**, which the
+  API creates at start-up (every user a reviewer, synthetic files to download; `GWASHUB_PRACTICE=0` turns it off).
+- **Bulk upload:** members download the upload script and make an API token on the Account page. The script sends the
+  token in an `X-GWASHub-Token` header, not `Authorization`: CloudFront drops `Authorization` from GET requests on the
+  uncached `/api/*` behaviour. Files go straight to S3 as in the website.
 - Cognito's built-in email allows about 50 invitations a day; switch Cognito to Amazon SES with your own
   sender address before inviting a whole consortium.
 
@@ -218,17 +239,44 @@ The AWS Organizations pages only work from the management account.
 | Logs | CloudWatch → Log groups → `/gwashub/dev/app` |
 | Users | Cognito → User pools → `gwashub-dev` |
 
-## Not done yet (in order of importance)
+## Before production
 
-- **WAF** on CloudFront (managed rules + rate limiting). Not in the lean dev setup; add before prod.
+Open items, most important first:
+
+- **WAF** on CloudFront (AWS managed rules, a rate limit per IP). Not in the lean dev setup.
 - **Custom domain** with an ACM certificate (CloudFront's default certificate allows old TLS versions).
-- **Isolating consortium steps**: they run in their own image group, but in the same compute environment
-  with the same job role as the default steps. A locked-down environment (no internet, only that run's
-  S3 prefix) is still to do. Consortium code is reviewed by pull request before it runs.
-- **Malware scanning** of uploads (GuardDuty Malware Protection for S3), S3 access logs and CloudTrail
-  data events for the buckets.
-- **Alarms**: API 5xx, failed jobs, dead-letter queue messages, budget.
-- **CI/CD** with GitHub Actions and OIDC; deploys run from a laptop for now.
-- **Cognito Plus** (compromised-credential checks, adaptive authentication) costs extra per user; Essentials is used.
+- **Isolating consortium steps**: they run in their own image group, but in the same compute environment with the same
+  job role as the default steps. Still to do: a locked-down environment (no internet, only that run's S3 prefix).
+  Consortium code is reviewed by pull request before it runs.
+- **Malware scanning** of uploads (GuardDuty Malware Protection for S3), S3 access logs, CloudTrail data events for
+  the buckets.
+- **Alarms**: API 5xx, failed jobs, dead-letter queue messages, budget, GuardDuty findings.
+- **CI/CD** with GitHub Actions and OIDC (no stored keys); tests and the web build on every pull request, prod deploys
+  after a manual approval. Deploys run from a laptop for now.
+- **Cognito email through SES** with our own sender before inviting a consortium (the built-in email allows ~50 a day).
 - Read-only root filesystem for the API and worker containers (needs a scratch volume owned by the app user).
-- Job sizes come from each step's `compute:`; they don't yet scale with the size of the uploaded file.
+- Cognito Plus (compromised-credential checks, adaptive authentication) costs extra per user; Essentials is used.
+
+Checks before real consortium data goes in:
+
+- [ ] Root MFA on every account; admins sign in with MFA; no IAM users or access keys (see `docs/AWS_ACCOUNT_SETUP.md`)
+- [ ] Buckets private, KMS-encrypted, TLS-only, versioned (done); access logs; IAM Access Analyzer clean
+- [ ] Database private, encrypted, backed up, deletion-protected (done); credential rotation
+- [ ] The dev login (`/api/auth/login`, `/api/auth/users`) unreachable in prod; re-run the permission tests against the
+      deployed stack
+- [ ] WAF, rate limits, security headers and a Content-Security-Policy on CloudFront
+- [ ] Images scanned and pinned by digest (pinned: done); dependency scanning in CI
+- [ ] Restore test, once, on purpose: the database to a point in time, and a deleted S3 object
+- [ ] Information-governance sign-off (DPIA if needed, data region, retention and deletion policy)
+- [ ] An independent penetration test of the deployed site
+
+## Costs
+
+- **dev:** about $8.50 for the first five days of October 2026, covered by credits. The fixed part is mostly the NAT
+  gateway, the database and the load balancer; Batch costs nothing when idle.
+- **prod as designed** (Multi-AZ database, two NAT gateways, two API tasks, WAF, security services): roughly $250 to
+  $450 a month at low traffic, plus S3 (~$24 per TB a month) and downloads (~$90 per TB, often waived for academic
+  accounts). A QC run on Spot costs cents.
+- ECR keeps the 5 newest images per repository; Batch instance types are limited to large to 4xlarge.
+- Cheaper options discussed, not decided: research credits; a serverless redesign (Lambda, Aurora Serverless v2
+  scaling to zero, no NAT); fck-nat instead of a NAT gateway; switching dev off out of hours; single-AZ prod database.

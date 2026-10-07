@@ -141,7 +141,7 @@ def test_default_pipeline_groups_by_image():
     assert [(g["image"], g["steps"]) for g in groups] == [("gwashub/base-r", [0, 1]), ("gwashub/vcf", [2, 3]),
                                                           ("gwashub/ldsc", [4]), ("gwashub/base", [5, 6, 7])]
     # Each Batch job asks for what its most demanding step declares (step.yaml compute:), at least the defaults.
-    assert groups[1]["compute"] == {"vcpus": 4, "memory_gb": 64} and groups[3]["compute"]["memory_gb"] >= 8
+    assert groups[1]["compute"] == {"vcpus": 4, "memory_gb": 60} and groups[3]["compute"]["memory_gb"] >= 8
 
 
 def test_groups_split_where_the_image_changes():
@@ -150,8 +150,8 @@ def test_groups_split_where_the_image_changes():
     resolved = resolve(entries, load_steps(), images=load_images())
     assert [(g["image"], g["steps"]) for g in plan_groups(resolved)] == [("gwashub/base-r", [0, 1]), ("gwashub/vcf", [2]),
                                                                        ("gwashub/base", [3, 4])]
-    with pytest.raises(ValueError, match="unknown image"):
-        resolve(entries_from_dicts([{"step": "gwashub/parse", "image": "nobody/nothing"}]), load_steps(), images=load_images())
+    # A step runs in its step.yaml image; an image in a saved pipeline is ignored.
+    assert resolve(entries_from_dicts([{"step": "gwashub/parse", "image": "nobody/nothing"}]), load_steps(), images=load_images())[0].image == "gwashub/base-r"
 
 
 def test_images_build_after_their_base():
@@ -176,3 +176,17 @@ def test_compute_requests_must_fit_one_batch_instance():
     assert _compute({"vcpus": 4, "memory_gb": 64}, "ok/step.yaml") == {"vcpus": 4, "memory_gb": 64}
     with pytest.raises(ValueError, match="more than one job can have"):
         _compute({"memory_gb": MAX_COMPUTE["memory_gb"] + 1}, "big/step.yaml")
+
+
+@needs_image(*IMAGES)
+def test_a_step_stopped_by_sigterm_interrupts_the_run_without_recording_it(synth_small, tmp_path):
+    """SIGTERM (a reclaimed Spot machine) is not a step crash: the run stops at once and records no result, so Batch's
+    retry starts the group again instead of finding a "crashed" step."""
+    from pipeline.runner.executor import Interrupted
+    # Killed by SIGTERM; as process 1 in a container the signal is ignored, so exit as `docker run` reports that (143).
+    stop = "import os, signal, sys\nos.kill(os.getpid(), signal.SIGTERM)\nsys.exit(143)"
+    extra = _owner_steps(tmp_path / "qc_steps", "testco", {"stopped": ("stopped.py", stop, "")})
+    entries = entries_from_dicts([{"step": "gwashub/parse"}, {"step": "testco/stopped"}, {"step": "gwashub/qc_report"}])
+    with pytest.raises(Interrupted, match="stopped"):
+        run(synth_small, synth_small["manifest"][0], tmp_path / "run", entries=entries, catalog={**load_steps(), **extra})
+    assert not (tmp_path / "run" / "result.json").exists()

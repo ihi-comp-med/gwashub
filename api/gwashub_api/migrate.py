@@ -3,6 +3,7 @@
     python -m gwashub_api.migrate                 # upgrade to the latest revision
     python -m gwashub_api.migrate revision "add x" # autogenerate a new revision from the models
 """
+import logging
 import os
 import sys
 
@@ -25,6 +26,14 @@ def config(connection=None) -> Config:
 
 
 def upgrade():
+    # Whichever process takes the lock runs the migrations; make sure its "Running upgrade" lines reach the logs (the
+    # worker configures logging itself, uvicorn doesn't).
+    alembic_log = logging.getLogger("alembic.runtime.migration")
+    if not logging.getLogger().handlers and not alembic_log.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        alembic_log.addHandler(handler)
+        alembic_log.setLevel(logging.INFO)
     with engine().connect() as conn:
         conn.execute(text("SELECT pg_advisory_lock(:id)"), {"id": LOCK_ID})
         try:

@@ -1,0 +1,130 @@
+{
+  "test": "01_gwama_default",
+  "title": "GWAMA meta-analysis, default settings",
+  "claim": "A fixed-effect meta-analysis on GWASHub gives the same results as GWAMA run by hand on the same files.",
+  "status": "passed",
+  "run_date": "2026-10-06T11:48:37Z",
+  "versions": {
+    "gwama": "2.2.2",
+    "r": "R version 4.6.1 (2026-06-24)",
+    "data.table": "1.18.4",
+    "site_pipeline_version": 1,
+    "site_image_digests": {
+      "gwashub/gwama": "sha256:88b7c4cb99a025c5b5b7e2baefd206e72ce485f5b464d0f76afd6e2012ea4757",
+      "qc_ukb_hermes": {
+        "gwashub/base-r": "sha256:9e3a1635...",
+        "gwashub/vcf": "sha256:3946015b...",
+        "gwashub/ldsc": "sha256:a8fb4750...",
+        "gwashub/base": "sha256:b3269b9e..."
+      },
+      "qc_finngen": {
+        "gwashub/base-r": "sha256:8c03377c...",
+        "gwashub/vcf": "sha256:90cfc3af...",
+        "gwashub/ldsc": "sha256:e874c181...",
+        "gwashub/base": "sha256:da3563bd..."
+      }
+    }
+  },
+  "site_run": {
+    "site": "https://d3ap1iypuvmxl8.cloudfront.net",
+    "project": "validation",
+    "run_date": "2026-10-06",
+    "datasets": {
+      "UKB": 2,
+      "HERMES": 3,
+      "FINNGEN": 4
+    },
+    "qc_runs": {
+      "UKB": 2,
+      "HERMES": 3,
+      "FINNGEN": 6
+    },
+    "qc_verdicts": {
+      "UKB": "warn",
+      "HERMES": "warn",
+      "FINNGEN": "warn"
+    },
+    "meta_analysis": 1,
+    "meta_analysis_rerun": 2,
+    "dataset_order": ["FINNGEN", "HERMES", "UKB"],
+    "references": ["validation · dataset 2 · run 2 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/2/2-20261006-100251", "validation · dataset 3 · run 3 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/3/3-20261006-100337", "validation · dataset 4 · run 6 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/4/6-20261006-111958", "validation · meta-analysis 1 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/meta/validation/1-20261006-113957", "validation · meta-analysis 2 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/meta/validation/2-20261006-114110"],
+    "pipeline_version": 1,
+    "image_digests": {
+      "gwashub/gwama": "sha256:88b7c4cb99a025c5b5b7e2baefd206e72ce485f5b464d0f76afd6e2012ea4757",
+      "qc_ukb_hermes": {
+        "gwashub/base-r": "sha256:9e3a1635...",
+        "gwashub/vcf": "sha256:3946015b...",
+        "gwashub/ldsc": "sha256:a8fb4750...",
+        "gwashub/base": "sha256:b3269b9e..."
+      },
+      "qc_finngen": {
+        "gwashub/base-r": "sha256:8c03377c...",
+        "gwashub/vcf": "sha256:90cfc3af...",
+        "gwashub/ldsc": "sha256:e874c181...",
+        "gwashub/base": "sha256:da3563bd..."
+      }
+    }
+  },
+  "checks": [
+    {
+      "id": "variant_sets",
+      "label": "Same variants as GWAMA by hand (variants only in one)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true
+    },
+    {
+      "id": "beta_se",
+      "label": "β and se vs GWAMA by hand: largest absolute difference",
+      "observed": 0,
+      "threshold": 1e-06,
+      "direction": "max",
+      "passed": true
+    },
+    {
+      "id": "p",
+      "label": "p vs GWAMA by hand: largest relative difference",
+      "observed": 2.03825231174519e-16,
+      "threshold": 0.0001,
+      "direction": "max",
+      "passed": true
+    },
+    {
+      "id": "n_studies_direction",
+      "label": "n_studies and direction vs GWAMA by hand: rows that differ",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true
+    },
+    {
+      "id": "q_i2",
+      "label": "Heterogeneity (Q, its p and I²) vs GWAMA by hand: largest absolute difference",
+      "observed": 0,
+      "threshold": 1e-06,
+      "direction": "max",
+      "passed": true
+    },
+    {
+      "id": "n_eaf",
+      "label": "Sample size and EAF vs GWAMA by hand: largest absolute difference",
+      "observed": 0,
+      "threshold": 1e-06,
+      "direction": "max",
+      "passed": true
+    },
+    {
+      "id": "rerun",
+      "label": "Second site run byte-identical (0 = same sha256)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true
+    }
+  ],
+  "notes": [
+    "68,960 variants compared; 0 had the effect allele the other way round in GWAMA's output"
+  ],
+  "archive": null
+}

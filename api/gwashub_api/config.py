@@ -28,6 +28,8 @@ class Settings:
         self.shared_resources_dir = os.path.abspath(env("GWASHUB_SHARED_RESOURCES", os.path.join(REPO_ROOT, "local", "synthetic", "resources")))
         self.qc_steps_dir = os.path.join(REPO_ROOT, "pipeline", "qc_steps")
         self.images_dir = os.path.join(REPO_ROOT, "pipeline", "images")
+        # Validation tests and their results (validation/<test>/), shown on the Validation page.
+        self.validation_dir = os.path.abspath(env("GWASHUB_VALIDATION_DIR", os.path.join(REPO_ROOT, "validation")))
         self.secret = env("GWASHUB_SECRET", "dev-only-secret-change-me")
         self.max_workers = int(env("GWASHUB_WORKERS", "3"))
         self.cors_origins = env("GWASHUB_CORS", "http://localhost:3000").split(",")
@@ -45,6 +47,8 @@ class Settings:
         self.banner = env("GWASHUB_BANNER", "Local development build: synthetic data")
         # Where the website points people who want to contribute a step (CONTRIBUTING.md on GitHub).
         self.contributing_url = env("GWASHUB_CONTRIBUTING_URL", "")
+        # The Practice project (synthetic data, every user a reviewer) for learning the site with the guided tours.
+        self.practice = env("GWASHUB_PRACTICE", "1").lower() not in ("0", "false", "no", "")
 
         # Files: "local" (folders under data_dir) or "s3" (three buckets).
         self.storage = env("GWASHUB_STORAGE", "local")

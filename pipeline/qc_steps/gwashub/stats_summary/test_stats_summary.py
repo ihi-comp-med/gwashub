@@ -41,3 +41,10 @@ def test_lambda_1000_maf_lambda_and_suggestive(tmp_path):
     (tmp_path / "x").mkdir()
     log2, _ = run_step("stats_summary", sumstats(), {}, tmp_path / "x")  # no counts or EAF: those metrics are left out
     assert "lambda_1000" not in log2["metrics"] and "lambda_maf01" not in log2["metrics"]
+
+
+def test_lambda_1000_for_a_quantitative_trait(tmp_path):
+    """Quantitative traits have no cases or controls: λ is rescaled to 1,000 people from the total sample size."""
+    log, _ = run_step("stats_summary", sumstats(inflation=1.2), {"trait_type": "quantitative", "n_total": 50000}, tmp_path)
+    m = log["metrics"]
+    assert abs(m["lambda_1000"] - (1 + (m["lambda_gc"] - 1) * 1000 / 50000)) < 1e-3

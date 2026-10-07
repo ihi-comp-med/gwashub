@@ -108,9 +108,8 @@ def main():
             db.add(Membership(user=users[email], project=p, role=role))
     db.flush()
 
-    tpl = services.default_template()
-    services.save_pipeline(db, "hermes3", tpl, "Created from the default template", users["ama@example.org"].id)
-    services.save_pipeline(db, "hcm", tpl, "Created from the default template", users["tom@example.org"].id)
+    services.ensure_project_pipeline(db, db.get(Project, "hermes3"), users["ama@example.org"].id)
+    services.ensure_project_pipeline(db, db.get(Project, "hcm"), users["tom@example.org"].id)
     db.commit()
     db.close()
     print(f"Seeded {s.data_dir}: {len(USERS)} users, {len(PROJECTS)} projects. Sign in as demo@gwashub.org.")

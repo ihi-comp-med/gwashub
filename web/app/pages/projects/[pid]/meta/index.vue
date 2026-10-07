@@ -39,6 +39,8 @@ watch(() => [shown.value, s.include_statuses], () => { selected.value = selectab
 const selectedIds = computed(() => selected.value.filter(c => !reason(c)).map(c => c.id))
 const nCases = computed(() => selected.value.reduce((a, c) => a + (c.n_cases ?? 0), 0))
 const nControls = computed(() => selected.value.reduce((a, c) => a + (c.n_controls ?? 0), 0))
+const nTotal = computed(() => selected.value.reduce((a, c) => a + (c.n_total ?? 0), 0))
+const quantitativeSel = computed(() => selected.value.some(c => c.trait_type === 'quantitative'))
 const ancestriesSel = computed(() => [...new Set(selected.value.map(c => c.ancestry))])
 
 function openBuilder() {
@@ -83,7 +85,7 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
     <div class="container page">
       <div class="head">
         <h2 class="h2">Meta-analysis</h2>
-        <Button v-if="isReviewer && !building" label="New meta-analysis" icon="pi pi-plus" class="new" @click="openBuilder" />
+        <Button v-if="isReviewer && !building" label="New meta-analysis" icon="pi pi-plus" class="new" data-tour="meta-new" @click="openBuilder" />
       </div>
       <Message v-if="!isReviewer" severity="info" :closable="false" icon="pi pi-lock" class="mb">
         You can view results and plots. Only reviewers can run meta-analyses or download full results.
@@ -94,13 +96,13 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
         <template #content>
           <div class="field"><label for="ma-name">Name</label><InputText id="ma-name" v-model="name" /></div>
 
-          <h3 class="h3">1. Choose datasets</h3>
+          <h3 class="h3" data-tour="meta-datasets">1. Choose datasets</h3>
           <div class="filters compact-ui">
             <Select overlay-class="compact-overlay" v-model="filters.phenotype" :options="phenotypes" placeholder="Phenotype" />
             <MultiSelect overlay-class="compact-overlay" v-model="filters.ancestries" :options="[...ANCESTRIES]" placeholder="All ancestries" display="chip" />
             <Select overlay-class="compact-overlay" v-model="filters.sex" :options="[...SEXES]" placeholder="Any sex" show-clear />
             <span class="spacer" />
-            <span class="muted small">{{ selectedIds.length }} selected · {{ nCases.toLocaleString() }} cases / {{ nControls.toLocaleString() }} controls · {{ ancestriesSel.join(', ') || '–' }}</span>
+            <span class="muted small">{{ selectedIds.length }} selected · N {{ nTotal.toLocaleString() }}<template v-if="!quantitativeSel"> ({{ nCases.toLocaleString() }} cases / {{ nControls.toLocaleString() }} controls)</template> · {{ ancestriesSel.join(', ') || '–' }}</span>
           </div>
           <DataTable v-model:selection="selected" :value="shown" data-key="id" class="dt" :row-class="(c: any) => reason(c) ? 'disabled' : ''"
                      :is-data-selectable="(e: any) => !reason(e.data)">
@@ -108,7 +110,10 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
             <Column field="cohort" header="Cohort" />
             <Column field="ancestry" header="Ancestry" />
             <Column field="sex" header="Sex" />
-            <Column header="Cases / controls"><template #body="{ data }">{{ data.n_cases?.toLocaleString() }} / {{ data.n_controls?.toLocaleString() }}</template></Column>
+            <Column header="Cases / controls or N"><template #body="{ data }">
+              <template v-if="data.trait_type === 'quantitative'">N {{ data.n_total?.toLocaleString() }}</template>
+              <template v-else>{{ data.n_cases?.toLocaleString() }} / {{ data.n_controls?.toLocaleString() }}</template>
+            </template></Column>
             <Column header="Variants"><template #body="{ data }">{{ data.rows?.toLocaleString() ?? '–' }}</template></Column>
             <Column header="λGC"><template #body="{ data }"><span :class="{ warnv: data.lambda_gc > 1.1 }">{{ data.lambda_gc?.toFixed(3) ?? '–' }}</span></template></Column>
             <Column header="QC">
@@ -119,7 +124,7 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
             </Column>
           </DataTable>
 
-          <h3 class="h3 step">2. Meta-analysis settings <span class="muted small">(project defaults; change for this run or save as new defaults)</span></h3>
+          <h3 class="h3 step" data-tour="meta-settings">2. Meta-analysis settings <span class="muted small">(project defaults; change for this run or save as new defaults)</span></h3>
           <div class="grid settings">
             <div class="field method">
               <label for="ma-method">Method <i v-if="method" v-tooltip.right="{ value: `${method.description}\n\n${method.reference}`, class: 'method-tip' }" class="pi pi-info-circle info" aria-label="About this method" /></label>
@@ -135,19 +140,19 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
             {{ inflated.map(c => `${c.cohort} (λGC ${c.lambda_gc.toFixed(2)})`).join(', ') }} {{ inflated.length > 1 ? 'are' : 'is' }} inflated: consider genomic control, or excluding {{ inflated.length > 1 ? 'them' : 'it' }}.
           </Message>
 
-          <h3 class="h3 step">3. Post-processing <span class="muted small">(lead loci and heterogeneity flags; the same whichever method runs)</span></h3>
+          <h3 class="h3 step" data-tour="meta-post">3. Post-processing <span class="muted small">(lead loci and heterogeneity flags; the same whichever method runs)</span></h3>
           <ParamForm v-if="catalogue" v-model="common" :schema="catalogue.common" id-prefix="cp" />
           <div class="row end">
             <Button label="Reset to project defaults" text severity="secondary" size="small" @click="resetDefaults" />
             <Button label="Save as project defaults" icon="pi pi-bookmark" text size="small" @click="saveDefaults" />
             <span class="spacer" />
-            <Button label="Run meta-analysis" icon="pi pi-play" :loading="running" :disabled="selectedIds.length < 2 || !name" @click="run" />
+            <Button label="Run meta-analysis" icon="pi pi-play" data-tour="meta-run" :loading="running" :disabled="selectedIds.length < 2 || !name" @click="run" />
           </div>
           <small v-if="selectedIds.length < 2" class="muted">Select at least two datasets.</small>
         </template>
       </Card>
 
-      <Card>
+      <Card data-tour="meta-list">
         <template #title>Analyses</template>
         <template #content>
           <DataTable :value="analyses ?? []" data-key="id" row-hover class="dt clickable" @row-click="e => navigateTo(`/projects/${pid}/meta/${e.data.id}`)">

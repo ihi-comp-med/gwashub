@@ -3,14 +3,13 @@ title: Default QC
 description: >
   The GWASHub default offering, from the HERMES 3 DCM pipeline: parse, filter, harmonise to the reference genome and
   lift over to GRCh38, EAF check, LD score regression, summary statistics, plots and the report. On AWS it runs as four
-  jobs, one per change of image (gwashub/base-r, gwashub/vcf, gwashub/ldsc, gwashub/base); the EAF check runs in the
-  gwashub/vcf image (it has gwashub/base's libraries) so it shares the harmonisation job.
+  jobs, one per change of image (gwashub/base-r, gwashub/vcf, gwashub/ldsc, gwashub/base); the EAF check's own image is
+  gwashub/vcf, so it shares the harmonisation job.
 steps:
 - step: gwashub/parse
 - step: gwashub/filter
 - step: gwashub/harmonise_liftover
 - step: gwashub/eaf_check
-  image: gwashub/vcf
 - step: gwashub/ldsc
 - step: gwashub/stats_summary
 - step: gwashub/plots

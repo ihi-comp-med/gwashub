@@ -10,32 +10,49 @@ def frame():
         "ea": ["A", "C", "G", "T", "AT", "A", "C", "G", "C", "A"],
         "oa": ["G", "A", "A", "C", "A", "G", "A", "C", "G", "G"],
         "beta": [0.1, 25.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, -0.1, 0.1],
-        "se": [0.01] * 10, "p": [0.5] * 10,
-        "eaf": [0.3, 0.3, None, 1.0, 0.3, 0.3, 0.3, 0.3, 0.7, 0.002],
+        "se": [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.5],
+        "p": [0.5] * 10,
+        "eaf": [0.3, 0.3, 0.4, 0.6, 0.3, 0.3, 0.3, 0.3, 0.7, 0.002],
         "n": [1000] * 9 + [None], "info": [0.9, 0.9, 0.9, 0.9, 0.9, None, 0.5, 0.9, 0.9, 0.9],
     })
 
 
+def rng(on=True, min=None, max=None):
+    """A range value: each limit given is switched on."""
+    return {"on": on, "min_on": min is not None, "min": min, "max_on": max is not None, "max": max}
+
+
 @needs_image("gwashub/base-r")
-def test_hermes_defaults(tmp_path):
+def test_defaults(tmp_path):
     log, out = run_step("filter", frame(), {}, tmp_path)
     m = log["metrics"]
-    # |BETA| 25, missing EAF, EAF 1, missing INFO, missing N, and the duplicate at 3:80 (alleles swapped) go.
-    assert m["removed_beta_too_large"] == 1 and m["removed_eaf_missing"] == 1 and m["removed_eaf_0_or_1"] == 1
-    assert m["removed_info_missing"] == 1 and m["removed_n_missing"] == 1 and m["removed_duplicate_variant"] == 1
-    assert sorted(out["pos"]) == [10, 50, 70, 80] and log["verdict"] == "warn"  # 6 of 10 removed
+    # |BETA| 25 and the duplicate at 3:80 (alleles swapped) go; missing INFO is filled with 1; a missing N stays.
+    assert m["removed_beta_outside_the_limits"] == 1 and m["removed_duplicate_variant"] == 1 and "removed_n_missing" not in m
+    assert m["removed_info_missing"] == 0 and m["filled_info"] == 1
+    assert sorted(out["pos"]) == [10, 30, 40, 50, 60, 70, 80, 90]
+    assert out.loc[out["pos"] == 60, "info"].iloc[0] == 1 and log["verdict"] == "warn"  # 2 of 10 removed, above 5%
 
 
 @needs_image("gwashub/base-r")
-def test_thresholds(tmp_path):
-    step = {"chromosomes": "1-22", "min_info": 0.8, "drop_indels": True, "require_eaf": False, "require_n": False,
-            "drop_missing_info": False, "min_maf": 0.01}
+def test_ranges_switch_each_limit_on_or_off(tmp_path):
+    """A range keeps min <= value <= max over the limits switched on; a limit switched off doesn't apply."""
+    step = {"chromosomes": "1-22", "drop_indels": True, "missing_info": "remove the variant",
+            "info": rng(min=0.8), "maf": rng(min=0.01), "se": rng(max=0.1), "beta": rng(on=False, max=20)}
     log, out = run_step("filter", frame(), {"step": step}, tmp_path)
+    m = log["metrics"]
     assert set(out["chr"]) <= {"1", "2", "3"} and not (out["ea"].str.len() > 1).any()
-    assert log["metrics"]["removed_maf_below_minimum"] == 1 and 25.0 not in out["beta"].tolist()
+    assert 25.0 in out["beta"].tolist()  # |BETA| filter switched off
+    assert m["removed_maf_outside_the_limits"] == 0  # the MAF 0.002 row went earlier, on SE 0.5 > max 0.1
+    assert m["removed_se_outside_the_limits"] == 1 and 0.002 not in out["eaf"].tolist()
+    # INFO: the missing one (chr X) went with the chromosome; INFO 0.5 (chr Y) too; nothing else is below 0.8.
+    assert m["removed_info_outside_the_limits"] == 0 and (out["info"] >= 0.8).all()
+    (tmp_path / "b").mkdir()
+    maxonly = {"maf": rng(max=0.35)}  # a maximum only: keep MAF <= 0.35
+    log2, out2 = run_step("filter", frame(), {"step": maxonly}, tmp_path / "b")
+    assert (out2["eaf"].clip(upper=1 - out2["eaf"]) <= 0.35).all() and log2["metrics"]["removed_maf_outside_the_limits"] == 2
 
 
 @needs_image("gwashub/base-r")
-def test_missing_column_fails_clearly(tmp_path):
-    log, _ = run_step("filter", frame().drop(columns=["eaf"]), {}, tmp_path)
-    assert log["verdict"] == "fail" and "EAF" in log["messages"][0]
+def test_filter_on_a_missing_column_fails_clearly(tmp_path):
+    log, _ = run_step("filter", frame().drop(columns=["info"]), {"step": {"info": rng(min=0.8)}}, tmp_path)
+    assert log["verdict"] == "fail" and "INFO" in log["messages"][0]

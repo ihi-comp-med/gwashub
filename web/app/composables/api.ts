@@ -1,6 +1,6 @@
 // Thin client for the GWASHub API + shared display helpers.
 export type Role = 'uploader' | 'reviewer'
-export type DatasetStatus = 'passed' | 'review' | 'failed' | 'processing' | 'uploading'
+export type DatasetStatus = 'passed' | 'review' | 'failed' | 'processing' | 'pending' | 'uploading'
 export type StepState = 'pass' | 'warn' | 'fail' | 'running' | 'queued' | 'skipped' | 'error'
 
 export class ApiError extends Error {
@@ -24,7 +24,8 @@ export async function api<T = any>(path: string, opts: { method?: string, body?:
 }
 
 /** Reactive GET with loading/error state and a refresh(). */
-export function useApiGet<T = any>(path: MaybeRefOrGetter<string | null>, opts: { poll?: number } = {}) {
+// keep: when the path changes, show the old data until the new arrives (the page isn't torn down, so it keeps its scroll).
+export function useApiGet<T = any>(path: MaybeRefOrGetter<string | null>, opts: { poll?: number, keep?: boolean } = {}) {
   const data = shallowRef<T | null>(null)
   const error = ref<string | null>(null)
   const loading = ref(false)
@@ -40,7 +41,7 @@ export function useApiGet<T = any>(path: MaybeRefOrGetter<string | null>, opts: 
     catch (e: any) { error.value = e.message }
     finally { loading.value = false }
   }
-  watch(() => toValue(path), () => { data.value = null; refresh() }, { immediate: true })
+  watch(() => toValue(path), () => { if (!opts.keep) data.value = null; refresh() }, { immediate: true })
   if (opts.poll) {
     onMounted(() => { timer = setInterval(refresh, opts.poll) })
     onBeforeUnmount(() => clearInterval(timer))
@@ -53,6 +54,7 @@ export const STATUS_META: Record<DatasetStatus, { label: string, severity: strin
   review: { label: 'For review', severity: 'warn', icon: 'pi pi-eye' },
   failed: { label: 'Failed', severity: 'danger', icon: 'pi pi-times-circle' },
   processing: { label: 'Processing', severity: 'info', icon: 'pi pi-spin pi-spinner' },
+  pending: { label: 'Pending QC', severity: 'secondary', icon: 'pi pi-pause-circle' },
   uploading: { label: 'Upload not finished', severity: 'secondary', icon: 'pi pi-cloud-upload' },
 }
 

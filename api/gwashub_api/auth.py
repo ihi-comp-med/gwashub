@@ -6,20 +6,28 @@ routers/cognito.py) and the API only learns who you are from a verified ID token
 
 In every mode the session is an HMAC-signed cookie holding the user id and an expiry time. Project
 roles live in the GWASHub database, so the permission helpers below are the same in every mode.
+
+Personal API tokens (for the upload script) are accepted only where an endpoint asks for `upload_caller`; everything
+else uses `current_user`, which reads the session cookie and nothing else. A token acts as its user, in its one project.
 """
 import hashlib
 import hmac
+import logging
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
-from fastapi import Cookie, Depends, HTTPException
+from fastapi import Cookie, Depends, Header, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gwashub_api.config import settings
 from gwashub_api.db import get_db
-from gwashub_api.models import Dataset, Membership, Project, User
+from gwashub_api.models import ApiToken, Dataset, Membership, Project, User
 
 COOKIE = "gh_session"
+TOKEN_PREFIX = "gwh_"
+log = logging.getLogger(__name__)
 
 
 def _mac(payload: str) -> str:
@@ -53,6 +61,47 @@ def current_user(gh_session: str | None = Cookie(default=None), db: Session = De
     if not user:
         raise HTTPException(401, "Not signed in")
     return user
+
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+@dataclass
+class Caller:
+    user: User
+    token: ApiToken | None = None  # set when the request came with an API token instead of the session cookie
+
+    def check_project(self, project_id: str):
+        """A token only works in the project it was made for (404, as for a project the user isn't in)."""
+        if self.token and self.token.project_id != project_id:
+            raise HTTPException(404, "Project not found")
+
+
+def upload_caller(gh_session: str | None = Cookie(default=None), x_gwashub_token: str | None = Header(default=None),
+                  db: Session = Depends(get_db)) -> Caller:
+    """For the upload endpoints only: the signed-in user (session cookie), or the owner of a valid API token in the
+    `X-GWASHub-Token` header (not `Authorization`: CloudFront drops that from GET requests that aren't cached).
+    Callers must use Caller.check_project before acting in a project."""
+    if x_gwashub_token:
+        token = x_gwashub_token.strip()
+        if not token.startswith(TOKEN_PREFIX):
+            raise HTTPException(401, "Send the API token (gwh_…) in the X-GWASHub-Token header")
+        t = db.scalar(select(ApiToken).where(ApiToken.token_hash == token_hash(token.strip())))
+        now = datetime.now(timezone.utc)
+        if not t or t.revoked_at or _aware(t.expires_at) < now:
+            raise HTTPException(401, "This token isn't valid: it may have expired or been revoked. Make a new one on the site.")
+        if not membership(db, t.user, t.project_id):
+            raise HTTPException(401, "This token's owner is no longer a member of its project")
+        t.last_used_at = now
+        db.commit()
+        log.info("API token %s (%s, user %s, project %s) used", t.id, t.prefix, t.user_id, t.project_id)
+        return Caller(t.user, t)
+    return Caller(current_user(gh_session, db))
+
+
+def _aware(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)  # SQLite returns naive datetimes
 
 
 def membership(db: Session, user: User, project_id: str) -> Membership | None:

@@ -1,10 +1,13 @@
 name: harmonise_liftover
 title: Harmonise and liftover
-description: >
-  Harmonises every variant to the reference genome of the uploaded build with gwas2vcf (REF must match; alleles
-  switched where needed; indels normalised), lifts GRCh37 to GRCh38 with bcftools +liftover, adds dbSNP 157 rsIDs and
-  removes variants lifted to another chromosome. The output is GRCh38 with the effect allele = ALT. As the HERMES 3 DCM
-  pipeline, using its edited gwas2vcf.
+description: "Harmonises variants to the reference genome with gwas2vcf, lifts GRCh37 to GRCh38 and adds dbSNP rsIDs."
+narrative: >
+  Converts the dataset to VCF with gwas2vcf (the HERMES 3 edited copy), checking every variant against the reference
+  genome of the uploaded build: the reference allele must match, alleles are switched (BETA and EAF flipped) where the
+  effect allele is the reference, and indels are normalised. GRCh37 datasets are then lifted to GRCh38 with bcftools
+  +liftover and the UCSC chain (strand flips handled), dbSNP 157 rsIDs are added, and variants lifted to another
+  chromosome or off the primary contigs are removed. Writes GRCh38 with the effect allele = ALT, and counts for each
+  stage; warns when fewer than the set share harmonise or lift.
 command: [python, harmonise_liftover.py]
 image: gwashub/vcf
 default_on_fail: block
@@ -20,7 +23,7 @@ optional_resources:
   # Only for a bgzipped FASTA (the synthetic ones); the real FASTAs are plain text.
   - human_g1k_v37.fasta.gzi
   - Homo_sapiens_assembly38_nochr.fasta.gzi
-compute: {vcpus: 4, memory_gb: 64}
+compute: {vcpus: 4, memory_gb: 60}   # the HERMES 3 HPC pipeline's gwas2vcf rule (mem_mb 60000); fits an r7i.2xlarge
 params:
   - {key: warn_harmonised_fraction, label: Warn below harmonised fraction, type: number, min: 0, max: 1, default: 0.95,
      help: Share of variants whose alleles match the reference genome of the uploaded build}

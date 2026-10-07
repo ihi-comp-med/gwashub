@@ -108,6 +108,10 @@ def test_qc_in_groups_matches_one_job(s3, synth_small):
         keys = {o["Key"] for o in s3.list_objects_v2(Bucket="gh-res", Prefix="qc/21/")["Contents"]}
         assert ("qc/21/result.json" in keys) == (g == 2)  # only the last group finishes the run
         assert any(k.startswith("qc/21/_state/") for k in keys) == (g < 2)  # hand-over state removed at the end
+        # Live progress: every step of the groups run so far is finished (a group's upload must not set them back).
+        progress = json.loads(s3.get_object(Bucket="gh-res", Key="qc/21/progress.json")["Body"].read())
+        done = [i for gg in split["groups"][:g + 1] for i in gg["steps"]]
+        assert all(progress[i]["state"] not in ("queued", "running") for i in done), [(p["key"], p["state"]) for p in progress]
 
     a = json.loads(s3.get_object(Bucket="gh-res", Key="qc/20/result.json")["Body"].read())
     b = json.loads(s3.get_object(Bucket="gh-res", Key="qc/21/result.json")["Body"].read())

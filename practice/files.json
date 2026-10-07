@@ -1,0 +1,11 @@
+[
+  {"file": "practice_a_eur_grch37.tsv.gz", "style": "PLINK", "cohort": "Practice cohort A", "phenotype": "Heart failure",
+   "ancestry": "EUR", "sex": "Combined", "build": "GRCh37", "effect_type": "beta", "n_cases": 12000, "n_controls": 380000,
+   "columns": {"chr": "CHR", "pos": "BP", "ea": "A1", "oa": "A2", "beta": "BETA", "se": "SE", "eaf": "FRQ", "p": "P", "n": "N", "rsid": "SNP", "info": "INFO"}},
+  {"file": "practice_b_eur_grch38.tsv.gz", "style": "REGENIE", "cohort": "Practice cohort B", "phenotype": "Heart failure",
+   "ancestry": "EUR", "sex": "Combined", "build": "GRCh38", "effect_type": "beta", "n_cases": 9000, "n_controls": 250000,
+   "columns": {"chr": "CHROM", "pos": "GENPOS", "ea": "ALLELE1", "oa": "ALLELE0", "beta": "BETA", "se": "SE", "eaf": "A1FREQ", "p": "P", "n": "N", "rsid": "ID", "info": "INFO"}},
+  {"file": "practice_c_afr_grch38.tsv.gz", "style": "GWAS-SSF", "cohort": "Practice cohort C", "phenotype": "Heart failure",
+   "ancestry": "AFR", "sex": "Combined", "build": "GRCh38", "effect_type": "beta", "n_cases": 5200, "n_controls": 60000,
+   "columns": {"chr": "chromosome", "pos": "base_pair_location", "ea": "effect_allele", "oa": "other_allele", "beta": "beta", "se": "standard_error", "eaf": "effect_allele_frequency", "p": "p_value", "n": "n", "rsid": "variant_id"}}
+]

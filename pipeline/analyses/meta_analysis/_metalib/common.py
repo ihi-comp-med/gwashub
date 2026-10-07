@@ -5,7 +5,7 @@ The method contract (see CONTRIBUTING.md):
     <command> --inputs inputs.json --params params.json --out OUT_DIR --log log.json
 
 inputs.json: [{"id", "label", "path" (QC'd TSV in the GWASHub format: chr pos ea oa beta se p [eaf n ncase ncontrol rsid info]), "n_cases",
-"n_controls", "ancestry", "sex"}]. params.json: the method's own parameters (analysis.yaml).
+"n_controls", "n_total", "trait_type", "ancestry", "sex"}]. params.json: the method's own parameters (analysis.yaml).
 A method must write OUT_DIR/meta_results.tsv.gz with at least  chr pos ea oa p n_studies  and either
 beta + se or z; optional: rsid eaf n q het_p i2 direction. GWASHub's post-processing
 (publish.py) then adds lead loci, forest-plot data, Manhattan/QQ plots and summary.json for every method.
@@ -19,6 +19,9 @@ import pandas as pd
 
 from _lib.plotting import lambda_gc
 
+# Numbers in the tables GWASHub writes: 15 significant digits, so nothing the methods print (GWAMA: 6 decimals, METAL:
+# EFFECT_PRINT_PRECISION) is lost; validation/01_gwama_default compares the results with GWAMA run by hand.
+FLOAT_FORMAT = "%.15g"
 RESULT_COLUMNS = ["chr", "pos", "rsid", "ea", "oa", "beta", "se", "z", "p", "n_studies", "n", "eaf", "q", "het_p", "i2",
                   "direction"]
 
@@ -55,7 +58,7 @@ def load_study(spec, maf_min=0.0):
         df = df[maf.isna() | (maf >= maf_min)]
         info["removed_maf"] = n - len(df)
     if "n" not in df or df["n"].isna().all():
-        df["n"] = (spec.get("n_cases") or 0) + (spec.get("n_controls") or 0)
+        df["n"] = spec.get("n_total") or (spec.get("n_cases") or 0) + (spec.get("n_controls") or 0)
     info["variants_used"] = len(df)
     return df.reset_index(drop=True), info
 
@@ -81,8 +84,9 @@ def sort_results(res):
 
 def write_results(res, out_dir):
     cols = [c for c in RESULT_COLUMNS if c in res.columns] + [c for c in res.columns if c not in RESULT_COLUMNS]
-    sort_results(res)[cols].to_csv(os.path.join(out_dir, "meta_results.tsv.gz"), sep="\t", index=False, compression="gzip",
-                                   float_format="%.6g")
+    sort_results(res)[cols].to_csv(os.path.join(out_dir, "meta_results.tsv.gz"), sep="\t", index=False,
+                                   compression={"method": "gzip", "mtime": 0},  # no timestamp: re-runs give identical files
+                                   float_format=FLOAT_FORMAT)
 
 
 def write_log(path, method, verdict, metrics=None, messages=None, studies=None, files=None):

@@ -1,23 +1,21 @@
 # Filter (GWASHub default step, R): removes variants by value thresholds. GWASHub format in and out.
-# The defaults reproduce the HERMES 3 DCM pipeline (hermes3_dcm scripts/gwas_qc_parse.R, commit ff35109), which
-# kept chromosomes 1-22, X and Y, required |BETA| < 20 and 0 < EAF < 1, and dropped rows without EAF, N or
-# (when the file has INFO) INFO. Duplicate removal is added; that pipeline had none.
+# Each value filter (|BETA|, SE, INFO, MAF, N) is a range parameter (pipeline/runner/params.py): its own on/off switch,
+# and a minimum and/or maximum each switched on or off; variants are kept when min <= value <= max. The |BETA| default
+# follows the HERMES 3 DCM pipeline (hermes3_dcm scripts/gwas_qc_parse.R, commit ff35109). EAF checks (missing, 0 or 1)
+# are parse's. Missing INFO is filled with 1 by default (HERMES 3 removed those variants: "remove the variant").
 suppressPackageStartupMessages({ library(data.table); library(jsonlite) })
 
 DEFAULTS <- list(
   chromosomes = "1-22, X, Y",
-  max_abs_beta = 20,       # remove |BETA| >= this (0 = off)
-  max_se = 0,              # remove SE > this (0 = off)
-  min_info = 0,            # remove INFO < this
-  drop_missing_info = TRUE,  # remove rows without INFO when the file has INFO
-  min_maf = 0,             # remove MAF < this
-  drop_monomorphic = TRUE, # remove EAF of exactly 0 or 1
-  require_eaf = TRUE,      # remove rows without EAF
-  require_n = TRUE,        # remove rows without N
-  min_n = 0,               # remove N < this
+  beta = list(on = TRUE, min_on = FALSE, min = NULL, max_on = TRUE, max = 20),
+  se = list(on = FALSE, min_on = FALSE, min = 0, max_on = TRUE, max = 10),
+  info = list(on = FALSE, min_on = TRUE, min = 0.8, max_on = FALSE, max = 1),
+  missing_info = "fill with 1",
+  maf = list(on = FALSE, min_on = TRUE, min = 0.01, max_on = FALSE, max = 0.5),
+  n = list(on = FALSE, min_on = TRUE, min = 100, max_on = FALSE, max = 1e7),
   drop_indels = FALSE,
-  drop_duplicates = TRUE,  # keep the first of variants with the same chr, pos and alleles (either order)
-  warn_removed_fraction = 0.5
+  drop_duplicates = TRUE,  # keep the first of variants with the same chr:pos:alleles (alleles in either order)
+  warn_removed_fraction = 0.05
 )
 CHROM_SETS <- list("1-22" = as.character(1:22), "1-22, X" = c(as.character(1:22), "X"),
                    "1-22, X, Y" = c(as.character(1:22), "X", "Y"))
@@ -37,31 +35,49 @@ write_log <- function(verdict, metrics, messages, artifacts = list()) {
 gwas <- fread(opt$input, sep = "\t", na.strings = "NA", colClasses = list(character = c("chr", "ea", "oa")), showProgress = FALSE)
 rows_in <- nrow(gwas)
 has <- function(col) col %in% names(gwas) && any(!is.na(gwas[[col]]))
+on <- function(r) isTRUE(r$on) && (isTRUE(r$min_on) || isTRUE(r$max_on))
 
 # A filter that needs a column the file doesn't have would remove everything: say so instead.
 problems <- character()
-if (isTRUE(sp$require_eaf) && !has("eaf")) problems <- c(problems, "Require EAF is on but the dataset has no EAF: map an EAF column or turn the option off.")
-if (isTRUE(sp$require_n) && !has("n")) problems <- c(problems, "Require N is on but the dataset has no N: map an N column, enter the case and control counts, or turn the option off.")
+for (f in list(list("info", "INFO"), list("n", "N"), list("eaf", "MAF"))) {
+  r <- sp[[if (f[[1]] == "eaf") "maf" else f[[1]]]]
+  if (on(r) && !has(f[[1]])) problems <- c(problems, sprintf("The %s filter is on but the dataset has no %s: turn the filter off.", f[[2]], toupper(f[[1]])))
+}
 if (length(problems)) {
   write_log("fail", list(rows_in = rows_in), problems)
   quit(save = "no", status = 0)
 }
 
+# Missing INFO: filled with 1 (perfectly imputed) or those variants removed (a rule below).
+filled_info <- 0L
+if (has("info") && sp$missing_info == "fill with 1") {
+  filled_info <- gwas[is.na(info), .N]
+  if (filled_info) gwas[is.na(info), info := 1]
+}
+
+# TRUE where a value is outside the range's switched-on limits (missing values are left to other rules).
+outside <- function(x, r) {
+  drop <- rep(FALSE, length(x))
+  if (!isTRUE(r$on)) return(drop)
+  if (isTRUE(r$min_on)) drop <- drop | (!is.na(x) & x < r$min)
+  if (isTRUE(r$max_on)) drop <- drop | (!is.na(x) & x > r$max)
+  drop
+}
+limits <- function(r) paste(c(if (isTRUE(r$min_on)) sprintf("min %g", r$min), if (isTRUE(r$max_on)) sprintf("max %g", r$max)), collapse = ", ")
+none <- function(d) rep(FALSE, nrow(d))
+
 # Each rule: a label and the rows it removes (evaluated in order on what is left).
 rules <- list(
   list("chromosome not in the kept set", function(d) !d$chr %in% CHROM_SETS[[sp$chromosomes]]),
-  list("EAF missing", function(d) if (isTRUE(sp$require_eaf)) is.na(d$eaf) else rep(FALSE, nrow(d))),
-  list("EAF 0 or 1", function(d) if (isTRUE(sp$drop_monomorphic) && "eaf" %in% names(d)) !is.na(d$eaf) & (d$eaf <= 0 | d$eaf >= 1) else rep(FALSE, nrow(d))),
-  list("MAF below minimum", function(d) if (sp$min_maf > 0 && "eaf" %in% names(d)) !is.na(d$eaf) & pmin(d$eaf, 1 - d$eaf) < sp$min_maf else rep(FALSE, nrow(d))),
-  list("|BETA| too large", function(d) if (sp$max_abs_beta > 0) abs(d$beta) >= sp$max_abs_beta else rep(FALSE, nrow(d))),
-  list("SE too large", function(d) if (sp$max_se > 0) d$se > sp$max_se else rep(FALSE, nrow(d))),
-  list("INFO missing", function(d) if (isTRUE(sp$drop_missing_info) && has("info")) is.na(d$info) else rep(FALSE, nrow(d))),
-  list("INFO below minimum", function(d) if (sp$min_info > 0 && "info" %in% names(d)) !is.na(d$info) & d$info < sp$min_info else rep(FALSE, nrow(d))),
-  list("N missing", function(d) if (isTRUE(sp$require_n)) is.na(d$n) else rep(FALSE, nrow(d))),
-  list("N below minimum", function(d) if (sp$min_n > 0 && "n" %in% names(d)) !is.na(d$n) & d$n < sp$min_n else rep(FALSE, nrow(d))),
-  list("indel", function(d) if (isTRUE(sp$drop_indels)) nchar(d$ea) > 1 | nchar(d$oa) > 1 else rep(FALSE, nrow(d))),
-  list("duplicate variant", function(d) {
-    if (!isTRUE(sp$drop_duplicates)) return(rep(FALSE, nrow(d)))
+  list(sprintf("|BETA| outside the limits (%s)", limits(sp$beta)), function(d) outside(abs(d$beta), sp$beta)),
+  list(sprintf("SE outside the limits (%s)", limits(sp$se)), function(d) outside(d$se, sp$se)),
+  list("INFO missing", function(d) if (sp$missing_info == "remove the variant" && "info" %in% names(d)) is.na(d$info) else none(d)),
+  list(sprintf("INFO outside the limits (%s)", limits(sp$info)), function(d) if ("info" %in% names(d)) outside(d$info, sp$info) else none(d)),
+  list(sprintf("MAF outside the limits (%s)", limits(sp$maf)), function(d) if ("eaf" %in% names(d)) outside(pmin(d$eaf, 1 - d$eaf), sp$maf) else none(d)),
+  list(sprintf("N outside the limits (%s)", limits(sp$n)), function(d) if ("n" %in% names(d)) outside(d$n, sp$n) else none(d)),
+  list("indel", function(d) if (isTRUE(sp$drop_indels)) nchar(d$ea) > 1 | nchar(d$oa) > 1 else none(d)),
+  list("duplicate variant (same chr:pos:alleles)", function(d) {
+    if (!isTRUE(sp$drop_duplicates)) return(none(d))
     duplicated(data.table(d$chr, d$pos, pmin(d$ea, d$oa), pmax(d$ea, d$oa)))
   })
 )
@@ -77,10 +93,13 @@ fwrite(removed, file.path(art_dir, "filter_summary.tsv"), sep = "\t")
 
 rows_out <- nrow(gwas)
 frac <- if (rows_in) (rows_in - rows_out) / rows_in else 0
-metrics <- list(rows_in = rows_in, rows_out = rows_out, rows_removed = rows_in - rows_out)
-for (i in seq_len(nrow(removed))) metrics[[paste0("removed_", gsub("^_|_$", "", gsub("[^a-z0-9]+", "_", tolower(removed$reason[i]))))]] <- removed$removed[i]
+# Metric names: the rule's label up to any "(limits)", e.g. removed_info_outside_the_limits.
+slug <- function(x) gsub("^_|_$", "", gsub("[^a-z0-9]+", "_", tolower(sub(" \\(.*", "", x))))
+metrics <- list(rows_in = rows_in, rows_out = rows_out, rows_removed = rows_in - rows_out, filled_info = filled_info)
+for (i in seq_len(nrow(removed))) metrics[[paste0("removed_", slug(removed$reason[i]))]] <- removed$removed[i]
 messages <- sprintf("Removed %s of %s rows (%.2f%%).", format(rows_in - rows_out, big.mark = ","), format(rows_in, big.mark = ","), 100 * frac)
 for (i in which(removed$removed > 0)) messages <- c(messages, sprintf("%s: %s", removed$reason[i], format(removed$removed[i], big.mark = ",")))
+if (filled_info) messages <- c(messages, sprintf("Filled missing INFO with 1 for %s rows.", format(filled_info, big.mark = ",")))
 verdict <- if (rows_out == 0) "fail" else if (frac > sp$warn_removed_fraction) "warn" else "pass"
 if (rows_out == 0) messages <- c(messages, "No rows left.")
 write_log(verdict, metrics, messages, list(list(type = "table", path = "filter_summary.tsv", label = "Rows removed by each filter")))

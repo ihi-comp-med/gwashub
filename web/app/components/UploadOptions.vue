@@ -11,10 +11,14 @@ const ALL_ANC = [
 ]
 const ALL_SEX = ['Combined', 'Female', 'Male']
 
-const form = reactive({ phenotypes: [] as string[], phenotype_descriptions: {} as Record<string, string>, ancestries: [] as string[], sexes: [] as string[] })
+const form = reactive({ phenotypes: [] as string[], phenotype_descriptions: {} as Record<string, string>,
+  phenotype_types: {} as Record<string, string>, ancestries: [] as string[], sexes: [] as string[] })
+// Case/control phenotypes ask uploaders for cases and controls; quantitative ones for the total sample size.
+const TRAIT_TYPES = [{ v: 'binary', l: 'Case/control' }, { v: 'quantitative', l: 'Quantitative' }]
 const original = ref('')
 function reset() {
   Object.assign(form, { phenotypes: [...props.project.phenotypes], phenotype_descriptions: { ...(props.project.phenotype_descriptions ?? {}) },
+    phenotype_types: Object.fromEntries(props.project.phenotypes.map((p: string) => [p, props.project.phenotype_types?.[p] ?? 'binary'])),
     ancestries: [...props.project.ancestries], sexes: [...props.project.sexes] })
   original.value = JSON.stringify(form)
 }
@@ -22,31 +26,52 @@ watch(() => props.project, reset, { immediate: true })
 const dirty = computed(() => JSON.stringify(form) !== original.value)
 const newPheno = ref('')
 const newDesc = ref('')
+const newType = ref('binary')
 function addPheno() {
   const p = newPheno.value.trim()
-  if (p && !form.phenotypes.includes(p)) form.phenotypes.push(p)
+  if (p && !form.phenotypes.includes(p)) { form.phenotypes.push(p); form.phenotype_types[p] = newType.value }
   if (p && newDesc.value.trim()) form.phenotype_descriptions[p] = newDesc.value.trim()
   newPheno.value = ''
   newDesc.value = ''
+  newType.value = 'binary'
 }
 function removePheno(i: number) {
   const [p] = form.phenotypes.splice(i, 1)
-  if (p) delete form.phenotype_descriptions[p]
+  if (p) { delete form.phenotype_descriptions[p]; delete form.phenotype_types[p] }
 }
-// CSV / TSV import: one phenotype per line, "code,description" (a header line starting with "code" is skipped).
+// CSV / TSV import: one phenotype per line, "code,description[,type]". type is case/control (or binary) or
+// quantitative; blank means case/control. A header line starting with "code" is skipped; with a header naming a "type"
+// column, the last field is always the type, otherwise it is only when it is a recognised type (so commas in
+// descriptions still work).
+const TYPE_WORDS: Record<string, string> = { 'case/control': 'binary', 'case-control': 'binary', binary: 'binary', quantitative: 'quantitative' }
 const csvInput = ref<HTMLInputElement | null>(null)
 async function importCsv(e: Event) {
   const f = (e.target as HTMLInputElement).files?.[0]
   if (!f) return
   const lines = (await f.text()).split(/\r?\n/).map(l => l.trim()).filter(Boolean)
-  let added = 0
+  let added = 0, typed = 0, typeColumn = false
+  const unknown: string[] = []
   for (const line of lines) {
-    const [code, ...rest] = line.split(line.includes('\t') ? '\t' : ',').map(x => x.trim().replace(/^"|"$/g, ''))
-    if (!code || /^code$/i.test(code)) continue
+    const fields = line.split(line.includes('\t') ? '\t' : ',').map(x => x.trim().replace(/^"|"$/g, ''))
+    const code = fields[0]
+    if (!code) continue
+    if (/^code$/i.test(code)) { typeColumn = fields.length >= 3 && /^type$/i.test(fields[fields.length - 1]); continue }
+    let rest = fields.slice(1), type = 'binary'
+    const last = (rest[rest.length - 1] ?? '').toLowerCase()
+    if (rest.length >= 2 && (typeColumn || last in TYPE_WORDS)) {
+      rest = rest.slice(0, -1)
+      if (last && !(last in TYPE_WORDS)) unknown.push(`${code} ("${fields[fields.length - 1]}")`)
+      else if (last) type = TYPE_WORDS[last]
+    }
     if (!form.phenotypes.includes(code)) { form.phenotypes.push(code); added++ }
+    form.phenotype_types[code] = type
+    if (type === 'quantitative') typed++
     if (rest.join(',').trim()) form.phenotype_descriptions[code] = rest.join(',').trim()
   }
-  toast.add({ severity: 'info', summary: `Imported ${lines.length} line${lines.length === 1 ? '' : 's'}`, detail: `${added} new phenotype${added === 1 ? '' : 's'}; save to keep them.`, life: 4000 })
+  toast.add({ severity: 'info', summary: `Imported ${lines.length} line${lines.length === 1 ? '' : 's'}`,
+    detail: `${added} new phenotype${added === 1 ? '' : 's'}, ${typed} quantitative; save to keep them.`, life: 4000 })
+  if (unknown.length)
+    toast.add({ severity: 'warn', summary: 'Unrecognised trait types', detail: `${unknown.join(', ')}: use case/control or quantitative. These were set to case/control.`, life: 8000 })
   if (csvInput.value) csvInput.value.value = ''
 }
 function toggle(list: string[], v: string) {
@@ -77,26 +102,29 @@ async function save() {
         <div>
           <h4>Phenotypes</h4>
           <table class="ph compact-ui">
-            <thead><tr><th>Code</th><th>Description</th><th /></tr></thead>
+            <thead><tr><th>Code</th><th>Description</th><th>Type</th><th /></tr></thead>
             <tbody>
               <tr v-for="(p, i) in form.phenotypes" :key="p">
                 <td class="mono">{{ p }}</td>
                 <td><InputText v-if="isReviewer" v-model="form.phenotype_descriptions[p]" size="small" fluid placeholder="Description" />
                   <span v-else>{{ form.phenotype_descriptions[p] || '–' }}</span></td>
+                <td><Select v-if="isReviewer" v-model="form.phenotype_types[p]" :options="TRAIT_TYPES" option-label="l" option-value="v" size="small" />
+                  <span v-else>{{ TRAIT_TYPES.find(t => t.v === form.phenotype_types[p])?.l }}</span></td>
                 <td><Button v-if="isReviewer" icon="pi pi-times" text rounded size="small" severity="secondary" :aria-label="`Remove ${p}`" @click="removePheno(i)" /></td>
               </tr>
-              <tr v-if="!form.phenotypes.length"><td colspan="3" class="muted small">None: add at least one.</td></tr>
+              <tr v-if="!form.phenotypes.length"><td colspan="4" class="muted small">None: add at least one.</td></tr>
             </tbody>
           </table>
           <form v-if="isReviewer" class="row add compact-ui" @submit.prevent="addPheno">
             <InputText v-model="newPheno" placeholder="Code, e.g. HFmrEF" size="small" class="code" />
             <InputText v-model="newDesc" placeholder="Description" size="small" class="grow" />
+            <Select v-model="newType" :options="TRAIT_TYPES" option-label="l" option-value="v" size="small" aria-label="Trait type" class="type" />
             <Button type="submit" icon="pi pi-plus" size="small" outlined :disabled="!newPheno.trim()" aria-label="Add phenotype" />
           </form>
           <div v-if="isReviewer" class="row imp">
             <input ref="csvInput" type="file" accept=".csv,.tsv,.txt" hidden @change="importCsv">
             <Button label="Import CSV" icon="pi pi-upload" size="small" text @click="csvInput?.click()" />
-            <span class="muted small">one per line: code,description</span>
+            <span class="muted small">one per line: code,description,type (type: case/control or quantitative; blank means case/control)</span>
           </div>
         </div>
         <div>
@@ -134,6 +162,7 @@ h4 { margin: 0 0 10px; font-size: 0.8rem; text-transform: uppercase; letter-spac
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 .add { flex-wrap: nowrap; gap: 6px; margin-top: 8px; }
 .add .code { width: 9rem; }
+.add .type { width: 9.5rem; flex-shrink: 0; }
 .grow { flex: 1; }
 .imp { gap: 6px; margin-top: 4px; }
 .ph { width: 100%; border-collapse: collapse; font-size: 0.8rem; }

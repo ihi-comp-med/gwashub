@@ -25,7 +25,7 @@ possible Python step: a console message, a log message and an image artifact) an
 ```yaml
 name: exclusion_regions             # must match the folder name
 title: Exclusion regions
-description: One or two sentences on what it removes or checks.
+description: Removes variants in the listed exclusion regions.   # ONE sentence: shown in the step picker and on About
 command: [Rscript, exclusion_regions.R]   # or [python, my_step.py]
 image: gwashub/base-r                # an image from pipeline/images (see 4)
 default_on_fail: flag                # block (stop the pipeline) | flag (mark for review) | continue (ignore)
@@ -33,6 +33,9 @@ resources: [exclusion_regions_grch38.bed]  # reference files it needs (project o
 params:                              # optional; reviewers can change them per project (see below)
   - {key: window_kb, label: Window around each gene (kb), type: integer, min: 0, max: 5000, default: 500,
      help: Variants this close to a listed gene are removed too}
+narrative: >                         # optional: the detail, in plain words (the step contract; else description)
+  Reads the BED file of exclusion regions, removes every variant inside a region (or within the window around it),
+  counts them per region and writes the table; warns when more than 1% of variants go.
 always_run: false                    # true only for steps that must run after a block (like the report)
 compute: {vcpus: 2, memory_gb: 16}   # optional: what the step needs on AWS Batch (default 2 vCPUs, 8 GB)
 ```
@@ -44,9 +47,19 @@ wrong type or out of range when a pipeline is saved:
 |---|---|
 | `key` | the name your script reads (lower case, underscores) |
 | `label`, `help` | what the form shows |
-| `type` | `number`, `integer`, `boolean`, `select` (with `options: [a, b]`) or `text` |
+| `type` | `number`, `integer`, `boolean`, `select` (with `options: [a, b]`), `text`, or `range` (below) |
 | `default` | used unless a project changes it |
-| `min`, `max` | optional limits for numbers |
+| `min`, `max` | optional limits for numbers (for a range: the limits its minimum and maximum must stay within) |
+| `sides` | a range only: which limits it has, `[min]`, `[max]` or `[min, max]` |
+
+A `range` is a filter with its own on/off switch and a minimum and/or maximum, each switched on or off separately, so
+nothing has to mean "off" by being 0. Your script receives `{on, min_on, min, max_on, max}` and should keep values with
+min ≤ value ≤ max over the limits switched on (see `gwashub/filter`):
+
+```yaml
+  - {key: info, label: INFO, type: range, sides: [min, max], min: 0, max: 1,
+     default: {on: false, min_on: true, min: 0.8, max_on: false, max: 1}}
+```
 
 The older form, a plain mapping such as `params: {window_kb: 500}`, still works (types come from the defaults).
 
@@ -59,7 +72,7 @@ The runner calls your script as
 ```
 
 - `--input` is the dataset so far in the **GWASHub format**: tab-separated, `NA` for missing values, the columns
-  `chr pos ea oa beta se p` and, when the upload or the study details give them, `eaf n ncase ncontrol rsid info`
+  `chr pos ea oa beta se p eaf` and, when the upload or the study details give them, `n ncase ncontrol rsid info`
   (`_lib/common.py` `STANDARD`). Rewrite it in place to remove or change rows, and write the same format back:
   no other columns, chromosomes 1-22, X, Y. Only `gwashub/parse`, the first step, reads the upload as received.
   Positions are in the uploaded build until `gwashub/harmonise_liftover`; after it they are GRCh38 with the effect
@@ -157,9 +170,9 @@ The method is called once per meta-analysis, in the method's folder, as
 <command> --inputs inputs.json --params params.json --out OUT_DIR --log log.json
 ```
 
-- `inputs.json` lists the datasets: `[{"id", "label", "path", "n_cases", "n_controls", "ancestry", "sex"}]`. Each
+- `inputs.json` lists the datasets: `[{"id", "label", "path", "n_cases", "n_controls", "n_total", "trait_type", "ancestry", "sex"}]`. Each
   `path` is a QC'd file: tab-separated, GRCh38, aligned to the reference (effect allele = ALT), with
-  `chr pos ea oa beta se p` and, when present, `eaf n rsid info`.
+  `chr pos ea oa beta se p eaf` and, when present, `n ncase ncontrol rsid info`.
 - `params.json` holds the method's own parameters, already checked against `analysis.yaml`.
 - Write `OUT_DIR/meta_results.tsv.gz` (tab-separated, gzipped) with one row per variant and the columns
   `chr pos ea oa p n_studies` plus either `beta se` or `z`. Optional: `rsid eaf n i2 het_p direction`.

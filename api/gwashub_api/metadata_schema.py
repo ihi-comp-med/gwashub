@@ -8,6 +8,11 @@ project. One definition drives the upload form, the dataset and cohort viewers, 
 
 A dataset's metadata is its cohort's values with the dataset's own values on top: a dataset may override
 a cohort-level field (e.g. a different imputation panel for one phenotype).
+
+Projects can add their own fields (Project.metadata_custom: [{key, label, level, type, options, hidden}]); they form
+two extra sections, per cohort and per dataset, and every function here takes the project's list as `custom`. A
+custom field's key never changes (renaming changes the label); a deleted field is hidden: it leaves the forms but its
+values are kept and still validate.
 """
 import re
 from datetime import date
@@ -78,8 +83,37 @@ SECTIONS = [
 ]
 
 
-def all_fields():
-    for sec in SECTIONS:
+# Custom field types (the website's choices) -> the catalogue's types; yes/no is a select of Yes, No.
+CUSTOM_TYPES = {"text": "text", "number": "number", "integer": "integer", "yesno": "select", "select": "select", "date": "date"}
+CUSTOM_SECTIONS = {"cohort": ("custom_cohort", "Project fields (per cohort)"), "dataset": ("custom_dataset", "Project fields (per dataset)")}
+
+
+def custom_field(c: dict) -> dict:
+    """A custom field definition as a catalogue field."""
+    f = {"key": c["key"], "label": c["label"], "type": CUSTOM_TYPES[c["type"]], "custom": True}
+    if c["type"] == "yesno":
+        f["options"] = YES_NO
+    elif c["type"] == "select":
+        f["options"] = list(c.get("options") or [])
+    return f
+
+
+def custom_sections(custom: list | None, include_hidden: bool = False) -> list:
+    """The project's own fields as sections (per cohort, per dataset); hidden fields only with include_hidden."""
+    out = []
+    for level, (key, title) in CUSTOM_SECTIONS.items():
+        fields = [custom_field(c) for c in (custom or []) if c["level"] == level and (include_hidden or not c.get("hidden"))]
+        if fields:
+            out.append({"key": key, "title": title, "level": level, "fields": fields})
+    return out
+
+
+def sections(custom: list | None = None, include_hidden: bool = False) -> list:
+    return SECTIONS + custom_sections(custom, include_hidden)
+
+
+def all_fields(custom: list | None = None):
+    for sec in sections(custom, include_hidden=True):
         for f in sec.get("fields", []):
             yield f
         if "grid" in sec:
@@ -91,12 +125,17 @@ def all_fields():
 FIELDS = {f["key"]: f for f in all_fields()}
 
 
-def validate(meta: dict | None) -> dict:
+def fields(custom: list | None = None) -> dict:
+    return FIELDS if not custom else {f["key"]: f for f in all_fields(custom)}
+
+
+def validate(meta: dict | None, custom: list | None = None) -> dict:
     """Return a cleaned copy (empty values dropped). Raises 422 listing every problem."""
     meta = meta or {}
+    known = fields(custom)
     errors, out = [], {}
     for k, v in meta.items():
-        f = FIELDS.get(k)
+        f = known.get(k)
         if f is None:
             errors.append(f"unknown field '{k}'")
             continue
@@ -138,10 +177,11 @@ def validate(meta: dict | None) -> dict:
 # ---------- per-project configuration ----------
 # A *unit* is what a project switches on or marks required: a field, or a whole grid section.
 
-def units():
-    """[{key, label, section, level, default}] for every configurable unit, in catalogue order."""
+def units(custom: list | None = None):
+    """[{key, label, section, level, default}] for every configurable unit, in catalogue order (hidden custom fields
+    aren't units: they can't be shown or required)."""
     out = []
-    for sec in SECTIONS:
+    for sec in sections(custom):
         if "grid" in sec:
             out.append({"key": sec["key"], "label": sec["title"], "section": sec["key"], "level": sec["level"],
                         "default": bool(sec.get("default"))})
@@ -155,27 +195,37 @@ UNITS = {u["key"]: u for u in units()}
 COHORT_KEYS = {f["key"] for sec in SECTIONS if sec["level"] == "cohort" for f in sec.get("fields", [])}
 
 
+def units_by_key(custom: list | None = None) -> dict:
+    return UNITS if not custom else {u["key"]: u for u in units(custom)}
+
+
+def cohort_keys(custom: list | None = None) -> set:
+    """Cohort-level field keys (custom ones included, hidden or not: their values still flow to datasets)."""
+    return COHORT_KEYS | {c["key"] for c in (custom or []) if c["level"] == "cohort"}
+
+
 def default_config() -> dict:
     return {"shown": [u["key"] for u in units() if u["default"]], "required": []}
 
 
-def normalise_config(cfg: dict | None) -> dict:
+def normalise_config(cfg: dict | None, custom: list | None = None) -> dict:
     """A project's config, falling back to the defaults; unknown keys dropped; required ⊆ shown."""
     if not cfg:
         return default_config()
-    shown = [k for k in UNITS if k in set(cfg.get("shown") or [])]
+    shown = [k for k in units_by_key(custom) if k in set(cfg.get("shown") or [])]
     required = [k for k in shown if k in set(cfg.get("required") or [])]
     return {"shown": shown, "required": required}
 
 
-def validate_config(cfg: dict) -> dict:
-    unknown = [k for k in (cfg.get("shown") or []) + (cfg.get("required") or []) if k not in UNITS]
+def validate_config(cfg: dict, custom: list | None = None) -> dict:
+    known = units_by_key(custom)
+    unknown = [k for k in (cfg.get("shown") or []) + (cfg.get("required") or []) if k not in known]
     if unknown:
         raise HTTPException(422, f"Unknown metadata field(s): {', '.join(sorted(set(unknown)))}")
     not_shown = set(cfg.get("required") or []) - set(cfg.get("shown") or [])
     if not_shown:
-        raise HTTPException(422, "A required field must also be shown: " + ", ".join(UNITS[k]["label"] for k in sorted(not_shown)))
-    return normalise_config(cfg)
+        raise HTTPException(422, "A required field must also be shown: " + ", ".join(known[k]["label"] for k in sorted(not_shown)))
+    return normalise_config(cfg, custom)
 
 
 def unit_filled(meta: dict, key: str) -> bool:
@@ -185,25 +235,27 @@ def unit_filled(meta: dict, key: str) -> bool:
     return meta.get(key) not in (None, "")
 
 
-def completeness(meta: dict | None, cfg: dict | None = None) -> dict:
+def completeness(meta: dict | None, cfg: dict | None = None, custom: list | None = None) -> dict:
     """How complete a record is against the project's shown fields; lists required fields that are missing."""
-    cfg, meta = normalise_config(cfg), meta or {}
+    cfg, meta, known = normalise_config(cfg, custom), meta or {}, units_by_key(custom)
     filled = sum(1 for k in cfg["shown"] if unit_filled(meta, k))
-    missing = [UNITS[k]["label"] for k in cfg["required"] if not unit_filled(meta, k)]
+    missing = [known[k]["label"] for k in cfg["required"] if not unit_filled(meta, k)]
     return {"filled": filled, "total": len(cfg["shown"]), "missing_required": missing}
 
 
-def missing_required(meta: dict | None, cfg: dict | None, level: str | None = None) -> list[str]:
-    cfg, meta = normalise_config(cfg), meta or {}
-    return [UNITS[k]["label"] for k in cfg["required"]
-            if (level is None or UNITS[k]["level"] == level) and not unit_filled(meta, k)]
+def missing_required(meta: dict | None, cfg: dict | None, level: str | None = None, custom: list | None = None) -> list[str]:
+    cfg, meta, known = normalise_config(cfg, custom), meta or {}, units_by_key(custom)
+    return [known[k]["label"] for k in cfg["required"]
+            if (level is None or known[k]["level"] == level) and not unit_filled(meta, k)]
 
 
-def effective(cohort_meta: dict | None, dataset_meta: dict | None) -> dict:
+def effective(cohort_meta: dict | None, dataset_meta: dict | None, custom: list | None = None) -> dict:
     """A dataset's metadata: its cohort's values, with the dataset's own values (including overrides) on top."""
-    return {**{k: v for k, v in (cohort_meta or {}).items() if k in COHORT_KEYS}, **(dataset_meta or {})}
+    keys = cohort_keys(custom)
+    return {**{k: v for k, v in (cohort_meta or {}).items() if k in keys}, **(dataset_meta or {})}
 
 
-def split(meta: dict) -> tuple[dict, dict]:
+def split(meta: dict, custom: list | None = None) -> tuple[dict, dict]:
     """(cohort-level part, dataset-level part) of a metadata dict."""
-    return ({k: v for k, v in meta.items() if k in COHORT_KEYS}, {k: v for k, v in meta.items() if k not in COHORT_KEYS})
+    keys = cohort_keys(custom)
+    return ({k: v for k, v in meta.items() if k in keys}, {k: v for k, v in meta.items() if k not in keys})

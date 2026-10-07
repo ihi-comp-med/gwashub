@@ -1,0 +1,56 @@
+# Public GWAS summary statistics used by the validation tests.
+# Fill in url and md5 once the exact file is chosen, and check `columns` against the file's header: 1_prepare.R
+# refuses a source with an empty url and stops if a mapped column is missing.
+# columns: the file's column name for each standard column (chr pos ea oa beta se eaf p n rsid). ea is the
+# effect allele. n may instead be a fixed number (n_fixed), e.g. cases + controls from the study's documentation.
+# Optional:
+#   p_neglog10: true   the mapped p column holds -log10 P; it is converted to P.
+#   rsid_lookup:       for files without rsIDs: another file (url, md5) and its columns {chr, pos, ref, alt, rsid};
+#                      rsIDs are joined on chr, pos and the two alleles (either order).
+
+sources:
+  UKB:
+    title: UK Biobank congestive heart failure; nonhypertensive (Pan-UKB phecode 428)
+    portal: https://pan.ukbb.broadinstitute.org/downloads
+    release: h2
+    url: "https://pan-ukb-us-east-1.s3.amazonaws.com/sumstats_flat_files/phecode-428-both_sexes.tsv.bgz"
+    md5: "dd51de4f0dcf380a9c75c62bea0545c3"
+    build: GRCh37
+    ancestry: EUR
+    licence: CC BY 4.0 for Pan-UKB summary statistics
+    citation: "Karczewski, Gupta, Kanai et al., 'Pan-UK Biobank genome-wide association analyses enhance discovery and resolution of ancestry-enriched effects'. Nat Genet 57, 2408–2417 (2025). https://doi.org/10.1038/s41588-025-02335-7"
+    sep: "\t"
+    columns: {chr: chr, pos: pos, ea: alt, oa: ref, beta: beta_EUR, se: se_EUR, eaf: af_controls_EUR, p: neglog10_pval_EUR}
+    n_fixed: 419558    # 7,452 EUR cases + 412,106 EUR controls
+    p_neglog10: true   # neglog10_pval_EUR is -log10 P
+    rsid_lookup:       # the flat file has no rsIDs; Pan-UKB's variant manifest (2.7 GB) has them
+      url: "https://pan-ukb-us-east-1.s3.amazonaws.com/sumstats_release/full_variant_qc_metrics.txt.bgz"
+      md5: "e70ebc8289f762dd8d5086f54e766654"
+      columns: {chr: chrom, pos: pos, ref: ref, alt: alt, rsid: rsid}
+
+  HERMES:
+    title: Genome-wide association study meta-analysis provides insights into the etiology of heart failure and its subtypes. (Henry et al. 2025)
+    portal: https://www.ebi.ac.uk/
+    release: CONFIRM
+    url: "https://ftp.ebi.ac.uk/pub/databases/gwas/summary_statistics/GCST90728001-GCST90729000/GCST90728695/GCST90728695.tsv.gz"
+    md5: "62a6f0b1d9bc5a8edb6f3616c3d207e5"
+    build: GRCh37
+    ancestry: EUR
+    licence: CC0 1.0 Universal
+    citation: Henry et al. (2025) Nat Genet
+    sep: "\t"
+    columns: {chr: chromosome, pos: base_pair_location, ea: effect_allele, oa: other_allele, beta: beta, se: standard_error, eaf: effect_allele_frequency, p: p_value, rsid: rsid, n: N_total}
+
+  FINNGEN:
+    title: FinnGen heart failure, strict (I9_HEARTFAIL)
+    portal: https://www.finngen.fi/en/access_results
+    release: R12 (released 2023-10-25)
+    url: "https://storage.googleapis.com/finngen-public-data-r12/summary_stats/release/finngen_R12_I9_HEARTFAIL.gz"
+    md5: "b0cd63f3f9b616d189f91f9551098286"
+    build: GRCh38
+    ancestry: EUR
+    licence: FinnGen public results terms
+    citation: Kurki MI et al. (2023) FinnGen provides genetic insights from a well-phenotyped isolated population. Nature 613:508-518
+    sep: "\t"
+    columns: {chr: "#chrom", pos: pos, ea: alt, oa: ref, beta: beta, se: sebeta, eaf: af_alt, p: pval, rsid: rsids}
+    n_fixed: 500348    # 37,653 cases + 462,695 controls

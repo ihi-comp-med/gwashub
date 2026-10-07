@@ -224,7 +224,7 @@ class AppStack(cdk.Stack):
                                           for ref, img in pipeline_images.items()})
         rule = events.Rule(self, "JobEvents", event_pattern=events.EventPattern(
             source=["aws.batch"], detail_type=["Batch Job State Change"],
-            detail={"jobQueue": [job_queue.job_queue_arn, job_queue_x86.job_queue_arn], "status": ["RUNNING", "SUCCEEDED", "FAILED"]}))
+            detail={"jobQueue": [job_queue.job_queue_arn, job_queue_x86.job_queue_arn], "status": ["RUNNABLE", "STARTING", "RUNNING", "SUCCEEDED", "FAILED"]}))
         rule.add_target(targets.SqsQueue(events_queue))
 
         # ---------- API + worker on Fargate ----------
@@ -273,6 +273,7 @@ class AppStack(cdk.Stack):
             data.results.grant_read_write(td.task_role)
             data.results.grant_delete(td.task_role)
             data.resources.grant_read_write(td.task_role)
+            data.resources.grant_delete(td.task_role)  # deleting a project removes its resources
             td.task_role.add_to_principal_policy(iam.PolicyStatement(
                 actions=["batch:SubmitJob", "batch:TagResource"],
                 resources=[job_queue.job_queue_arn, job_queue_x86.job_queue_arn,

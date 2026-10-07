@@ -15,12 +15,13 @@ from gwashub_api.models import Cohort, Dataset, User
 router = APIRouter(prefix="/api", tags=["cohorts"])
 
 
-def cohort_view(db, c: Cohort, cfg: dict, can_edit: bool, n_datasets: int) -> dict:
+def cohort_view(db, c: Cohort, cfg: dict, can_edit: bool, n_datasets: int, custom: list | None = None) -> dict:
     creator = db.get(User, c.created_by) if c.created_by else None
-    cohort_cfg = {"shown": [k for k in cfg["shown"] if metadata_schema.UNITS[k]["level"] == "cohort"],
-                  "required": [k for k in cfg["required"] if metadata_schema.UNITS[k]["level"] == "cohort"]}
+    known = metadata_schema.units_by_key(custom)
+    cohort_cfg = {"shown": [k for k in cfg["shown"] if known[k]["level"] == "cohort"],
+                  "required": [k for k in cfg["required"] if known[k]["level"] == "cohort"]}
     return {"id": c.id, "name": c.name, "meta": c.meta or {}, "datasets": n_datasets, "created_by": creator.name if creator else None,
-            "created_at": c.created_at, "can_edit": can_edit, "metadata_complete": metadata_schema.completeness(c.meta, cohort_cfg)}
+            "created_at": c.created_at, "can_edit": can_edit, "metadata_complete": metadata_schema.completeness(c.meta, cohort_cfg, custom)}
 
 
 def can_edit_cohort(m, user: User, c: Cohort) -> bool:
@@ -34,7 +35,7 @@ def list_cohorts(project_id: str, user: User = Depends(current_user), db: Sessio
     counts = dict(db.execute(select(Dataset.cohort_id, func.count()).where(Dataset.project_id == project_id)
                              .group_by(Dataset.cohort_id)).all())
     cohorts = db.scalars(select(Cohort).where(Cohort.project_id == project_id)).all()
-    return [cohort_view(db, c, cfg, can_edit_cohort(m, user, c), counts.get(c.id, 0))
+    return [cohort_view(db, c, cfg, can_edit_cohort(m, user, c), counts.get(c.id, 0), services.custom_fields(m.project))
             for c in sorted(cohorts, key=lambda c: c.name.lower())]
 
 
@@ -72,10 +73,11 @@ def create_cohort(project_id: str, body: CohortIn, user: User = Depends(current_
         raise HTTPException(422, "Give a cohort name (up to 200 characters)")
     if services.find_cohort(db, project_id, name):
         raise HTTPException(409, f"There's already a cohort called {name} in this project")
-    meta = metadata_schema.validate(body.meta)
+    custom = services.custom_fields(m.project)
+    meta = metadata_schema.validate(body.meta, custom)
     c, _ = services.get_or_create_cohort(db, project_id, name, user.id, meta)
     db.commit()
-    return cohort_view(db, c, services.metadata_config(m.project), True, 0)
+    return cohort_view(db, c, services.metadata_config(m.project), True, 0, custom)
 
 
 @router.patch("/cohorts/{cohort_id}")
@@ -97,13 +99,14 @@ def edit_cohort(cohort_id: int, body: CohortEdit, user: User = Depends(current_u
         c.name = name
         for ds in db.scalars(select(Dataset).where(Dataset.cohort_id == c.id)):
             ds.cohort = name
+    custom = services.custom_fields(m.project)
     if body.meta is not None:
-        meta = metadata_schema.validate(body.meta)
-        dataset_level = [metadata_schema.UNITS[k]["label"] for k in meta if k not in metadata_schema.COHORT_KEYS
-                         and k in metadata_schema.UNITS]
+        meta = metadata_schema.validate(body.meta, custom)
+        known, cohort_keys = metadata_schema.units_by_key(custom), metadata_schema.cohort_keys(custom)
+        dataset_level = [known[k]["label"] for k in meta if k not in cohort_keys and k in known]
         if dataset_level:
             raise HTTPException(422, f"These are set per dataset, not per cohort: {', '.join(dataset_level)}")
-        c.meta = metadata_schema.split(meta)[0]
+        c.meta = metadata_schema.split(meta, custom)[0]
     db.commit()
     count = db.scalar(select(func.count()).where(Dataset.cohort_id == c.id))
-    return cohort_view(db, c, services.metadata_config(m.project), True, count)
+    return cohort_view(db, c, services.metadata_config(m.project), True, count, custom)

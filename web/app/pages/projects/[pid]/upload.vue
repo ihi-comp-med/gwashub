@@ -6,7 +6,7 @@ const step = ref('1')
 
 const details = reactive({
   cohort: '', phenotype: '', ancestry: 'EUR', sex: 'Combined', build: 'GRCh37', effect_type: 'beta',
-  n_cases: null as number | null, n_controls: null as number | null,
+  n_cases: null as number | null, n_controls: null as number | null, n_total: null as number | null,
 })
 watch(project, (p) => {
   if (!p) return
@@ -14,7 +14,11 @@ watch(project, (p) => {
   if (!p.ancestries.includes(details.ancestry)) details.ancestry = p.ancestries[0] ?? ''
   if (!p.sexes.includes(details.sex)) details.sex = p.sexes[0] ?? ''
 }, { immediate: true })
-const detailsOk = computed(() => !!(details.cohort.trim() && details.phenotype && details.n_cases && details.n_controls))
+// Case/control phenotypes need cases and controls (the total is their sum); quantitative ones the total sample size.
+const quantitative = computed(() => project.value?.phenotype_types?.[details.phenotype] === 'quantitative')
+const detailsOk = computed(() => !!(details.cohort.trim() && details.phenotype
+  && (quantitative.value ? details.n_total : details.n_cases && details.n_controls)))
+watch(quantitative, (q) => { if (q) details.effect_type = 'beta' })
 const phenoOptions = computed(() => (project.value?.phenotypes ?? []).map((p: string) => ({ value: p, label: project.value.phenotype_descriptions?.[p] ? `${p} · ${project.value.phenotype_descriptions[p]}` : p })))
 
 // Cohort: pick an existing one or type a new name (warned if it looks like an existing cohort).
@@ -81,7 +85,7 @@ async function onSelect(e: { files: File[] }) {
     fd.append('file', file.value.slice(0, 512 * 1024), file.value.name)
     suggestion.value = await api(`/projects/${pid.value}/column-suggestion`, { method: 'POST', body: fd })
     Object.assign(mapping, Object.fromEntries(standardFields.map(f => [f.key, suggestion.value.mapping[f.key] ?? null])))
-    details.effect_type = suggestion.value.effect_type
+    details.effect_type = quantitative.value ? 'beta' : suggestion.value.effect_type
   }
   catch (err: any) { toast.add({ severity: 'error', summary: 'Could not read the file', detail: err.message, life: 5000 }) }
   finally { reading.value = false }
@@ -93,7 +97,7 @@ const standardFields = [
   { key: 'pos', label: 'Position', required: true },
   { key: 'ea', label: 'Effect allele', required: true },
   { key: 'oa', label: 'Other allele', required: true },
-  { key: 'eaf', label: 'Effect allele frequency', required: false },
+  { key: 'eaf', label: 'Effect allele frequency', required: true },
   { key: 'beta', label: 'Effect (BETA or OR)', required: true },
   { key: 'se', label: 'Standard error', required: true },
   { key: 'p', label: 'P-value', required: true },
@@ -128,7 +132,7 @@ async function submit() {
     })
     await api(`/datasets/${start.id}/upload/complete`, { method: 'POST', body: { parts: etags } })
     progress.value = 100
-    toast.add({ severity: 'success', summary: 'Uploaded: QC started', detail: `${details.cohort} is being processed.`, life: 3500 })
+    toast.add({ severity: 'success', summary: 'Uploaded: waiting for QC', detail: 'Check the details, then click Start QC in its panel.', life: 5000 })
     navigateTo({ path: `/projects/${pid.value}/datasets`, query: { open: String(start.id) } })
   }
   catch (e: any) {
@@ -145,20 +149,20 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
     <ProjectHeader :project="project" />
     <div class="container page">
       <h2 class="h2">Upload dataset</h2>
-      <p class="page-sub">Describe the dataset, upload summary statistics, check the column mapping and run the project's QC pipeline.</p>
+      <p class="page-sub">Describe the dataset, upload summary statistics, check the column mapping, then upload. The dataset waits as Pending QC until you start QC.</p>
 
       <Card>
         <template #content>
-          <Stepper v-model:value="step" linear>
+          <Stepper v-model:value="step" linear data-tour="upload-stepper">
             <StepList>
               <Step value="1">Details</Step>
               <Step value="2">Study metadata</Step>
               <Step value="3">File</Step>
               <Step value="4">Map columns</Step>
-              <Step value="5">Run QC</Step>
+              <Step value="5">Upload</Step>
             </StepList>
             <StepPanels>
-              <StepPanel v-slot="{ activateCallback }" value="1">
+              <StepPanel v-slot="{ activateCallback }" value="1" data-tour="upload-details">
                 <div class="grid grid-2">
                   <div class="field"><label for="u-cohort">Cohort</label>
                     <AutoComplete v-model="details.cohort" input-id="u-cohort" :suggestions="cohortSuggestions" dropdown fluid
@@ -173,7 +177,11 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
                   <div class="field"><label>Ancestry</label><Select v-model="details.ancestry" :options="project.ancestries" /></div>
                   <div class="field"><label>Sex</label><SelectButton v-model="details.sex" :options="project.sexes" :allow-empty="false" /></div>
                   <div class="field"><label>Genome build</label><Select v-model="details.build" :options="['GRCh37', 'GRCh38']" /></div>
-                  <div class="grid grid-2 tight">
+                  <div v-if="quantitative" class="field">
+                    <label>Total sample size</label><InputNumber v-model="details.n_total" fluid :min="1" />
+                    <small class="muted">{{ details.phenotype }} is a quantitative trait.</small>
+                  </div>
+                  <div v-else class="grid grid-2 tight">
                     <div class="field"><label>Cases</label><InputNumber v-model="details.n_cases" fluid :min="1" /></div>
                     <div class="field"><label>Controls</label><InputNumber v-model="details.n_controls" fluid :min="1" /></div>
                   </div>
@@ -181,7 +189,7 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
                 <div class="row end"><Button label="Next" icon="pi pi-arrow-right" icon-pos="right" :disabled="!detailsOk" @click="activateCallback('2')" /></div>
               </StepPanel>
 
-              <StepPanel v-slot="{ activateCallback }" value="2">
+              <StepPanel v-slot="{ activateCallback }" value="2" data-tour="upload-metadata">
                 <div class="row copy">
                   <span class="muted">{{ metaConfig?.required?.length ? 'Fields marked * are required by this project; the rest can be completed later from the dataset viewer.' : 'All optional; you can complete or correct these later from the dataset viewer.' }}
                     <template v-if="chosenCohort"> Cohort details come from {{ chosenCohort.name }}; a change here applies to this dataset only.</template>
@@ -198,7 +206,7 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
                 </div>
               </StepPanel>
 
-              <StepPanel v-slot="{ activateCallback }" value="3">
+              <StepPanel v-slot="{ activateCallback }" value="3" data-tour="upload-file">
                 <FileUpload mode="advanced" :auto="false" :show-upload-button="false" :show-cancel-button="false"
                             accept=".tsv,.txt,.csv,.gz" choose-label="Choose file" @select="onSelect">
                   <template #empty>
@@ -221,7 +229,7 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
                 </div>
               </StepPanel>
 
-              <StepPanel v-slot="{ activateCallback }" value="4">
+              <StepPanel v-slot="{ activateCallback }" value="4" data-tour="upload-mapping">
                 <Message severity="info" :closable="false" class="mb">We suggested a mapping from your file's header. Check it before running QC.</Message>
                 <div class="grid grid-2">
                   <div v-for="f in standardFields" :key="f.key" class="field">
@@ -230,8 +238,8 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
                   </div>
                   <div class="field">
                     <label>Effect column contains</label>
-                    <SelectButton v-model="details.effect_type" :options="[{ l: 'BETA (log scale)', v: 'beta' }, { l: 'Odds ratios', v: 'or' }]" option-label="l" option-value="v" :allow-empty="false" />
-                    <small class="muted">Detected from the values; odds ratios are converted to log-odds.</small>
+                    <SelectButton v-model="details.effect_type" :options="[{ l: 'BETA (log scale)', v: 'beta' }, { l: 'Odds ratios', v: 'or', disabled: quantitative }]" option-label="l" option-value="v" option-disabled="disabled" :allow-empty="false" />
+                    <small class="muted">{{ quantitative ? 'Quantitative traits have BETA effects.' : 'Detected from the values; odds ratios are converted to log-odds.' }}</small>
                   </div>
                 </div>
                 <p v-if="unmappedColumns.length" class="muted small">Ignored columns: <span class="mono">{{ unmappedColumns.join(', ') }}</span></p>
@@ -262,7 +270,8 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
                     <template #content>
                       <dl class="summary">
                         <dt>Dataset</dt><dd>{{ details.cohort }} · {{ details.phenotype }} · {{ details.ancestry }} · {{ details.sex }}</dd>
-                        <dt>Cases / controls</dt><dd>{{ details.n_cases?.toLocaleString() }} / {{ details.n_controls?.toLocaleString() }}</dd>
+                        <template v-if="quantitative"><dt>Sample size</dt><dd>{{ details.n_total?.toLocaleString() }}</dd></template>
+                        <template v-else><dt>Cases / controls</dt><dd>{{ details.n_cases?.toLocaleString() }} / {{ details.n_controls?.toLocaleString() }}</dd></template>
                         <dt>Build</dt><dd>{{ details.build }}<span v-if="details.build === 'GRCh37'" class="muted"> → lifted to GRCh38</span></dd>
                         <dt>Effect</dt><dd>{{ details.effect_type === 'or' ? 'Odds ratios → log-odds' : 'BETA' }}</dd>
                         <dt>File</dt><dd class="mono">{{ file?.name }} ({{ fmtSize(file?.size) }})</dd>
@@ -275,7 +284,7 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
                 <ProgressBar v-if="submitting" :value="progress" class="up" />
                 <div class="row end">
                   <Button label="Back" severity="secondary" text :disabled="submitting" @click="activateCallback('4')" />
-                  <Button :label="submitting ? `Uploading ${progress}%` : 'Upload & run QC'" icon="pi pi-play" :loading="submitting" @click="submit" />
+                  <Button :label="submitting ? `Uploading ${progress}%` : 'Upload'" icon="pi pi-upload" :loading="submitting" data-tour="upload-submit" @click="submit" />
                 </div>
               </StepPanel>
             </StepPanels>

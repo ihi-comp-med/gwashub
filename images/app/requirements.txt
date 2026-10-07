@@ -13,3 +13,4 @@ httpx
 pyjwt[crypto]
 psycopg[binary]
 alembic
+openpyxl  # bulk upload manifests (.xlsx): the template and reading uploads

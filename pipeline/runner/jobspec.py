@@ -9,7 +9,7 @@ QC spec:
     {"kind": "qc", "input": LOC, "params": {...}, "steps": [{"step": ...}, ...],
      "resources": {key: LOC}, "output": LOC, "groups": [{"image": "gwashub/base", "steps": [0, 1, ...]}, ...]}
 Meta-analysis spec:
-    {"kind": "meta", "inputs": [{id, label, loc, n_cases, n_controls, ancestry}], "params": {...}, "output": LOC}
+    {"kind": "meta", "inputs": [{id, label, loc, n_cases, n_controls, n_total, ancestry}], "params": {...}, "output": LOC}
 
 On AWS each QC *group* (consecutive steps sharing an image) is its own Batch job, run in that image
 and chained with Batch job dependencies. A group picks up where the previous one stopped: the working
@@ -150,13 +150,20 @@ def run_qc(spec, workdir, on_step=None, group=None):
             state = json.load(f)
         with open(os.path.join(local_out, "progress.json")) as f:
             progress = json.load(f)
-    put_json(progress, _join(output, "progress.json"))
+    def save_progress():
+        # The website reads the published copy while the job runs; the local copy is published with the job's outputs
+        # at the end, so it must be current too (a stale one would set this group's finished steps back to queued).
+        put_json(progress, _join(output, "progress.json"))
+        if output.startswith("s3://"):
+            put_json(progress, os.path.join(local_out, "progress.json"))
+
+    save_progress()
 
     def step_done(i, st, res):
         progress[i]["state"] = st
         if res:
             progress[i]["messages"] = res.get("messages", [])[:2]
-        put_json(progress, _join(output, "progress.json"))
+        save_progress()
         if on_step:
             on_step(i, st, res)
 
@@ -189,7 +196,7 @@ def run_qc(spec, workdir, on_step=None, group=None):
 
 def run_method(method, inputs, params, common, local_out, resources=None):
     """Run one meta-analysis method (analysis.yaml) and then GWASHub's post-processing in local_out.
-    inputs: [{id, label, path (local), n_cases, n_controls, ancestry, sex}]. resources: a folder with the 1000 Genomes
+    inputs: [{id, label, path (local), n_cases, n_controls, n_total, ancestry, sex}]. resources: a folder with the 1000 Genomes
     LD panels (1kg_b38_<POP>.*) for clumping the lead loci, if any. Returns the result dict."""
     from pipeline.runner.catalog import META_ANALYSIS_DIR
     from pipeline.runner.executor import _interpreter, docker_command, step_runner

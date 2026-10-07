@@ -13,6 +13,7 @@ import pandas as pd
 
 from _lib.plotting import lambda_gc, make_plots
 from _metalib import loci, regions
+from _metalib.common import FLOAT_FORMAT
 
 COMMON = {**loci.DEFAULTS, "het_p_threshold": 1e-3}
 
@@ -53,6 +54,7 @@ DATASET_COLUMNS = [
     ("position", "Order in the direction column (1 = first symbol)"),
     ("dataset_id", "GWASHub dataset ID"), ("qc_run_id", "QC run whose cleaned file was used"),
     ("cohort", ""), ("phenotype", ""), ("ancestry", ""), ("sex", ""), ("n_cases", ""), ("n_controls", ""),
+    ("n_total", "Total sample size (cases + controls, or the participants of a quantitative trait)"),
     ("variants_in", "Variants in the cleaned (QC'd) file"),
     ("removed_missing_beta_se", "Removed: BETA or SE missing, or SE not positive"),
     ("removed_maf", "Removed: below the method's minimum MAF"),
@@ -90,12 +92,13 @@ def lead_locus_agreement(forest, studies):
 def write_datasets(specs, studies, out):
     """datasets.tsv: the datasets in input order (the order of the direction string) with their filter counts."""
     by_id = {st.get("id"): st for st in studies}
+    names = [c for c, _ in DATASET_COLUMNS]
     rows = []
     for i, s in enumerate(specs, 1):
         st = by_id.get(s["id"], {})
         rows.append({"position": i, "dataset_id": s["id"], "qc_run_id": s.get("qc_run_id"), "cohort": s.get("cohort") or s["label"],
-                     **{k: s.get(k) for k in ("phenotype", "ancestry", "sex", "n_cases", "n_controls")},
-                     **{k: st.get(k) for k, _ in DATASET_COLUMNS[9:]}})
+                     **{k: s.get(k) for k in ("phenotype", "ancestry", "sex", "n_cases", "n_controls", "n_total")},
+                     **{k: st.get(k) for k in names[names.index("n_total") + 1:]}})  # the method's per-dataset counts
     pd.DataFrame(rows, columns=[c for c, _ in DATASET_COLUMNS]).to_csv(os.path.join(out, "datasets.tsv"), sep="\t", index=False)
 
 
@@ -165,8 +168,8 @@ def main():
     forest = forest_data(leads, specs)
     if len(leads):
         leads = leads.assign(rsid=[f["rsid"] for f in forest])
-    leads.to_csv(os.path.join(a.out, "lead_loci.tsv"), sep="\t", index=False, float_format="%.6g")
-    signals.to_csv(os.path.join(a.out, "signals.tsv"), sep="\t", index=False, float_format="%.6g")
+    leads.to_csv(os.path.join(a.out, "lead_loci.tsv"), sep="\t", index=False, float_format=FLOAT_FORMAT)
+    signals.to_csv(os.path.join(a.out, "signals.tsv"), sep="\t", index=False, float_format=FLOAT_FORMAT)
     with open(os.path.join(a.out, "forest.json"), "w") as f:
         json.dump(forest, f)
     lam, _ = make_plots(res, a.out, gws=opts["gws"], title=f"Meta-analysis ({len(specs)} datasets, {a.title or a.method})")

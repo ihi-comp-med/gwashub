@@ -1,0 +1,23 @@
+# What was done on the site for this test. Fill in by hand after the site runs (README.md step 5).
+site: https://d3ap1iypuvmxl8.cloudfront.net   # gwashub-dev
+project: validation
+run_date: 2026-10-06
+datasets: {UKB: 2, HERMES: 3, FINNGEN: 4}   # dataset ids
+qc_runs: {UKB: 2, HERMES: 3, FINNGEN: 6}    # run ids (dataset panel header); FinnGen: run 4 used the wrong build (GRCh37); run 5 was failed by a Spot-reclaim bug (since fixed)
+qc_verdicts: {UKB: warn, HERMES: warn, FINNGEN: warn}  # passed / warn (a failure stops the test)
+meta_analysis: 1           # meta-analysis id
+meta_analysis_rerun: 2     # the second, identical run
+dataset_order: [FINNGEN, HERMES, UKB]   # the site's order (meta-analysis datasets.tsv, position): the direction string's order
+references:                   # the "Reference for help requests" lines (copy button at the bottom of each page)
+  - "validation · dataset 2 · run 2 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/2/2-20261006-100251"
+  - "validation · dataset 3 · run 3 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/3/3-20261006-100337"
+  - "validation · dataset 4 · run 6 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/4/6-20261006-111958"
+  - "validation · meta-analysis 1 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/meta/validation/1-20261006-113957"
+  - "validation · meta-analysis 2 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/meta/validation/2-20261006-114110"
+pipeline_version: 1           # the project's QC pipeline version used
+image_digests:                # from each run's result.json (images)
+  gwashub/gwama: "sha256:88b7c4cb99a025c5b5b7e2baefd206e72ce485f5b464d0f76afd6e2012ea4757"   # both meta-analyses
+  # QC: UKB and HERMES ran on one deploy's images, FinnGen (run 6) on the next deploy's; the meta-analysis compares
+  # their QC'd files, so this doesn't affect the test.
+  qc_ukb_hermes: {gwashub/base-r: "sha256:9e3a1635...", gwashub/vcf: "sha256:3946015b...", gwashub/ldsc: "sha256:a8fb4750...", gwashub/base: "sha256:b3269b9e..."}
+  qc_finngen: {gwashub/base-r: "sha256:8c03377c...", gwashub/vcf: "sha256:90cfc3af...", gwashub/ldsc: "sha256:e874c181...", gwashub/base: "sha256:da3563bd..."}

@@ -232,3 +232,28 @@ def test_merge_intervals_and_point_loci():
                             "leads": "1:1000000", "ld_panel": ""}], {"min_locus_kb": 250})
     assert list(sig["locus_id"]) == [1] and bool(sig.loc[0, "is_lead"]) and bool(sig.loc[0, "is_locus_lead"])
     assert t.loc[0, "expanded"] and (t.loc[0, "locus_start"], t.loc[0, "locus_end"]) == (750_000, 1_250_000)
+
+
+def test_results_keep_the_methods_precision(tmp_path):
+    """The written results lose none of the digits GWAMA (6 decimals) or METAL print, whatever the magnitude, and
+    whole numbers stay whole (no 1e+06)."""
+    from _metalib.common import write_results
+    res = pd.DataFrame({"chr": ["1"], "pos": [100], "ea": ["A"], "oa": ["G"], "beta": [-0.201477], "se": [0.007274],
+                        "z": [-27.696703], "p": [7.651513e-169], "n_studies": [3], "n": [1234567.0], "q": [27.123456],
+                        "het_p": [0.000001], "i2": [0.926264]})
+    write_results(res, str(tmp_path))
+    back = pd.read_csv(tmp_path / "meta_results.tsv.gz", sep="\t", dtype=str).iloc[0]
+    assert (back["z"], back["q"], back["p"], back["n"], back["i2"]) == ("-27.696703", "27.123456", "7.651513e-169", "1234567", "0.926264")
+
+
+def test_results_are_byte_identical_on_rerun(tmp_path):
+    """Writing the same results twice gives the same file (the gzip header carries no timestamp)."""
+    import time
+    from _metalib.common import write_results
+    res = pd.DataFrame({"chr": ["1"], "pos": [100], "ea": ["A"], "oa": ["G"], "beta": [0.1], "se": [0.01], "p": [1e-20],
+                        "n_studies": [2]})
+    for d in ("a", "b"):
+        (tmp_path / d).mkdir()
+        write_results(res, str(tmp_path / d))
+        time.sleep(1.1)
+    assert (tmp_path / "a" / "meta_results.tsv.gz").read_bytes() == (tmp_path / "b" / "meta_results.tsv.gz").read_bytes()

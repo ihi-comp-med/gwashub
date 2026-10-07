@@ -1,11 +1,13 @@
 name: eaf_check
 title: EAF check
-description: >
-  Compares effect-allele frequencies with 1000 Genomes for the dataset's ancestry (GRCh38, alleles in either order)
-  and plots them. Removes nothing; warns when many variants differ by more than 0.2, which can mean swapped alleles,
-  strand problems or the wrong ancestry. As the HERMES 3 DCM QC report.
+description: "Compares effect-allele frequencies with 1000 Genomes for the dataset's ancestry and warns when many differ."
+narrative: >
+  Matches each variant to 1000 Genomes (2022 high-coverage, GRCh38) by position and alleles in either order, and compares
+  the dataset's effect-allele frequency with that of the dataset's ancestry. Draws a plot of the two and counts
+  variants that differ by more than the set threshold. Removes nothing; warns when that share is high, which suggests
+  swapped alleles, strand problems or the wrong ancestry.
 command: [python, eaf_check.py]
-image: gwashub/base
+image: gwashub/vcf   # has gwashub/base's libraries; shares the harmonisation job (one Batch job fewer)
 default_on_fail: flag
 resources: []
 optional_resources: [all_afreq_b38.tsv.gz]

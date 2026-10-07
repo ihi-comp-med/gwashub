@@ -15,5 +15,6 @@ botocore[crt]  # devtools that use `aws login` credentials (aws_upload_resources
 pyjwt[crypto]
 psycopg[binary]
 alembic
+openpyxl  # bulk upload manifests (.xlsx): the template and reading uploads
 moto[s3]
 pysam  # devtools/synth.py: the synthetic dbSNP VCF and its index

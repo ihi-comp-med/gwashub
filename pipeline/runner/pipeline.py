@@ -1,4 +1,5 @@
-"""Pipeline specs: an ordered list of entries (step key + optional image / on_fail / params)."""
+"""Pipeline specs: an ordered list of entries (step key + optional on_fail / params). A step always runs in the image
+its step.yaml names; an `image` in a saved pipeline (from before that rule) is ignored."""
 from dataclasses import dataclass, field
 
 import yaml
@@ -10,7 +11,6 @@ from pipeline.runner.catalog import VALID_ON_FAIL, job_compute
 class Entry:
     step: str
     on_fail: str = None
-    image: str = None
     params: dict = field(default_factory=dict)
 
 
@@ -28,7 +28,7 @@ class ResolvedEntry:
 
 
 def entries_from_dicts(items):
-    return [Entry(step=i["step"], on_fail=i.get("on_fail"), image=i.get("image"), params=dict(i.get("params") or {}))
+    return [Entry(step=i["step"], on_fail=i.get("on_fail"), params=dict(i.get("params") or {}))
             for i in items]
 
 
@@ -50,7 +50,7 @@ def resolve(entries, catalog, images=None):
         on_fail = e.on_fail or sd.default_on_fail
         if on_fail not in VALID_ON_FAIL:
             raise ValueError(f"invalid on_fail {on_fail!r} for {e.step}; must be one of {VALID_ON_FAIL}")
-        image = e.image or sd.image
+        image = sd.image
         if images is not None and image not in images:
             raise ValueError(f"unknown image {image!r} for {e.step}")
         out.append(ResolvedEntry(i, sd, on_fail, image, {**sd.params, **e.params}))

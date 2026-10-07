@@ -6,12 +6,21 @@ A QC run is one Batch job per group of consecutive steps that share an image (--
 with Batch job dependencies; a meta-analysis is a single job. Outputs go to the spec's output prefix,
 and the last group writes result.json. The job exits 0 whenever it recorded an outcome (including a
 QC fail); a non-zero exit means an infrastructure error, which the worker records from Batch.
+
+SIGTERM (Batch stopping the job, e.g. its Spot machine being reclaimed) stops the job at once without recording
+anything, so Batch's retry runs the group again from the previous group's hand-over.
 """
 import argparse
 import json
+import signal
 import tempfile
 
 from pipeline.runner import jobspec
+from pipeline.runner.executor import Interrupted
+
+
+def _stop(signum, frame):
+    raise Interrupted("the job was told to stop (SIGTERM)")
 
 
 def main(argv=None):
@@ -19,6 +28,7 @@ def main(argv=None):
     ap.add_argument("spec", help="s3://bucket/key/spec.json")
     ap.add_argument("--group", type=int, default=None, help="QC only: run just this group of steps")
     args = ap.parse_args(argv)
+    signal.signal(signal.SIGTERM, _stop)
     if not args.spec.startswith("s3://"):
         ap.error("the spec must be an s3:// location")
     bucket, key = jobspec._split(args.spec)

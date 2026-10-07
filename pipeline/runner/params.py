@@ -6,11 +6,19 @@ A `params:` block is a list of fields the website draws as a form and the API va
       - {key: model, label: Model, type: select, options: [fixed, random], default: fixed}
       - {key: maf_min, label: Minimum MAF, type: number, min: 0, max: 0.5, default: 0.01, help: ...}
 
-Types: select, boolean, number, integer, text. Optional: min, max, options, help, group.
+Types: select, boolean, number, integer, text, range. Optional: min, max, options, help, group.
+
+A range is a filter with its own on/off switch and a minimum and/or maximum, each switched on or off separately
+(`sides`: which limits it has, [min], [max] or [min, max]; min/max bound the values). Its value is
+{on, min_on, min, max_on, max}; a switched-off limit keeps its number, so switching it on again restores it:
+
+      - {key: info, label: INFO, type: range, sides: [min, max], min: 0, max: 1,
+         default: {on: false, min_on: true, min: 0.8, max_on: false, max: 1}}
 The older form, a plain mapping of key → default (`params: {warn_lambda: 1.1}`), still works: types are
 inferred from the defaults.
 """
-TYPES = ("select", "boolean", "number", "integer", "text")
+TYPES = ("select", "boolean", "number", "integer", "text", "range")
+SIDES = ("min", "max")
 
 
 def _infer(key, default):
@@ -34,8 +42,46 @@ def normalise(raw) -> list[dict]:
             raise ValueError(f"parameter {f['key']}: type must be one of {', '.join(TYPES)}")
         if t == "select" and not f.get("options"):
             raise ValueError(f"parameter {f['key']}: a select needs options")
+        if t == "range":
+            sides = f.get("sides") or list(SIDES)
+            if not sides or any(sd not in SIDES for sd in sides):
+                raise ValueError(f"parameter {f['key']}: sides must be min and/or max")
+            f = {**f, "sides": sides, "default": range_value(f.get("default"), sides)}
         out.append({**f, "type": t, "label": f.get("label") or f["key"].replace("_", " ").capitalize()})
     return out
+
+
+def range_value(v, sides) -> dict:
+    """A range value with every key present (a limit the field doesn't have is off)."""
+    v = dict(v or {})
+    out = {"on": bool(v.get("on", False))}
+    for sd in SIDES:
+        out[f"{sd}_on"] = bool(v.get(f"{sd}_on", False)) and sd in sides
+        out[sd] = v.get(sd)
+    return out
+
+
+def _check_range(v, f) -> dict:
+    if not isinstance(v, dict):
+        raise ValueError("must be a range ({on, min_on, min, max_on, max})")
+    bad = set(v) - {"on", "min_on", "min", "max_on", "max"}
+    if bad:
+        raise ValueError(f"unknown part {', '.join(sorted(bad))}")
+    merged = range_value({**f["default"], **v}, f["sides"])
+    if any(not isinstance(v.get(k, False), bool) for k in ("on", "min_on", "max_on")):
+        raise ValueError("on, min_on and max_on must be true or false")
+    for sd in SIDES:
+        if not merged[f"{sd}_on"]:
+            continue
+        x = merged[sd]
+        if x is None or isinstance(x, bool):
+            raise ValueError(f"the {sd}imum is switched on, so give it a value")
+        x = merged[sd] = float(x)
+        if ("min" in f and x < f["min"]) or ("max" in f and x > f["max"]):
+            raise ValueError(f"the {sd}imum must be between {f.get('min', '-∞')} and {f.get('max', '∞')}")
+    if merged["on"] and merged["min_on"] and merged["max_on"] and merged["min"] > merged["max"]:
+        raise ValueError("the minimum is above the maximum")
+    return merged
 
 
 def defaults(schema: list[dict]) -> dict:
@@ -69,6 +115,8 @@ def validate(values: dict | None, schema: list[dict], where: str = "") -> dict:
                     v = int(v)
                 if ("min" in f and v < f["min"]) or ("max" in f and v > f["max"]):
                     raise ValueError(f"must be between {f.get('min', '-∞')} and {f.get('max', '∞')}")
+            elif t == "range":
+                v = _check_range(v, f)
             elif t == "select":
                 if v not in f["options"]:
                     raise ValueError(f"must be one of {', '.join(map(str, f['options']))}")

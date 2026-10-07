@@ -54,7 +54,8 @@ def status_from_result(result: dict) -> str:
 
 def dataset_params(ds: Dataset) -> dict:
     return {"column_mapping": ds.column_mapping, "build": ds.build, "ancestry": ds.ancestry, "effect_type": ds.effect_type,
-            "n_cases": ds.n_cases, "n_controls": ds.n_controls, "cohort": ds.cohort, "phenotype": ds.phenotype, "sex": ds.sex}
+            "n_cases": ds.n_cases, "n_controls": ds.n_controls, "n_total": ds.n_total,
+            "trait_type": services.trait_type(ds.project, ds.phenotype), "cohort": ds.cohort, "phenotype": ds.phenotype, "sex": ds.sex}
 
 
 def latest_completed_run(ds: Dataset) -> QCRun | None:
@@ -84,6 +85,7 @@ def meta_spec(db, ma: MetaAnalysis) -> dict:
             raise RuntimeError(f"dataset {did} has no completed QC run")
         inputs.append({"id": ds.id, "label": f"{ds.cohort} · {ds.ancestry} · {ds.sex}", "loc": storage.join(run.run_dir, "gwas_qc.tsv"),
                        "cohort": ds.cohort, "phenotype": ds.phenotype, "n_cases": ds.n_cases, "n_controls": ds.n_controls,
+                       "n_total": ds.n_total, "trait_type": services.trait_type(ds.project, ds.phenotype),
                        "ancestry": ds.ancestry, "sex": ds.sex, "qc_run_id": run.id})
     from gwashub_api.routers.meta import normalise
     s = normalise(ma.settings)
@@ -284,6 +286,61 @@ def read_result(output_loc: str) -> dict | None:
 
 
 JOB_NAME = re.compile(r"^gwashub-(qc|meta)-(\d+)(?:-g(\d+))?$")
+# Batch states before a job finishes, in the order one attempt goes through them.
+WAITING = {"RUNNABLE": 1, "STARTING": 2, "RUNNING": 3}
+
+
+def record_batch_state(target, group: int | None, d: dict) -> bool:
+    """Keep the latest Batch state of the job working on a run (events can arrive out of order: an older one is
+    ignored). `attempts` lists the attempts that have ended, so this event is about attempt len(attempts) + 1."""
+    attempts = d.get("attempts") or []
+    new = {"group": group, "status": d.get("status"), "attempt": len(attempts) + 1,
+           "max_attempts": (d.get("retryStrategy") or {}).get("attempts"),
+           "previous": [a.get("statusReason") or (a.get("container") or {}).get("reason") or "" for a in attempts],
+           "at": now().isoformat()}
+    old = target.batch_state or {}
+    order = lambda st: (st.get("group") or 0, st.get("attempt") or 0, WAITING.get(st.get("status"), 0))  # noqa: E731
+    if old and order(new) < order(old):
+        return False
+    target.batch_state = new
+    return True
+
+
+def batch_note(state: dict | None) -> str | None:
+    """What the job is doing, in words, while it hasn't finished (the step list alone can't tell waiting from running)."""
+    if not state:
+        return None
+    retry = state.get("attempt", 1) > 1
+    of = f" of {state['max_attempts']}" if state.get("max_attempts") else ""
+    reclaimed = any("Host EC2" in (r or "") or "terminated" in (r or "").lower() for r in state.get("previous") or [])
+    why = "the machine it was running on was taken back by AWS" if reclaimed else "the previous attempt stopped"
+    if state.get("status") == "RUNNING":
+        return f"Attempt {state['attempt']}{of}: {why}, so it started again" if retry else None
+    waiting = "Waiting for a machine" if state.get("status") == "RUNNABLE" else "Starting (machine found, loading the software)"
+    return f"Re-queued ({why}); attempt {state['attempt']}{of}. {waiting}" if retry else waiting
+
+
+def annotate_steps(run: QCRun, steps: list) -> list:
+    """While a run is on AWS Batch: the steps of the job group that hasn't started show as queued (a reclaimed machine
+    leaves its last progress.json saying "running"), and that group's next step carries a note saying what's happening."""
+    st = run.batch_state
+    if not st or run.status not in ("queued", "running"):
+        return steps
+    groups = next((x["groups"] for x in (run.pipeline_version.resolved or []) if "groups" in x), None)
+    if not groups or st.get("group") is None or st["group"] >= len(groups):
+        return steps
+    idx = set(groups[st["group"]]["steps"])
+    note = batch_note(st)
+    out, noted = [], False
+    for i, s in enumerate(steps):
+        s = dict(s)
+        if i in idx and s.get("state") in ("running", "queued"):
+            if st.get("status") != "RUNNING":
+                s["state"] = "queued"
+            if note and not noted:
+                s["note"], noted = note, True
+        out.append(s)
+    return out
 
 
 def handle_batch_event(db, event: dict) -> str:
@@ -306,12 +363,19 @@ def handle_batch_event(db, event: dict) -> str:
     target = run or ma
     if target.status in ("completed", "blocked", "failed") and target.finished_at:
         return f"ignored {job_id}: already recorded"
+    if status in WAITING:
+        group = int(m.group(3)) if m and m.group(3) is not None else None
+        if not record_batch_state(target, group, d):
+            return f"{job_id} {status.lower()} (older event, ignored)"
+        if status != "RUNNING":
+            db.commit()
+            return f"{job_id} {status.lower()}"
     if status == "RUNNING":
         if target.status != "running":
             target.status = "running"
             if run:
                 run.started_at = now()
-            db.commit()
+        db.commit()  # the status, or just the Batch state (attempt) recorded above
         return f"{job_id} running"
     if status == "SUCCEEDED" and run and job_id != run.batch_job_id:
         return f"{job_id} finished a group of run {run.id}"

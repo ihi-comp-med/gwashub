@@ -42,12 +42,16 @@ def as_user(client, email):
     return client
 
 
-def upload(client, synth, entry, project="hermes3", **override):
+def upload(client, synth, entry, project="hermes3", start=True, **override):
+    """Upload a synthetic file (it lands as pending) and, unless start=False, start its QC as the same user."""
     meta = {k: entry[k] for k in ("cohort", "phenotype", "ancestry", "sex", "build", "effect_type", "n_cases", "n_controls", "column_mapping")}
     meta.update(override)
     with open(os.path.join(synth["dir"], "fake_gwas", entry["file"]), "rb") as f:
         r = client.post(f"/api/projects/{project}/datasets", files={"file": (entry["file"], f)}, data={"meta": json.dumps(meta)})
     assert r.status_code == 201, r.text
+    assert r.json()["status"] == "pending"
+    if start:
+        assert client.post(f"/api/datasets/{r.json()['id']}/rerun").status_code == 200
     return r.json()
 
 
@@ -57,7 +61,7 @@ def test_login_and_projects(client):
     assert client.get("/api/projects").status_code == 401
     as_user(client, "demo@gwashub.org")
     roles = {p["id"]: p["role"] for p in client.get("/api/projects").json()}
-    assert roles == {"hermes3": "reviewer", "hcm": "uploader"}
+    assert roles == {"hermes3": "reviewer", "hcm": "uploader", "practice": "reviewer"}  # everyone is in the Practice project
     as_user(client, "noor@example.org")
     assert client.get("/api/projects/hermes3").status_code == 404  # not a member: don't reveal it
 
@@ -104,12 +108,244 @@ def test_upload_runs_qc_and_enforces_dataset_permissions(client, synth_small):
 def test_broken_upload_is_blocked(client, synth_small):
     as_user(client, "jonas@example.org")
     entry = synth_small["manifest"][1]
-    mapping = {k: v for k, v in entry["column_mapping"].items() if k != "se"}
+    # A required column not mapped: refused at upload.
+    unmapped = {k: v for k, v in entry["column_mapping"].items() if k != "se"}
+    meta = {k: entry[k] for k in ("cohort", "phenotype", "ancestry", "sex", "build", "effect_type", "n_cases", "n_controls")}
+    with open(os.path.join(synth_small["dir"], "fake_gwas", entry["file"]), "rb") as f:
+        r = client.post("/api/projects/hermes3/datasets", files={"file": (entry["file"], f)},
+                        data={"meta": json.dumps({**meta, "column_mapping": unmapped})})
+    assert r.status_code == 422 and "se" in r.json()["detail"]
+    # Mapped to a column QC can't use (SE from the rsID column): parse removes every row and the run is blocked.
+    mapping = {**entry["column_mapping"], "se": entry["column_mapping"]["rsid"]}
     up = upload(client, synth_small, entry, column_mapping=mapping)
     d = client.get(f"/api/datasets/{up['id']}").json()
     assert d["status"] == "failed" and d["run"]["status"] == "blocked"
     assert client.get(f"/api/datasets/{up['id']}/files/qc").status_code == 409
     assert client.get(f"/api/datasets/{up['id']}/files/report").status_code == 200  # report still produced
+
+
+def test_uploads_wait_as_pending_until_qc_is_started(client, synth_small):
+    entry = synth_small["manifest"][0]
+    as_user(client, "jonas@example.org")
+    a, b = (upload(client, synth_small, entry, start=False) for _ in range(2))
+    d = client.get(f"/api/datasets/{a['id']}").json()
+    assert d["status"] == "pending" and d["run"] is None
+    assert client.get("/api/projects/hermes3").json()["counts"]["pending"] >= 2
+    # Editing a pending dataset's build doesn't start QC.
+    r = client.patch(f"/api/datasets/{a['id']}", json={"build": "GRCh38" if entry["build"] == "GRCh37" else "GRCh37"}).json()
+    assert not r["rerun_started"] and not r["rerun_advised"]
+    assert client.patch(f"/api/datasets/{a['id']}", json={"build": entry["build"]}).status_code == 200
+    as_user(client, "mei@example.org")  # another uploader can't start it
+    assert client.post(f"/api/datasets/{a['id']}/rerun").status_code == 403
+    as_user(client, "jonas@example.org")  # the uploader can, once; re-running is for reviewers
+    r = client.post("/api/projects/hermes3/datasets/rerun", json={"ids": [a["id"]]}).json()
+    assert r["started"] == 1
+    assert client.get(f"/api/datasets/{a['id']}").json()["status"] in ("passed", "review")
+    assert client.post(f"/api/datasets/{a['id']}/rerun").status_code == 403
+    # Bulk delete under the single-delete rules: the uploader removes their own; another uploader can't.
+    as_user(client, "mei@example.org")
+    assert client.post("/api/projects/hermes3/datasets/delete", json={"ids": [b["id"]]}).json()["deleted"] == 0
+    as_user(client, "jonas@example.org")
+    r = client.post("/api/projects/hermes3/datasets/delete", json={"ids": [a["id"], b["id"]]}).json()
+    assert r == {"deleted": 2, "skipped": []}
+    assert client.get(f"/api/datasets/{b['id']}").status_code == 404
+
+
+def test_api_tokens_upload_only_in_their_project(client, synth_small):
+    entry = synth_small["manifest"][0]
+    as_user(client, "jonas@example.org")  # an uploader in hermes3, not in hcm
+    assert client.post("/api/tokens", json={"project_id": "hcm", "name": "x"}).status_code == 404
+    r = client.post("/api/tokens", json={"project_id": "hermes3", "name": "UKB files"})
+    assert r.status_code == 201
+    token, tid = r.json()["token"], r.json()["id"]
+    assert token.startswith("gwh_") and r.json()["state"] == "active"
+    assert "token" not in client.get("/api/tokens").json()[0]  # shown once only
+    meta = {k: entry[k] for k in ("cohort", "phenotype", "ancestry", "sex", "build", "effect_type", "n_cases", "n_controls", "column_mapping")}
+    data = open(os.path.join(synth_small["dir"], "fake_gwas", entry["file"]), "rb").read()
+    client.cookies.clear()  # the script has no session, only the token
+    h = {"X-GWASHub-Token": token}
+    # Uploading works, end to end, and the dataset waits as pending with the token recorded.
+    up = client.post("/api/projects/hermes3/uploads", json={"meta": meta, "file_name": entry["file"], "file_size": len(data)}, headers=h)
+    assert up.status_code == 201, up.text
+    up = up.json()
+    urls = client.post(f"/api/datasets/{up['id']}/upload/urls", json={"parts": list(range(1, up["parts"] + 1))}, headers=h).json()["urls"]
+    from gwashub_api import storage
+    parts = []
+    for n in range(1, up["parts"] + 1):
+        resp = client.put(urls[str(n)], content=data[(n - 1) * storage.PART_SIZE:n * storage.PART_SIZE])
+        parts.append({"n": n, "etag": resp.headers["etag"]})
+    done = client.post(f"/api/datasets/{up['id']}/upload/complete", json={"parts": parts}, headers=h)
+    assert done.status_code == 200 and done.json()["status"] == "pending"
+    # Everything else refuses the token: reading, starting QC, deleting, editing, other projects, making tokens.
+    for method, url, body in [("GET", f"/api/datasets/{up['id']}", None), ("GET", "/api/projects/hermes3/datasets", None),
+                              ("POST", f"/api/datasets/{up['id']}/rerun", None), ("DELETE", f"/api/datasets/{up['id']}", None),
+                              ("PATCH", f"/api/datasets/{up['id']}", {"build": "GRCh38"}), ("GET", "/api/tokens", None),
+                              ("POST", "/api/tokens", {"project_id": "hermes3", "name": "more"})]:
+        assert client.request(method, url, json=body, headers=h).status_code == 401, (method, url)
+    other = client.post("/api/projects/hcm/uploads", json={"meta": meta, "file_name": "x.tsv", "file_size": 10}, headers=h)
+    assert other.status_code == 404
+    assert client.post("/api/projects/hermes3/uploads", json={"meta": meta, "file_name": "x", "file_size": 1},
+                       headers={"X-GWASHub-Token": "gwh_not-a-token"}).status_code == 401
+    # The owner sees which token brought it in; revoking stops the token at once.
+    as_user(client, "jonas@example.org")
+    assert client.get(f"/api/datasets/{up['id']}").json()["uploaded_with_token"].startswith("UKB files (gwh_")
+    assert client.delete(f"/api/tokens/{tid}").status_code == 204
+    assert client.get("/api/tokens").json()[0]["state"] == "revoked"
+    client.cookies.clear()
+    assert client.post("/api/projects/hermes3/uploads", json={"meta": meta, "file_name": "x", "file_size": 1}, headers=h).status_code == 401
+    # An expired token is refused too.
+    from datetime import datetime, timedelta, timezone
+    from gwashub_api.db import SessionLocal
+    from gwashub_api.models import ApiToken
+    as_user(client, "jonas@example.org")
+    r = client.post("/api/tokens", json={"project_id": "hermes3", "name": "old"}).json()
+    with SessionLocal() as db:
+        db.get(ApiToken, r["id"]).expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        db.commit()
+    client.cookies.clear()
+    assert client.post("/api/projects/hermes3/uploads", json={"meta": meta, "file_name": "x", "file_size": 1},
+                       headers={"X-GWASHub-Token": r["token"]}).status_code == 401
+    as_user(client, "jonas@example.org")
+    assert client.delete(f"/api/datasets/{up['id']}").status_code == 204
+
+
+def test_bulk_template_and_check(client, synth_small):
+    """The manifest check reports every problem by row and creates nothing; duplicates and cohort contradictions fail."""
+    entry = synth_small["manifest"][0]
+    as_user(client, "jonas@example.org")
+    p = client.get("/api/projects/hermes3").json()
+    tpl = client.get("/api/projects/hermes3/bulk/template")
+    assert tpl.status_code == 200 and tpl.headers["content-type"].startswith("application/vnd.openxmlformats")
+    import io
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(tpl.content))
+    assert wb.sheetnames[:2] == ["README", "Manifest"]
+    header_line = [c.value for c in wb["Manifest"][1]]
+    assert header_line[:3] == ["file", "cohort", "phenotype"]
+    assert {"col_effect", "col_ncase", "col_ncontrol", "col_info", "col_rsid", "col_log10p"} <= set(header_line)  # optional columns too
+    readme = "\n".join(str(c.value) for row in wb["README"].iter_rows() for c in row if c.value)
+    assert "relative to the folder" in readme and "case/control" in readme
+    cols = {("col_effect" if k == "beta" else f"col_{k}"): v for k, v in entry["column_mapping"].items() if v}
+    file_header = list(entry["column_mapping"].values())
+    counts = {"n_cases": str(entry["n_cases"]), "n_controls": str(entry["n_controls"])}
+
+    def row(n, **v):
+        base = {"file": f"f{n}.tsv", "cohort": "BulkCo", "phenotype": entry["phenotype"], "ancestry": entry["ancestry"],
+                "sex": p["sexes"][n % len(p["sexes"])], "build": entry["build"], "effect_type": {"or": "odds_ratio"}.get(entry["effect_type"], entry["effect_type"]),
+                **counts, **cols, "meta_country": "UK", "meta_case_definition": "ICD-10 I50"}
+        return {"row": n, "values": {**base, **v}, "header": file_header, "file_size": 1000 + n}
+
+    def check(rows, columns=None, **extra):
+        columns = columns or list(rows[0]["values"])
+        r = client.post("/api/projects/hermes3/bulk/check", json={"columns": columns, "rows": rows, **extra})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    good = check([row(2), row(3, n_total=str(entry["n_cases"] + entry["n_controls"]))])  # a matching total is fine
+    assert good["ok"] and good["new_cohorts"] == ["BulkCo"], good
+    up = good["uploads"]["2"]  # what the upload endpoint gets: QC's column names and effect type
+    assert up["column_mapping"]["beta"] == entry["column_mapping"]["beta"] and up["effect_type"] == entry["effect_type"]
+    assert "BulkCo" not in {c["name"] for c in client.get("/api/projects/hermes3/cohorts").json()}  # nothing was created
+
+    # An existing dataset to clash with.
+    existing = upload(client, synth_small, entry, start=False, cohort="Clash cohort")
+    bad_rows = [
+        row(2, col_effect="NOPE"),                                # header not in the file
+        row(3, phenotype="XYZ"),                                  # not a project phenotype
+        row(4, meta_country="France"),                            # disagrees with row 2 for the new cohort
+        row(5, n_cases="12a"),                                    # not a whole number
+        {**row(6), "header": None, "file_error": "not found"},    # the script couldn't read the file
+        row(7, cohort="Clash cohort", sex=entry["sex"]),          # same combination as the existing dataset
+        row(8, cohort="Clash cohort", sex=[x for x in p["sexes"] if x != entry["sex"]][0], meta_country="Atlantis"),  # differs from the cohort record
+        row(9, sex=p["sexes"][2 % len(p["sexes"])]),              # same combination as row 2
+        row(10, effect_type="beta or", n_total="1200"),            # not an effect type; n_total isn't cases + controls
+    ]
+    r = check(bad_rows, columns=list(bad_rows[0]["values"]) + ["meta_nope"])
+    assert not r["ok"]
+    msgs = {(x["row"], x["message"].split(":")[0].split(" (")[0]) for x in r["problems"]}
+    text = "\n".join(f"{x['row']}: {x['message']}" for x in r["problems"])
+    assert any(x["row"] is None and "meta_nope" in x["message"] for x in r["problems"]), text
+    assert "10: effect_type must be beta or odds_ratio, not 'beta or'" in text and "10: n_total (1,200) isn't n_cases + n_controls" in text
+    assert "col_effect: the file has no column 'NOPE'" in text and "Phenotype 'XYZ'" in text and "n_cases must be a whole number" in text
+    assert "6: File f6.tsv: not found" in text
+    assert "4: meta_country (" in text and "differs from row 2 for new cohort BulkCo" in text
+    assert f"7: Matches dataset {existing['id']}" in text and "delete it on the site first" in text
+    assert "differs from cohort Clash cohort's record (empty)" in text and "\n8: meta_country" in text
+    assert "Give the number of cases" not in text  # the bad count is reported once
+    assert "9: The same cohort, phenotype, ancestry and sex as row 2" in text
+    assert msgs
+    # A resumed upload: the manifest's own datasets aren't duplicates of themselves.
+    assert check([row(7, cohort="Clash cohort", sex=entry["sex"], meta_country=None)], own_ids=[existing["id"]])["ok"]
+    # With a token too; not in another project.
+    token = client.post("/api/tokens", json={"project_id": "hermes3", "name": "bulk"}).json()["token"]
+    client.cookies.clear()
+    h = {"X-GWASHub-Token": token}
+    assert client.post("/api/projects/hermes3/bulk/check", json={"columns": list(row(2)["values"]), "rows": [row(2)]}, headers=h).json()["ok"]
+    assert client.get("/api/projects/hcm/bulk/template", headers=h).status_code == 404
+    st = client.get("/api/projects/hermes3/bulk/status", params={"ids": f"{existing['id']},999999"}, headers=h).json()
+    assert st[0]["status"] == "pending" and st[1]["status"] == "not found"
+    as_user(client, "jonas@example.org")
+    assert client.delete(f"/api/datasets/{existing['id']}").status_code == 204
+
+
+def test_upload_script_download_and_its_rows_pass_the_check(client, synth_small, tmp_path):
+    """The script the site hands out has the site's address in it, and what it sends is what the check expects."""
+    import importlib.util
+    client.cookies.clear()
+    assert client.get("/api/bulk/script").status_code == 401
+    as_user(client, "jonas@example.org")
+    r = client.get("/api/bulk/script")
+    assert r.status_code == 200 and 'SERVER = "http' in r.text and "attachment" in r.headers["content-disposition"]
+    spec = importlib.util.spec_from_file_location("gwashub_upload", os.path.join(os.path.dirname(__file__), "..", "..", "client", "gwashub_upload.py"))
+    g = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(g)
+    entry = synth_small["manifest"][0]
+    src = os.path.join(synth_small["dir"], "fake_gwas", entry["file"])
+    os.symlink(src, tmp_path / "renamed.tsv.gz")
+    # Fill in the real template as someone would in Excel: typed numbers and a date cell.
+    import base64
+    import io
+    from datetime import date
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(client.get("/api/projects/hermes3/bulk/template").content))
+    sheet = wb["Manifest"]
+    header = [c.value for c in sheet[1]]
+    cols = {("col_effect" if k == "beta" else f"col_{k}"): v for k, v in entry["column_mapping"].items() if v}
+    values = {"file": "renamed.tsv.gz", "cohort": "Script cohort", "phenotype": entry["phenotype"], "ancestry": entry["ancestry"],
+              "sex": entry["sex"], "build": entry["build"], "effect_type": {"or": "odds_ratio"}.get(entry["effect_type"], entry["effect_type"]),
+              "n_cases": entry["n_cases"], "n_controls": entry["n_controls"], **cols}
+    if "meta_data_collection_start" in header:
+        values["meta_data_collection_start"] = date(2020, 1, 31)
+    for k, v in values.items():
+        sheet.cell(5, header.index(k) + 1, v)  # row 5: rows 2-4 left empty are skipped
+    path = tmp_path / "manifest.xlsx"
+    wb.save(path)
+    parsed = client.post("/api/projects/hermes3/bulk/parse", json={"content": base64.b64encode(path.read_bytes()).decode()}).json()
+    assert [x["row"] for x in parsed["rows"]] == [5]
+    got = parsed["rows"][0]["values"]
+    assert got["n_cases"] == str(entry["n_cases"]) and got.get("meta_data_collection_start", "2020-01-31") == "2020-01-31"
+    rows = [(x["row"], x["values"]) for x in parsed["rows"]]
+    r = client.post("/api/projects/hermes3/bulk/check", json={"columns": parsed["columns"], "rows": g.check_rows(str(path), rows)})
+    assert r.json()["ok"], r.json()
+    bad = client.post("/api/projects/hermes3/bulk/parse", json={"content": base64.b64encode(b"file\tcohort\n").decode()})
+    assert bad.status_code == 422 and "xlsx" in bad.json()["detail"]
+
+
+def test_practice_project_for_everyone(client):
+    """Every user is a reviewer in the Practice project, sees only themselves in its members, and can't change them."""
+    as_user(client, "noor@example.org")  # an uploader elsewhere
+    pr = next(p for p in client.get("/api/projects").json() if p["is_practice"])
+    assert pr["id"] == "practice" and pr["role"] == "reviewer"
+    p = client.get("/api/projects/practice").json()
+    assert p["is_practice"] and [m["name"] for m in p["members"]] == [next(m["name"] for m in p["members"] if m["is_me"])]
+    assert client.post("/api/projects/practice/members", json={"email": "x@y.org", "name": "X", "role": "uploader"}).status_code == 409
+    files = client.get("/api/practice/files").json()
+    assert len(files) == 3 and all(f["phenotype"] in p["phenotypes"] for f in files)
+    r = client.get(f"/api/practice/files/{files[0]['file']}")
+    assert r.status_code == 200 and r.content[:2] == b"\x1f\x8b"
+    assert client.get("/api/practice/files/..%2Fgwashub.db").status_code == 404
+    client.cookies.clear()
+    assert client.get("/api/practice/files").status_code == 401
 
 
 def test_summary_counts(client):
@@ -127,13 +363,14 @@ def test_pipeline_permissions_and_versions(client):
 
     def with_filter(params):
         return [p["steps"][0], {"step": "gwashub/filter", "params": params}, *p["steps"][2:]]
-    steps = with_filter({"min_maf": 0.05})
+    maf5 = {"maf": {"on": True, "min_on": True, "min": 0.05, "max_on": False, "max": 0.5}}
+    steps = with_filter(maf5)
     assert client.put("/api/projects/hermes3/pipeline", json={"steps": steps}).status_code == 403
     as_user(client, "ama@example.org")
     assert client.put("/api/projects/hermes3/pipeline", json={"steps": [{"step": "gwashub/nope"}]}).status_code == 422
-    maf = next(f for c in p["catalog"] if c["key"] == "gwashub/filter" for f in c["param_schema"] if f["key"] == "min_maf")
-    assert maf["type"] == "number" and maf["max"] == 0.5
-    for bad in ({"min_maf": 0.9}, {"min_maf": "x"}, {"min_mf": 0.05}):  # out of range, wrong type, typo
+    maf = next(f for c in p["catalog"] if c["key"] == "gwashub/filter" for f in c["param_schema"] if f["key"] == "maf")
+    assert maf["type"] == "range" and maf["max"] == 0.5 and maf["sides"] == ["min", "max"]
+    for bad in ({"maf": {"on": True, "min_on": True, "min": 0.9}}, {"maf": "x"}, {"min_maf": 0.05}):  # out of range, wrong type, unknown
         r = client.put("/api/projects/hermes3/pipeline", json={"steps": with_filter(bad)})
         assert r.status_code == 422, bad
     r =client.put("/api/projects/hermes3/pipeline", json={"steps": steps, "note": "MAF 5%"})
@@ -151,6 +388,58 @@ def test_rerun_uses_new_pipeline_version(client):
     assert next(s for s in d["run"]["steps"] if s["key"] == "gwashub/filter")["state"] in ("pass", "warn")
     as_user(client, "jonas@example.org")
     assert client.post(f"/api/datasets/{ok['id']}/rerun").status_code == 403
+
+
+def test_named_pipelines_pinning_and_out_of_date(client, synth_small):
+    as_user(client, "jonas@example.org")  # uploaders can't manage pipelines or pin datasets
+    one, two = (upload(client, synth_small, synth_small["manifest"][i]) for i in (0, 1))
+    assert client.post("/api/projects/hermes3/pipelines", json={"name": "Strict"}).status_code == 403
+    as_user(client, "ama@example.org")
+    pl = client.get("/api/projects/hermes3/pipeline").json()
+    default = next(p for p in pl["pipelines"] if p["is_default"])
+    assert default["name"] == "Default"
+    r = client.post("/api/projects/hermes3/pipelines", json={"name": "Strict", "copy_from": default["id"]})
+    assert r.status_code == 201
+    strict = r.json()["id"]
+    assert client.post("/api/projects/hermes3/pipelines", json={"name": "strict"}).status_code == 409
+    # The copy starts with the default's current steps, as its own version (numbers are unique in the project).
+    sp = client.get("/api/projects/hermes3/pipeline", params={"pipeline_id": strict}).json()
+    assert sp["steps"] == pl["steps"]
+    assert sp["version"] > pl["version"]
+    assert client.patch(f"/api/pipelines/{strict}", json={"name": "Strict QC"}).json()["name"] == "Strict QC"
+    assert client.patch(f"/api/pipelines/{default['id']}", json={"is_default": False}).status_code == 422
+
+    one, two = (client.get(f"/api/datasets/{d['id']}").json() for d in (one, two))
+    assert not one["pipeline"]["out_of_date"] and not one["pipeline"]["pinned"]
+    # Pinning one dataset: re-run advised, not started; it becomes out of date until re-run.
+    r = client.patch(f"/api/datasets/{one['id']}", json={"pipeline_id": strict}).json()
+    assert r["rerun_advised"] and not r["rerun_started"] and r["changed"] == ["pipeline"]
+    st = client.get(f"/api/datasets/{one['id']}").json()["pipeline"]
+    assert st["pinned"] and st["pipeline_name"] == "Strict QC" and st["out_of_date"]
+    view = {p["id"]: p for p in client.get("/api/projects/hermes3/pipeline").json()["pipelines"]}
+    assert view[strict]["out_of_date_ids"] == [one["id"]] and view[strict]["pinned"] == 1
+    # A re-run uses the pinned pipeline and clears the flag.
+    assert client.post(f"/api/datasets/{one['id']}/rerun").status_code == 200
+    d = client.get(f"/api/datasets/{one['id']}").json()
+    assert d["run"]["pipeline_version"] == sp["version"] and not d["pipeline"]["out_of_date"]
+    # Bulk: pin two, then send both back to the default (0); only the one whose run used Strict is out of date.
+    as_user(client, "jonas@example.org")
+    assert client.post("/api/projects/hermes3/datasets/pipeline", json={"ids": [two["id"]], "pipeline_id": strict}).status_code == 403
+    as_user(client, "ama@example.org")
+    r = client.post("/api/projects/hermes3/datasets/pipeline", json={"ids": [one["id"], two["id"]], "pipeline_id": strict}).json()
+    assert r["changed"] == 1 and r["out_of_date"] == [two["id"]]
+    r = client.post("/api/projects/hermes3/datasets/pipeline", json={"ids": [one["id"], two["id"]], "pipeline_id": 0}).json()
+    assert r["changed"] == 2 and r["out_of_date"] == [one["id"]]
+    edits = client.get(f"/api/datasets/{two['id']}").json()["edits"]
+    assert edits[-1]["changes"]["pipeline"] == ["Strict QC", "project default"]
+    # Making Strict the default moves every unpinned dataset to it (so they're out of date); switch back afterwards.
+    assert client.patch(f"/api/pipelines/{strict}", json={"is_default": True}).status_code == 200
+    st = client.get(f"/api/datasets/{two['id']}").json()["pipeline"]
+    assert st["pipeline_name"] == "Strict QC" and not st["pinned"] and st["out_of_date"]
+    assert client.patch(f"/api/pipelines/{default['id']}", json={"is_default": True}).status_code == 200
+    assert client.get(f"/api/datasets/{two['id']}").json()["pipeline"]["out_of_date"] is False
+    for d in (one, two):  # leave the project's datasets as they were for the tests after
+        assert client.delete(f"/api/datasets/{d['id']}").status_code in (200, 204)
 
 
 def test_code_viewer_files(client):
@@ -172,8 +461,9 @@ def test_pipeline_lists_consortium_steps_and_images(client):
     # The default pipeline is one job per change of image.
     assert [g["image"] for g in pl["groups"]] == ["gwashub/base-r", "gwashub/vcf", "gwashub/ldsc", "gwashub/base"]
     assert client.post("/api/projects/hcm/custom-steps", json={}).status_code in (404, 405)  # git-repo steps are gone
-    bad = client.put("/api/projects/hcm/pipeline", json={"steps": [{"step": "gwashub/parse", "image": "nobody/nothing"}]})
-    assert bad.status_code == 422 and "unknown image" in bad.json()["detail"]
+    # A step runs in its own image (step.yaml): an image in the saved steps is dropped.
+    r = client.put("/api/projects/hcm/pipeline", json={"steps": [*pl["steps"][:-1], {**pl["steps"][-1], "image": "nobody/nothing"}]})
+    assert r.status_code == 200 and "image" not in client.get("/api/projects/hcm/pipeline").json()["steps"][-1]
 
 
 def test_resources_upload(client, tmp_path):
@@ -441,7 +731,8 @@ def test_upload_in_parts(client, synth_small, monkeypatch):
         parts.append({"n": n, "etag": r.headers["etag"]})
     assert client.post(f"/api/datasets/{up['id']}/upload/complete", json={"parts": parts[:-1]}).status_code == 422
     r = client.post(f"/api/datasets/{up['id']}/upload/complete", json={"parts": parts})
-    assert r.status_code == 200, r.text
+    assert r.status_code == 200 and r.json()["status"] == "pending", r.text  # the website's uploads wait for Start QC too
+    assert client.post(f"/api/datasets/{up['id']}/rerun").status_code == 200
     d = client.get(f"/api/datasets/{up['id']}").json()
     assert d["status"] in ("passed", "review") and d["run"]["status"] == "completed", d["run"]
     assert client.get(f"/api/datasets/{up['id']}/files/raw").content == data
@@ -758,6 +1049,35 @@ def test_project_keeps_a_reviewer(client):
     assert client.delete(f"/api/projects/{pid}/members/{me['id']}").status_code == 409
 
 
+def test_admins_delete_projects_with_everything_in_them(client, synth_small, monkeypatch):
+    from gwashub_api import config, storage
+    monkeypatch.setattr(storage, "PART_SIZE", 1000)
+    entry = synth_small["manifest"][0]
+    as_user(client, "demo@gwashub.org")
+    name = "Project to delete"
+    assert client.post("/api/projects", json={"id": "gone", "name": name, "short": "Gone", "phenotypes": [entry["phenotype"]]}).status_code == 201
+    upload(client, synth_small, entry, project="gone")
+    r = _upload_resource_in_parts(client, {"scope": "gone", "key": "regions.bed", "title": "Regions", "build": "GRCh38", "attest": True},
+                                  b"chr1\t1\t2\n" * 50, 1000)
+    assert r.status_code == 201
+    s = config.settings()
+    folders = [os.path.join(s.storage_dir, "uploads", "gone"), os.path.join(s.data_dir, "runs", "qc", "gone"),
+               os.path.join(s.storage_dir, "resources", "gone")]
+    assert all(os.listdir(f) for f in folders)
+    url = "/api/projects/gone"
+    assert client.request("DELETE", url, json={"confirm": "project to delete"}).status_code == 422  # the name exactly
+    as_user(client, "ama@example.org")  # not a platform admin
+    assert client.request("DELETE", url, json={"confirm": name}).status_code == 403
+    as_user(client, "demo@gwashub.org")
+    assert client.request("DELETE", url, json={"confirm": name}).status_code == 204
+    assert client.get(url).status_code == 404 and "gone" not in {p["id"] for p in client.get("/api/projects").json()}
+    assert not any(os.path.exists(f) for f in folders)
+    # Other projects are untouched, and the id can be used again.
+    assert client.get("/api/projects/hermes3").status_code == 200
+    assert client.post("/api/projects", json={"id": "gone", "name": name, "short": "Gone", "phenotypes": ["X"]}).status_code == 201
+    assert client.get("/api/projects/gone/datasets").json() == []
+
+
 def test_platform_admins_create_projects(client):
     as_user(client, "ama@example.org")  # reviewer, not a platform admin
     body = {"id": "lvsf", "name": "LV systolic function GWAS", "short": "LVSF", "description": "Test", "phenotypes": ["LVEF", " ", "LVEF"]}
@@ -858,7 +1178,8 @@ def test_bulk_rerun(client, synth_small):
     as_user(client, "jonas@example.org")
     a = upload(client, synth_small, synth_small["manifest"][0])
     b = upload(client, synth_small, synth_small["manifest"][2])
-    assert client.post("/api/projects/hermes3/datasets/rerun", json={"ids": [a["id"]]}).status_code == 403  # uploaders can't
+    r = client.post("/api/projects/hermes3/datasets/rerun", json={"ids": [a["id"]]}).json()  # uploaders only start pending ones
+    assert r["started"] == 0 and r["skipped"] == [{"id": a["id"], "reason": "only reviewers can re-run QC"}]
     as_user(client, "ama@example.org")
     before = {i: len(client.get(f"/api/datasets/{i}").json()["runs"]) for i in (a["id"], b["id"])}
     r = client.post("/api/projects/hermes3/datasets/rerun", json={"ids": [a["id"], b["id"], 999999]}).json()
@@ -898,3 +1219,157 @@ def test_existing_datasets_get_cohort_records(client, synth_small):
         assert da.study_meta == {"case_type": "Incident"} and dbb.study_meta == {}  # no needless overrides left
     finally:
         db.close()
+
+
+def test_validation_page_lists_tests_and_serves_their_files(client):
+    """The Validation page reads validation/<test>/ from the repository: signed-in users only, listed files only."""
+    client.cookies.clear()
+    assert client.get("/api/validation").status_code == 401
+    as_user(client, "jonas@example.org")  # any signed-in user, not only reviewers
+    tests = {t["test"]: t for t in client.get("/api/validation").json()}
+    t = tests["01_gwama_default"]
+    assert t["title"] and t["claim"] and t["status"] in ("not_run", "passed", "failed")
+    assert "README.md" in t["files"] and "1_prepare.R" in t["files"]
+    r = client.get("/api/validation/01_gwama_default/files/README.md")
+    assert r.status_code == 200 and "GWAMA" in r.text
+    assert client.get("/api/validation/01_gwama_default/files/..%2F..%2Fsources.yaml").status_code == 404
+    assert client.get("/api/validation/_lib/files/common.R").status_code == 404
+    assert client.get("/api/validation/nope/plot").status_code == 404
+
+
+def test_quantitative_phenotypes_take_a_total_sample_size(client, synth_small):
+    """A phenotype is case/control (cases + controls, total = their sum) or quantitative (total only, BETA effects);
+    its type can't change once it has datasets, and a meta-analysis can't mix the two."""
+    as_user(client, "tom@example.org")  # reviewer of hcm
+    p = client.get("/api/projects/hcm").json()
+    opts = {"phenotypes": p["phenotypes"] + ["LVEF"], "ancestries": p["ancestries"], "sexes": p["sexes"],
+            "phenotype_types": {"LVEF": "quantitative"}}
+    r = client.put("/api/projects/hcm/upload-options", json=opts)
+    assert r.status_code == 200 and r.json()["phenotype_types"]["LVEF"] == "quantitative"
+    assert r.json()["phenotype_types"]["HCM"] == "binary"
+    entry = next(e for e in synth_small["manifest"] if e["effect_type"] == "beta")
+
+    def post(**override):
+        meta = {k: entry[k] for k in ("ancestry", "sex", "build", "column_mapping")} | {"cohort": "QuantCohort", "effect_type": "beta"}
+        meta.update(override)
+        with open(os.path.join(synth_small["dir"], "fake_gwas", entry["file"]), "rb") as f:
+            return client.post("/api/projects/hcm/datasets", files={"file": (entry["file"], f)}, data={"meta": json.dumps(meta)})
+
+    assert "total sample size" in post(phenotype="LVEF", n_cases=10, n_controls=20).json()["detail"]
+    assert "odds ratios" in post(phenotype="LVEF", n_total=5000, effect_type="or").json()["detail"]
+    assert "controls" in post(phenotype="HCM", n_cases=100).json()["detail"]
+    q = post(phenotype="LVEF", n_total=5000, n_cases=10)
+    assert q.status_code == 201, q.text
+    d = client.get(f"/api/datasets/{q.json()['id']}").json()
+    assert (d["trait_type"], d["n_total"], d["n_cases"], d["n_controls"]) == ("quantitative", 5000, None, None)
+    b = post(phenotype="HCM", n_cases=100, n_controls=900)
+    db_ = client.get(f"/api/datasets/{b.json()['id']}").json()
+    assert (db_["trait_type"], db_["n_total"]) == ("binary", 1000)
+
+    # Editing follows the type: a quantitative dataset's total can change; it can't be given an invalid total.
+    assert client.patch(f"/api/datasets/{d['id']}", json={"n_total": 6000}).json()["changed"] == ["n_total"]
+    assert client.patch(f"/api/datasets/{d['id']}", json={"n_total": 0}).status_code == 422
+    # The type is fixed once a phenotype has datasets.
+    r = client.put("/api/projects/hcm/upload-options", json={**opts, "phenotype_types": {}})
+    assert r.status_code == 409 and "LVEF" in r.json()["detail"]
+    # A meta-analysis can't mix case/control and quantitative datasets.
+    for x in (d, db_):
+        assert client.post(f"/api/datasets/{x['id']}/rerun").status_code == 200  # uploads wait as pending
+        assert client.get(f"/api/datasets/{x['id']}").json()["status"] in ("passed", "review")
+    r = client.post("/api/projects/hcm/meta", json={"name": "mixed", "dataset_ids": [d["id"], db_["id"]],
+                                                   "settings": {"include_statuses": ["passed", "review"]}})
+    assert r.status_code == 422 and "mix" in r.json()["detail"], r.text
+
+
+def test_batch_states_show_waiting_and_requeued_steps(client, synth_small):
+    """AWS Batch job events say whether a run's current job group is waiting for a machine, starting, running, or
+    re-queued after its machine was taken back; the dataset panel shows it on the group's next step."""
+    from gwashub_api import jobs
+    from gwashub_api.db import SessionLocal
+    from gwashub_api.models import QCRun
+    as_user(client, "jonas@example.org")
+    up = upload(client, synth_small, synth_small["manifest"][0])
+    db = SessionLocal()
+    done = db.get(QCRun, client.get(f"/api/datasets/{up['id']}").json()["run"]["id"])
+    run = QCRun(dataset_id=done.dataset_id, pipeline_version_id=done.pipeline_version_id, status="queued", run_dir=done.run_dir,
+                progress=[{"key": s["step"], "title": s["step"], "state": "queued"} for s in done.pipeline_version.steps])
+    db.add(run)
+    db.commit()
+    groups = next(x["groups"] for x in run.pipeline_version.resolved if "groups" in x)
+    g = 1 if len(groups) > 1 else 0
+    first = groups[g]["steps"][0]
+
+    def event(status, attempts=()):
+        return {"detail": {"jobId": f"job-{run.id}-{g}", "jobName": f"gwashub-qc-{run.id}-g{g}", "status": status,
+                           "attempts": list(attempts), "retryStrategy": {"attempts": 4}}}
+
+    def step():
+        return client.get(f"/api/datasets/{run.dataset_id}").json()["run"]["steps"][first]
+
+    db2 = SessionLocal()
+    assert "runnable" in jobs.handle_batch_event(db2, event("RUNNABLE"))
+    s = step()
+    assert s["state"] == "queued" and s["note"] == "Waiting for a machine"
+    jobs.handle_batch_event(db2, event("RUNNING"))
+    assert "note" not in step()  # running on its first attempt: nothing extra to say
+    # The machine is reclaimed: Batch retries, and the step shows re-queued even though its last progress said running.
+    reclaimed = [{"statusReason": "Host EC2 (instance i-0f44cde632015ca8a) terminated."}]
+    jobs.handle_batch_event(db2, event("RUNNABLE", reclaimed))
+    s = step()
+    assert s["state"] == "queued" and s["note"].startswith("Re-queued (the machine it was running on was taken back by AWS); attempt 2 of 4")
+    assert "(older event, ignored)" in jobs.handle_batch_event(db2, event("RUNNING"))  # attempt 1's event arriving late
+    jobs.handle_batch_event(db2, event("RUNNING", reclaimed))
+    assert step()["note"].startswith("Attempt 2 of 4")
+    db.close()
+    db2.close()
+
+
+def test_custom_metadata_fields(client, synth_small):
+    """Reviewers add project fields (per cohort or dataset); they validate, inherit from the cohort and count towards
+    required fields like built-in ones. Keys, levels and types are fixed; choices only grow; fields are hidden, not
+    removed, and hidden values are kept."""
+    url = "/api/projects/hcm/metadata-fields"
+    as_user(client, "demo@gwashub.org")  # a platform admin, but only an uploader in hcm: reviewer things are refused
+    assert client.put(url, json={"fields": [{"label": "X", "level": "cohort", "type": "text"}]}).status_code == 403
+    assert client.put("/api/projects/hcm/metadata-config", json={"shown": [], "required": []}).status_code == 403
+    as_user(client, "tom@example.org")  # reviewer of hcm
+    fields = [{"label": "Hospital data collected from", "level": "cohort", "type": "text"},
+              {"label": "Echo protocol", "level": "dataset", "type": "select", "options": ["A", "B"]},
+              {"label": "Genotyped centrally", "level": "cohort", "type": "yesno"}]
+    r = client.put(url, json={"fields": fields})
+    assert r.status_code == 200, r.text
+    custom = r.json()["metadata_custom"]
+    keys = {c["label"]: c["key"] for c in custom}
+    hosp, echo = keys["Hospital data collected from"], keys["Echo protocol"]
+    assert hosp == "custom_hospital_data_collected_from" and hosp in r.json()["metadata_config"]["shown"]  # new fields start shown
+    assert [s["key"] for s in r.json()["metadata_custom_sections"]] == ["custom_cohort", "custom_dataset"]
+    # Required like a built-in field.
+    cfg = r.json()["metadata_config"]
+    assert client.put("/api/projects/hcm/metadata-config", json={"shown": cfg["shown"], "required": [echo]}).status_code == 200
+    entry = next(e for e in synth_small["manifest"] if e["effect_type"] == "beta")
+
+    def post(meta, cohort="CustomCo"):
+        m = {k: entry[k] for k in ("ancestry", "sex", "build", "column_mapping")} | {"cohort": cohort, "phenotype": "HCM",
+             "effect_type": "beta", "n_cases": 100, "n_controls": 900, "study_meta": meta}
+        with open(os.path.join(synth_small["dir"], "fake_gwas", entry["file"]), "rb") as f:
+            return client.post("/api/projects/hcm/datasets", files={"file": (entry["file"], f)}, data={"meta": json.dumps(m)})
+
+    assert "Echo protocol" in post({hosp: "Leeds"}).json()["detail"]  # required, missing
+    assert "must be one of" in post({hosp: "Leeds", echo: "C"}).json()["detail"]
+    up = post({hosp: "Leeds", echo: "A", keys["Genotyped centrally"]: "Yes"})
+    assert up.status_code == 201, up.text
+    d = client.get(f"/api/datasets/{up.json()['id']}").json()
+    assert d["cohort_meta"][hosp] == "Leeds" and d["study_meta"][echo] == "A"  # cohort-level field stored on the cohort
+    # Rename and add a choice: fine. Change type, remove a choice, or drop a field: refused.
+    custom[0]["label"], custom[1]["options"] = "Hospital records from", ["A", "B", "C"]
+    assert client.put(url, json={"fields": custom}).status_code == 200
+    assert "can't change" in client.put(url, json={"fields": [{**custom[0], "type": "number"}, *custom[1:]]}).json()["detail"]
+    assert "not removed" in client.put(url, json={"fields": [custom[0], {**custom[1], "options": ["A"]}, custom[2]]}).json()["detail"]
+    assert "only hidden" in client.put(url, json={"fields": custom[:2]}).json()["detail"]
+    # Hide: off the shown/required settings, but the saved value stays and an edit still validates.
+    custom[1]["hidden"] = True
+    r = client.put(url, json={"fields": custom})
+    assert echo not in r.json()["metadata_config"]["shown"] and echo not in r.json()["metadata_config"]["required"]
+    d = client.get(f"/api/datasets/{up.json()['id']}").json()
+    assert d["study_meta"][echo] == "A"
+    assert client.patch(f"/api/datasets/{d['id']}", json={"study_meta": d["study_meta"]}).status_code == 200

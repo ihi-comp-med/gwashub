@@ -12,11 +12,11 @@ pick-a-user sign-in) and **on AWS** (S3, Postgres, AWS Batch, Cognito sign-in wi
 
 | Doc | What's in it |
 |---|---|
-| `docs/PROGRESS.md` | What's built, test results, decisions taken, known gaps |
-| `docs/AWS_FULL.md` | **The AWS deployment as built**: what runs where, deploying, admin commands, where to look in the console |
+| `docs/PROGRESS.md` | Where it stands: what's built, decisions, known behaviour, what's not done |
+| `docs/AWS_FULL.md` | **The AWS deployment**: why it's built that way, what runs where, deploying, admin commands, the console, before production, costs |
+| `docs/AWS_ACCOUNT_SETUP.md` | The AWS accounts: what exists, what's open, how to rebuild them |
+| `docs/VALIDATION_PLAN.md` | The five validation tests (`validation/` holds them) |
 | `CONTRIBUTING.md` | How a consortium adds its own QC step, meta-analysis method (and image) by pull request |
-| `docs/AWS_DEPLOYMENT.md` | The design and reasoning behind the AWS setup (production checklist, costs) |
-| `docs/AWS_ACCOUNT_SETUP.md` | Step-by-step guide to the AWS Organization and accounts |
 
 ## Quick start (local)
 
@@ -42,6 +42,20 @@ Open http://localhost:3000 and sign in as any listed user (local mode has no pas
 Uploaders open only their own datasets; reviewers see everything in the project, review QC, run
 meta-analyses and manage the pipeline and members; platform admins can also create projects.
 
+## Bulk upload
+
+Many files at once, with their metadata: download `gwashub_upload.py` from the site's Account page (it is
+`client/gwashub_upload.py` with the site's address filled in), make an API token there, then:
+
+```bash
+export GWASHUB_TOKEN=gwh_...                        # locally also: export GWASHUB_URL=http://localhost:3000
+python3 gwashub_upload.py template manifest.xlsx     # an empty manifest workbook: README sheet + Manifest sheet
+python3 gwashub_upload.py check manifest.xlsx         # every problem, by row; uploads nothing
+python3 gwashub_upload.py upload manifest.xlsx        # uploads (resumes if interrupted); datasets wait as Pending QC
+```
+
+Design and decisions: `docs/BULK_UPLOAD_PLAN.md`.
+
 ## Layout
 
 ```
@@ -59,11 +73,13 @@ pipeline/            compute that runs as jobs
                        gwashub/metal, custom_example/custom_meta_analysis; shared _metalib/
   tests/               runner, image grouping, meta-analysis, S3 tests
 resources/           reference files: catalog.yaml (where each comes from), build/*.sh (download + build), README.md
+client/              gwashub_upload.py: the bulk upload script (standard library only) and its tests
+practice/            synthetic files for the site's Practice project (files.json: what to enter for each)
 images/app/          the site image (API and worker)
 infra/               AWS CDK app: Network, Data and App stacks (docs/AWS_FULL.md)
 devtools/            dev.sh, build_images.sh, synth.py (synthetic data), seed.py, e2e.py, run_demo.py; AWS: aws_cdk_deploy.sh,
-                     aws_admin.sh, aws_db_tunnel.sh, aws_bookmarks.py
-docs/                progress, AWS guides, architecture image prompt
+                     aws_admin.sh, aws_upload_resources.py, aws_db_tunnel.sh, aws_bookmarks.py
+docs/                PROGRESS (where it stands), AWS guides, validation plan, bulk upload design; images/ (posters)
 local/               git-ignored: synthetic/ (fake data + resources), app/ (dev DB, uploads, runs), runs/
 ```
 
@@ -84,6 +100,6 @@ Every step (default or consortium, any language) is called as
 ```
 
 and writes `{"verdict": "pass|warn|fail", "metrics": {}, "messages": [], "artifacts": []}` to `--log`.
-It may rewrite `--input` in place, keeping the GWASHub format (`chr pos ea oa beta se p` + optional
-`eaf n ncase ncontrol rsid info`); only the first step, `gwashub/parse`, reads the upload as received. Extra files go in `$GWASHUB_ARTIFACT_DIR`; other optional context:
+It may rewrite `--input` in place, keeping the GWASHub format (`chr pos ea oa beta se p eaf` + optional
+`n ncase ncontrol rsid info`); only the first step, `gwashub/parse`, reads the upload as received. Extra files go in `$GWASHUB_ARTIFACT_DIR`; other optional context:
 `GWASHUB_STEP_LOGS`, `GWASHUB_RUN_DIR`. Exit 0 = it ran; non-zero = crashed. See `CONTRIBUTING.md`.

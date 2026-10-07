@@ -1,5 +1,5 @@
 """Per-environment settings. "dev" is the lean setup; "prod" turns on the production-grade options
-described in docs/AWS_DEPLOYMENT.md (Multi-AZ database, more NAT gateways and tasks, longer backups)."""
+described in docs/AWS_FULL.md (Multi-AZ database, more NAT gateways and tasks, longer backups)."""
 from dataclasses import dataclass
 
 

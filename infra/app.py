@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GWASHub on AWS (see docs/AWS_DEPLOYMENT.md). Deployed with devtools/aws_cdk_deploy.sh.
+"""GWASHub on AWS (see docs/AWS_FULL.md). Deployed with devtools/aws_cdk_deploy.sh.
 
     npx aws-cdk deploy --all -c env=dev -c image_tag=<tag>
 

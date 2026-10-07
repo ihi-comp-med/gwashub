@@ -1,17 +1,19 @@
 # Validation plan
 
 Five tests that show, with numbers, that GWASHub gives the same answers as the tools and pipelines people already
-trust. Each test runs the same inputs two ways: through the website, and through an independent reference (the
-original program run by hand, a hand-written formula in R, or the HERMES 3 HPC pipeline). Then it compares the outputs
+trust. Each test runs the same inputs two ways: through the website, and through the original program or pipeline run
+outside GWASHub (GWAMA or METAL by hand, the HERMES 3 HPC pipeline, or a file whose correct QC outcome is known in
+advance). Then it compares the outputs
 against thresholds fixed in advance. The results become a public **Validation** page on the site (sketch at the end).
 
 ## Principles
 
 - **Same inputs, two routes.** Never compare against something derived from the site's own output, except where a test
   says so on purpose (the site's QC'd files are the agreed input to the meta-analysis tests).
-- **Two kinds of reference where possible:** the same program run outside GWASHub (checks the wrapping: input
-  formatting, flags, allele matching, output parsing), and an independent formula (checks the program and the
-  wrapping together).
+- **The reference is the original tool's output, never a reimplementation.** GWASHub's claim is that it reproduces
+  GWAMA, METAL and the HERMES 3 pipeline; whether those tools are themselves right is not what these tests measure.
+  Running the same release by hand, with inputs prepared independently in R, checks everything GWASHub adds around it:
+  input formatting, flags, allele matching across datasets, output parsing and writing.
 - **Thresholds set before running**, written in each test below. A test passes or fails; there is no "looks close".
 - **Everything recorded:** dataset sources and versions, the R script, the site's pipeline version and image digests
   (shown on each run), GWAMA/METAL versions, and the comparison table. Anyone should be able to rerun it.
@@ -35,15 +37,14 @@ in all files; then **all** variants in 2 Mb windows around a few known HF loci (
 PITX2, 6q25 LPA) so the meta-analysis has real signals, plus a **random 50,000** of the rest (`set.seed(2026)`).
 About 60,000 to 80,000 variants per file.
 
-All scripts live in `validation/<nn>_<name>/` (to create): `reference.R`, the exact inputs, the reference outputs and a
+All scripts live in `validation/<nn>_<name>/` (layout in `validation/README.md`; test 1 is set up): `reference.R`, the exact inputs, the reference outputs and a
 `result.json` the Validation page reads.
 
 ---
 
 ## Test 1: GWAMA meta-analysis, default settings
 
-**Claim:** a fixed-effect meta-analysis on GWASHub gives the same results as GWAMA run by hand, and as the
-inverse-variance formula.
+**Claim:** a fixed-effect meta-analysis on GWASHub gives the same results as GWAMA run by hand on the same files.
 
 **Inputs:** FINNGEN, UKB, BBJ, prepared with the size recipe above.
 
@@ -54,53 +55,32 @@ inverse-variance formula.
    so the test isolates the meta-analysis from QC.
 4. Run a GWAMA meta-analysis on the site with the defaults (fixed effects, min 2 datasets, no MAF filter, no genomic
    control). Download `meta_results.tsv.gz`.
-5. `reference.R` part 2, on the three QC'd files:
-   - **Route A, GWAMA by hand:** write GWAMA inputs (`MARKERNAME EA NEA BETA SE N EAF STRAND`, marker =
-     `chr:pos:<alleles sorted>`), run the same GWAMA release (2.2.2) with
-     `GWAMA -i gwama.in -o ref -qt --indel_alleles --threshold 1`, keep variants in ≥ 2 datasets.
-   - **Route B, formula:** per variant, align alleles, then β = Σ(β_i/se_i²)/Σ(1/se_i²), se = 1/√Σ(1/se_i²),
-     p = 2Φ(−|β/se|), Cochran's Q and I².
-6. Join site, A and B on `chr:pos:ea:oa` (flip sign where the effect allele differs) and compare.
+5. GWAMA by hand on the three QC'd files: write GWAMA inputs (`MARKERNAME EA NEA BETA SE N EAF`, marker =
+   `chr:pos:<alleles sorted>`), run the same GWAMA release (2.2.2) with
+   `GWAMA -i gwama.in -o ref -qt --indel_alleles --threshold 1`, keep variants in ≥ 2 datasets.
+6. Join site and GWAMA on `chr:pos:ea:oa` (flip sign where the effect allele differs) and compare.
+
+Set up in `validation/01_gwama_default/` (`1_prepare.R`, `2_reference.R`, `3_compare.R`, thresholds in `test.yaml`).
 
 **Pass if**
 | Check | Threshold |
 |---|---|
-| Same variant set (site vs A) | identical |
-| β and se, site vs A | max abs difference ≤ 1e-6 (GWAMA's printed precision) |
-| p, site vs A | max relative difference ≤ 1e-4 (p > 1e-300) |
-| n_studies and direction string, site vs A | identical |
-| β, se, site vs B (formula) | max abs difference ≤ 1e-5; −log10 p difference ≤ 0.01 |
-| Q and I², site vs B | abs difference ≤ 1e-3 |
+| Same variant set | identical |
+| β and se | max abs difference ≤ 1e-6 (GWAMA's printed precision) |
+| p | max relative difference ≤ 1e-4 (p > 1e-300) |
+| n_studies and direction string | identical |
+| Q, its p and I² | max abs difference ≤ 1e-6 |
+| Total N and EAF | max abs difference ≤ 1e-6 |
+| Re-run | second site run has the same sha256 |
 | Lead loci | the known loci in the windows are reported as lead loci |
 
 **Show on the page:** scatter of site vs GWAMA-by-hand −log10 p (should sit on the line), the comparison table, the
-GWAMA command line both routes used.
+GWAMA command line used.
 
-```r
-# validation/01_gwama_default/reference.R (part 2 sketch)
-library(data.table)
-qc <- list(FINNGEN = "finngen_qc.tsv", UKB = "ukb_qc.tsv", BBJ = "bbj_qc.tsv")
-marker <- function(d) paste(d$chr, d$pos, pmin(d$ea, d$oa), pmax(d$ea, d$oa), sep = ":")
-inputs <- lapply(names(qc), function(s) {
-  d <- fread(qc[[s]])
-  out <- data.table(MARKERNAME = marker(d), EA = d$ea, NEA = d$oa, BETA = d$beta, SE = d$se, N = d$n, EAF = d$eaf, STRAND = "+")
-  f <- paste0(s, ".gwama.tsv"); fwrite(unique(out, by = "MARKERNAME"), f, sep = "\t"); f
-})
-writeLines(unlist(inputs), "gwama.in")
-system("GWAMA -i gwama.in -o ref -qt --indel_alleles --threshold 1")
-ref <- fread("ref.out")[n_studies >= 2]
-
-# Route B: inverse-variance weighting by hand, aligned to the first dataset's alleles
-long <- rbindlist(lapply(names(qc), function(s) fread(qc[[s]])[, .(m = marker(.SD), ea, oa, beta, se, study = s)]))
-long[, ref_ea := ea[1], by = m][ea != ref_ea, beta := -beta]
-ivw <- long[, { w <- 1 / se^2; b <- sum(w * beta) / sum(w); s <- sqrt(1 / sum(w))
-                q <- sum(w * (beta - b)^2); k <- .N
-                .(beta = b, se = s, p = 2 * pnorm(-abs(b / s)), n_studies = k, q = q,
-                  i2 = if (q > 0) max(0, (q - (k - 1)) / q) else 0) }, by = .(m, ref_ea)][n_studies >= 2]
-
-site <- fread("meta_results.tsv.gz")
-# ... join on marker, align signs, compute the table of max differences, write result.json
-```
+**Found by the dry run (fixed):** GWASHub wrote its results with 6 significant digits, so values ≥ 1 (z, Q) lost digits
+GWAMA prints, and the gzip header carried a timestamp, so re-runs weren't byte-identical. Results are now written with
+15 significant digits and no timestamp; a dry run on a local meta-analysis then matched GWAMA by hand exactly (every
+difference 0) and two runs were byte-identical.
 
 ---
 
@@ -114,17 +94,13 @@ Female and Male) for the sex-differentiated test.
 **Site settings:** random effects; genomic control per dataset; genomic control on the results; minimum MAF 0.01;
 minimum datasets 3; direction shown below P 0.05; sex-differentiated test (on the female + male + the other datasets).
 
-**Reference:**
-- **Route A:** GWAMA by hand with `--random --genomic_control --genomic_control_output --sex --threshold 0.05`, the
-  MAF filter applied to each input first (MAF < 0.01 removed, as the site does before GWAMA) and `n_studies ≥ 3`
-  applied after.
-- **Route B (spot checks):** for 1,000 random variants, DerSimonian-Laird random effects in R (`metafor::rma(yi,
-  sei = se, method = "DL")`), and the per-dataset λGC computed by hand (median χ² / 0.4549) to confirm the genomic
-  control factors GWAMA applied.
+**Reference:** GWAMA by hand with `--random --genomic_control --genomic_control_output --sex --threshold 0.05`, the
+MAF filter applied to each input first (MAF < 0.01 removed, as the site does before GWAMA) and `n_studies ≥ 3` applied
+after.
 
-**Pass if:** route A identical as in test 1 (β, se, p, n_studies, direction, the two sex-differentiated p-values);
-route B β and se within 1e-5 for random effects; λGC per dataset within 1e-3; the number of variants removed by the
-MAF filter equals the count in R.
+**Pass if:** identical to GWAMA by hand as in test 1 (β, se, p, n_studies, direction, heterogeneity, N, EAF, and the
+two sex-differentiated p-values); the genomic control factors in the site's GWAMA output equal those of the run by
+hand; the number of variants removed by the MAF filter equals the count in R.
 
 **Why it matters:** the defaults are what most people run, but the options are where wrappers usually go wrong (a flag
 not passed, a filter applied after instead of before). One test with everything on shows they are all wired up.

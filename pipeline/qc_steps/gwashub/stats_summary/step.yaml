@@ -1,6 +1,10 @@
 name: stats_summary
 title: Summary statistics
-description: Genomic inflation (λGC), Z vs P consistency, lead loci.
+description: "Genomic inflation (λGC, λ1000), P vs BETA/SE consistency, significant variants and lead loci."
+narrative: >
+  Computes the genomic inflation factor λGC (median χ² / 0.455), and λ1000 (rescaled to 1,000 cases and controls, or 1,000
+  people for a quantitative trait) and λ among common variants; checks that P agrees with BETA/SE; counts genome-wide
+  significant and suggestive variants; and finds lead loci by distance. Warns or fails above the set λGC limits.
 command:
 - python
 - stats_summary.py

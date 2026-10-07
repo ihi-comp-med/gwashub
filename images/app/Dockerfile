@@ -12,6 +12,9 @@ WORKDIR /app
 COPY api/ api/
 COPY pipeline/ pipeline/
 COPY devtools/ devtools/
+COPY validation/ validation/
+COPY client/ client/
+COPY practice/ practice/
 COPY images/app/entrypoint.sh /entrypoint.sh
 # Fail closed: without its Cognito settings the container refuses to start rather than offering the
 # local dev sign-in. Everything else comes from the task definition.

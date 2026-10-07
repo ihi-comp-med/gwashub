@@ -76,15 +76,29 @@ async function decide(decision: string) {
   finally { busy.value = false }
 }
 async function rerun() {
+  const first = d.value.status === 'pending'
   try {
     await api(`/datasets/${d.value.id}/rerun`, { method: 'POST' })
-    toast.add({ severity: 'info', summary: 'QC re-run started', detail: 'Using the current pipeline version.', life: 2500 })
+    toast.add({ severity: 'info', summary: first ? 'QC started' : 'QC re-run started', detail: 'Using the current pipeline version.', life: 2500 })
     await load()
     clearInterval(timer)
     timer = setInterval(() => d.value?.status === 'processing' && load(), 2000)
     emit('changed')
   }
-  catch (e: any) { toast.add({ severity: 'error', summary: 'Re-run failed', detail: e.message, life: 4000 }) }
+  catch (e: any) { toast.add({ severity: 'error', summary: first ? 'Could not start QC' : 'Re-run failed', detail: e.message, life: 4000 }) }
+}
+
+// QC pipeline: the dataset follows the project default unless a reviewer pins it to another (re-run advised, not automatic).
+const pipelineOptions = computed(() => (props.project.pipelines ?? []).map((p: any) => ({ value: p.is_default ? 0 : p.id, label: p.is_default ? `${p.name} (project default)` : p.name })))
+const pipelineChoice = computed(() => d.value?.pipeline?.pinned ? d.value.pipeline.pipeline_id : 0)
+async function setPipeline(id: number) {
+  try {
+    await api(`/datasets/${d.value.id}`, { method: 'PATCH', body: { pipeline_id: id } })
+    toast.add({ severity: 'warn', summary: 'Pipeline changed', detail: 'Re-run QC to use it.', life: 4000 })
+    await load()
+    emit('changed')
+  }
+  catch (e: any) { toast.add({ severity: 'error', summary: 'Could not change the pipeline', detail: e.message, life: 4000 }) }
 }
 
 async function remove() {
@@ -111,6 +125,11 @@ function viewOutput(s: any) { outStep.value = s; outOpen.value = true }
 const tab = ref('qc')
 const editing = ref(false)
 const form = reactive<any>({})
+// While a run waits on AWS Batch, the step about to run carries a note (the API's jobs.batch_note); the pill is its gist.
+const notePill = (note: string) => note.startsWith('Re-queued') ? 'Re-queued' : note.startsWith('Attempt') ? 'Retrying'
+  : note.startsWith('Starting') ? 'Starting' : 'Waiting for a machine' 
+// The edit form's phenotype decides which counts are asked for: cases and controls, or the total (quantitative traits).
+const formQuantitative = computed(() => props.project.phenotype_types?.[form.phenotype] === 'quantitative')
 const metaForm = ref<Record<string, any>>({})
 const { schema } = useMetadataSchema()
 const { data: cohortList } = useApiGet<any[]>(() => visible.value ? `/projects/${props.project.id}/cohorts` : null)
@@ -151,7 +170,7 @@ function toggleEdit(i: number) { const n = new Set(openEdits.value); n.has(i) ? 
 const changesOf = (e: any, i: number) => { const all = Object.entries(e.changes); return openEdits.value.has(i) ? all : all.slice(0, 3) }
 function startEdit() {
   Object.assign(form, { cohort: d.value.cohort, phenotype: d.value.phenotype, ancestry: d.value.ancestry, sex: d.value.sex,
-    n_cases: d.value.n_cases, n_controls: d.value.n_controls, build: d.value.build })
+    n_cases: d.value.n_cases, n_controls: d.value.n_controls, n_total: d.value.n_total, build: d.value.build })
   metaForm.value = { ...d.value.study_meta }
   editing.value = true
 }
@@ -159,7 +178,8 @@ const saving = ref(false)
 async function saveEdit() {
   saving.value = true
   try {
-    const r = await api(`/datasets/${d.value.id}`, { method: 'PATCH', body: { ...form, study_meta: metaForm.value } })
+    const counts = formQuantitative.value ? { n_cases: null, n_controls: null } : { n_total: null }  // the server works out the rest
+    const r = await api(`/datasets/${d.value.id}`, { method: 'PATCH', body: { ...form, ...counts, study_meta: metaForm.value } })
     editing.value = false
     toast.add({ severity: 'success', summary: r.changed.length ? `Saved ${r.changed.length} change${r.changed.length > 1 ? 's' : ''}` : 'No changes', life: 2500 })
     if (r.rerun_started) {
@@ -175,7 +195,7 @@ async function saveEdit() {
   finally { saving.value = false }
 }
 watch(() => props.datasetId, () => { editing.value = false; tab.value = 'qc' })
-const fieldName = (k: string) => ({ cohort: 'Cohort', phenotype: 'Phenotype', ancestry: 'Ancestry', sex: 'Sex', n_cases: 'Cases', n_controls: 'Controls', build: 'Genome build' } as any)[k] ?? metaLabels.value[k] ?? k.replaceAll('_', ' ')
+const fieldName = (k: string) => ({ cohort: 'Cohort', phenotype: 'Phenotype', ancestry: 'Ancestry', sex: 'Sex', n_cases: 'Cases', n_controls: 'Controls', n_total: 'Sample size', build: 'Genome build' } as any)[k] ?? metaLabels.value[k] ?? k.replaceAll('_', ' ')
 const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)' : String(v)
 </script>
 
@@ -188,25 +208,46 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
           <span class="muted small mono">dataset {{ d.id }} · run {{ d.run?.id }} · pipeline v{{ d.run?.pipeline_version }}</span>
         </div>
         <h2 class="title">{{ d.cohort }} · {{ d.phenotype }} · {{ d.ancestry }} · {{ d.sex }}</h2>
-        <div class="mono muted small">{{ d.file_name }} ({{ fmtSize(d.file_size) }})</div>
+        <div class="mono muted small">{{ d.file_name }} ({{ fmtSize(d.file_size) }})<span v-if="d.uploaded_with_token"> · uploaded by script, token {{ d.uploaded_with_token }}</span></div>
       </div>
     </template>
 
     <div v-if="d" class="body">
-      <div class="row actions">
+      <div class="row actions" data-tour="panel-actions">
         <a :href="fileUrl('raw')" class="p-button p-button-outlined p-button-sm"><i class="pi pi-download" />&nbsp;Raw file</a>
         <a v-if="d.run?.status === 'completed'" :href="fileUrl('qc')" class="p-button p-button-sm"><i class="pi pi-download" />&nbsp;QC'd file</a>
         <a v-if="d.run && d.status !== 'processing'" :href="fileUrl('report')" :download="`qc_report_${d.id}.html`" class="p-button p-button-secondary p-button-text p-button-sm"><i class="pi pi-file" />&nbsp;Download report</a>
         <span class="spacer" />
         <Button v-if="isReviewer && !['processing', 'review'].includes(d.status) && !overriding" label="Override QC outcome" size="small" text severity="secondary" @click="overriding = true; tab = 'qc'" />
-        <Button v-if="isReviewer && d.status !== 'processing'" label="Re-run QC" icon="pi pi-refresh" size="small" text @click="rerun" />
+        <Button v-if="isReviewer && !['processing', 'pending'].includes(d.status)" label="Re-run QC" icon="pi pi-refresh" size="small" text @click="rerun" />
         <Button v-if="d.can_edit" v-tooltip.top="d.status === 'processing' ? 'Wait for QC to finish' : undefined" label="Delete" icon="pi pi-trash" size="small" text severity="danger" :disabled="d.status === 'processing'" @click="remove" />
       </div>
+
+      <div v-if="d.pipeline" class="row pipe small">
+        <span class="muted">QC pipeline</span>
+        <Select v-if="isReviewer" :model-value="pipelineChoice" :options="pipelineOptions" option-label="label" option-value="value" size="small" :disabled="d.status === 'processing'" @update:model-value="setPipeline" />
+        <span v-else>{{ d.pipeline.pipeline_name }}</span>
+        <span class="muted">current v{{ d.pipeline.current_version }}<span v-if="d.pipeline.run_version != null"> · last run used v{{ d.pipeline.run_version }}<span v-if="d.pipeline.run_pipeline && d.pipeline.run_pipeline !== d.pipeline.pipeline_name"> of {{ d.pipeline.run_pipeline }}</span></span></span>
+      </div>
+      <Message v-if="d.pipeline?.out_of_date && d.status !== 'processing'" severity="warn" size="small" :closable="false" icon="pi pi-history" class="oodmsg">
+        <div class="row">
+          <span>The last QC run used a different pipeline version than the one this dataset now follows. Re-run QC to bring it up to date.</span>
+          <Button v-if="isReviewer" label="Re-run QC" icon="pi pi-refresh" size="small" text severity="warn" class="oodbtn" @click="rerun" />
+        </div>
+      </Message>
+
+      <Message v-if="d.status === 'pending'" severity="info" size="small" :closable="false" icon="pi pi-pause-circle" class="oodmsg" data-tour="panel-start-qc">
+        <div class="row">
+          <span><strong>QC hasn't started.</strong> Check the details (build, sample sizes, column mapping, metadata), then start it.</span>
+          <span class="spacer" />
+          <Button v-if="d.can_edit" label="Start QC" icon="pi pi-play" size="small" @click="rerun" />
+        </div>
+      </Message>
 
       <Tabs v-model:value="tab">
         <TabList>
           <Tab value="qc">QC</Tab>
-          <Tab value="details">Details <span class="muted small">· metadata {{ d.metadata_complete.filled }}/{{ d.metadata_complete.total }}</span>
+          <Tab value="details" data-tour="panel-details-tab">Details <span class="muted small">· metadata {{ d.metadata_complete.filled }}/{{ d.metadata_complete.total }}</span>
             <i v-if="d.metadata_complete.missing_required?.length" v-tooltip.top="`Required: ${d.metadata_complete.missing_required.join(', ')}`" class="pi pi-exclamation-circle warnic" /></Tab>
         </TabList>
         <TabPanels>
@@ -218,7 +259,7 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
                 {{ { approve: 'Approved', reject: 'Rejected', request_changes: 'Changes requested' }[d.review.decision as string] }} by {{ d.review.by }}<span v-if="d.review.note">: “{{ d.review.note }}”</span>
               </Message>
 
-              <div v-if="isReviewer && (d.status === 'review' || overriding)" :class="['review', { attention: d.status === 'review' }]">
+              <div v-if="isReviewer && (d.status === 'review' || overriding)" :class="['review', { attention: d.status === 'review' }]" data-tour="panel-review">
                 <div class="row"><i class="pi pi-eye" /><strong>{{ d.status === 'review' ? 'Awaiting review' : 'Override QC outcome' }}</strong>
                   <span class="muted small">{{ d.status === 'review' ? 'QC passed with warnings. Approve it for meta-analysis, or send it back.' : 'Your decision replaces the QC verdict.' }}</span></div>
                 <Textarea v-model="note" rows="2" placeholder="Note to the uploader (optional)" fluid />
@@ -230,7 +271,7 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
                 </div>
               </div>
 
-              <section>
+              <section data-tour="panel-steps">
                 <h3>Processing steps <span v-if="d.run?.rows_out != null" class="muted">· {{ d.run.rows_out.toLocaleString() }} rows out</span></h3>
                 <ol class="steps">
                   <li v-for="(s, i) in steps" :key="i" :class="['step', s.state]">
@@ -244,8 +285,10 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
                         <span v-if="removed(s) > 0" class="small removed">−{{ removed(s).toLocaleString() }}</span>
                         <span v-if="s.rows_after != null" class="muted small">{{ s.rows_after.toLocaleString() }} rows</span>
                         <span class="muted small">{{ dur(s.duration) }}</span>
+                        <Tag v-if="s.note" :value="notePill(s.note)" severity="warn" class="note-pill" />
                         <Tag :value="s.state" :severity="STEP_META[s.state as StepState]?.severity" />
                       </div>
+                      <div v-if="s.note" class="small batch-note"><i class="pi pi-info-circle" /> {{ s.note }}</div>
                       <div v-if="s.source && s.source.repo !== 'gwashub'" class="src mono muted"><i class="pi pi-github" /> {{ srcLabel(s) }} <i class="pi pi-box" /> {{ s.image }}</div>
                       <p v-for="(m, k) in s.messages" :key="k" :class="['msg', { pre: m.includes('\n') }]">{{ m }}</p>
                       <div v-if="metricEntries(s).length" class="metrics">
@@ -257,7 +300,7 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
                 </ol>
               </section>
 
-              <section v-if="qcRows.length">
+              <section v-if="qcRows.length" data-tour="panel-metrics">
                 <h3>QC metrics</h3>
                 <table class="qct">
                   <tbody>
@@ -288,7 +331,7 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
                 <small class="muted">Uploaded values are as received, so odds ratios appear before conversion to BETA.</small>
               </section>
 
-              <section v-if="plotData">
+              <section v-if="plotData" data-tour="panel-plots">
                 <h3>Plots</h3>
                 <div class="plots">
                   <div class="plot-card"><ManhattanPlot :data="plotData.manhattan" :gws="plotData.gws" :height="260" /></div>
@@ -329,8 +372,11 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
                 <div class="field"><label>Phenotype</label><Select v-model="form.phenotype" :options="phenoOptions" option-label="label" option-value="value" /></div>
                 <div class="field"><label>Ancestry</label><Select v-model="form.ancestry" :options="project.ancestries" /></div>
                 <div class="field"><label>Sex</label><SelectButton v-model="form.sex" :options="project.sexes" :allow-empty="false" /></div>
-                <div class="field"><label>Cases</label><InputNumber v-model="form.n_cases" :min="1" /></div>
-                <div class="field"><label>Controls</label><InputNumber v-model="form.n_controls" :min="1" /></div>
+                <div v-if="formQuantitative" class="field"><label>Total sample size</label><InputNumber v-model="form.n_total" :min="1" /></div>
+                <template v-else>
+                  <div class="field"><label>Cases</label><InputNumber v-model="form.n_cases" :min="1" /></div>
+                  <div class="field"><label>Controls</label><InputNumber v-model="form.n_controls" :min="1" /></div>
+                </template>
                 <div class="field">
                   <label>Genome build</label><SelectButton v-model="form.build" :options="['GRCh37', 'GRCh38']" :allow-empty="false" :disabled="d.status === 'processing'" />
                   <small v-if="form.build !== d.build" class="muted">Saving re-runs QC with the new build.</small>
@@ -341,7 +387,8 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
                 <dt>Phenotype</dt><dd>{{ d.phenotype }}</dd>
                 <dt>Ancestry</dt><dd>{{ d.ancestry }}</dd>
                 <dt>Sex</dt><dd>{{ d.sex }}</dd>
-                <dt>Cases / controls</dt><dd>{{ d.n_cases?.toLocaleString() ?? '–' }} / {{ d.n_controls?.toLocaleString() ?? '–' }}</dd>
+                <template v-if="d.trait_type === 'quantitative'"><dt>Sample size</dt><dd>{{ d.n_total?.toLocaleString() ?? '–' }} <span class="muted">(quantitative trait)</span></dd></template>
+                <template v-else><dt>Cases / controls</dt><dd>{{ d.n_cases?.toLocaleString() ?? '–' }} / {{ d.n_controls?.toLocaleString() ?? '–' }}</dd></template>
                 <dt>Submitted build</dt><dd>{{ d.build }}</dd>
                 <dt>Effect</dt><dd>{{ d.effect_type === 'or' ? 'Odds ratio' : 'BETA' }}</dd>
                 <dt>Uploaded</dt><dd>{{ fmtDate(d.created_at) }} by {{ d.uploader }}</dd>
@@ -400,6 +447,11 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
 .small { font-size: 0.8rem; }
 .body { display: flex; flex-direction: column; gap: 18px; }
 .actions { gap: 8px; }
+.pipe { gap: 8px; margin: 4px 0 8px; }
+.pipe :deep(.p-select-label) { font-size: inherit; }
+.oodmsg { margin-bottom: 8px; }
+.oodmsg .row { gap: 10px; }
+.oodbtn { padding-top: 0; padding-bottom: 0; }
 .actions a { text-decoration: none; }
 .err { white-space: pre-wrap; font-size: 0.75rem; margin: 0; max-height: 160px; overflow: auto; }
 .review { border: 1px solid var(--gh-border); background: var(--gh-bg); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
@@ -458,4 +510,6 @@ h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: .05em; color:
 .pt tr.first td, .pt tr.first th { border-top: 1px solid var(--gh-border); }
 .warnic { color: #b45309; font-size: 0.8rem; margin-left: 4px; }
 .loading { display: flex; justify-content: center; padding: 60px; }
+.batch-note { color: #b45309; margin-top: 4px; }
+.note-pill { white-space: nowrap; }
 </style>

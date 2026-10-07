@@ -1,19 +1,23 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 import re
 
-from gwashub_api import metadata_schema, services
+import logging
+
+from gwashub_api import metadata_schema, practice, services, storage
 from gwashub_api.accounts import InviteError, find_or_invite
 from gwashub_api.auth import current_user, membership, require_member
 from gwashub_api.db import get_db
-from gwashub_api.models import Dataset, Membership, Project, User
+from gwashub_api.models import ApiToken, Cohort, Dataset, Membership, MetaAnalysis, Pipeline, PipelineVersion, Project, Resource, User
 from gwashub_api.services import current_pipeline
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["projects"])
-STATUSES = ("passed", "review", "failed", "processing")
+STATUSES = ("passed", "review", "failed", "processing", "pending")
 
 
 def counts(db, project_id):
@@ -31,11 +35,12 @@ def me(user: User = Depends(current_user)):
 
 @router.get("/projects")
 def list_projects(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    practice.ensure_member(db, user)
     out = []
     for m in db.scalars(select(Membership).where(Membership.user_id == user.id)):
         p = m.project
         out.append({"id": p.id, "name": p.name, "short": p.short, "description": p.description, "role": m.role,
-                    "members": len(p.members), "counts": counts(db, p.id)})
+                    "members": len(p.members), "counts": counts(db, p.id), "is_practice": p.id == practice.PROJECT_ID})
     return sorted(out, key=lambda p: p["name"])
 
 
@@ -49,16 +54,23 @@ def get_project(project_id: str, user: User = Depends(current_user), db: Session
     pv = current_pipeline(db, project_id)
     return {
         "id": p.id, "name": p.name, "short": p.short, "description": p.description, "phenotypes": p.phenotypes,
-        "phenotype_descriptions": p.phenotype_descriptions or {}, "metadata_config": services.metadata_config(p),
+        "phenotype_descriptions": p.phenotype_descriptions or {}, **project_metadata(p),
+        "phenotype_types": {ph: services.trait_type(p, ph) for ph in p.phenotypes}, "metadata_config": services.metadata_config(p),
         "is_admin": user.is_admin,
         "ancestries": p.ancestries, "sexes": p.sexes,
-        "created_at": p.created_at, "role": m.role, "counts": counts(db, p.id),
+        "created_at": p.created_at, "role": m.role, "counts": counts(db, p.id), "is_practice": p.id == practice.PROJECT_ID,
+        # Everyone is in the Practice project: each person sees only themselves there.
         "members": [{"id": x.user.id, "name": x.user.name, "institution": x.user.institution, "role": x.role,
                      "is_me": x.user_id == user.id, "uploads": uploads.get(x.user_id, 0),
                      **({"email": x.user.email} if m.role == "reviewer" else {})}  # reviewers manage members
-                    for x in sorted(p.members, key=lambda x: x.user.name.lower())],
+                    for x in sorted(p.members, key=lambda x: x.user.name.lower())
+                    if p.id != practice.PROJECT_ID or x.user_id == user.id],
         "pipeline": pv and {"version": pv.version, "steps": len(pv.steps), "created_at": pv.created_at,
                             "consortium_steps": sum(1 for s in pv.steps if not s["step"].startswith("gwashub/"))},
+        # The project's pipelines (for choosing a dataset's pipeline), default first.
+        "pipelines": [{"id": pp.id, "name": pp.name, "is_default": pp.is_default,
+                       "version": getattr(services.current_version(db, pp.id), "version", None)}
+                      for pp in db.scalars(select(Pipeline).where(Pipeline.project_id == p.id).order_by(Pipeline.is_default.desc(), Pipeline.name))],
     }
 
 
@@ -66,9 +78,18 @@ ALL_ANCESTRIES = ["EUR", "AFR", "EAS", "SAS", "AMR", "Multi"]
 ALL_SEXES = ["Combined", "Female", "Male"]
 
 
+def phenotype_types(phenos: list[str], given: dict) -> dict:
+    """Only the quantitative phenotypes are stored (binary is the default)."""
+    bad = sorted({v for v in given.values() if v not in services.TRAIT_TYPES})
+    if bad:
+        raise HTTPException(422, f"Trait types are binary or quantitative, not {', '.join(bad)}")
+    return {ph: "quantitative" for ph in phenos if given.get(ph) == "quantitative"}
+
+
 class UploadOptions(BaseModel):
     phenotypes: list[str]  # codes
     phenotype_descriptions: dict[str, str] | None = None  # code -> description
+    phenotype_types: dict[str, str] | None = None  # code -> binary | quantitative (unlisted: binary)
     ancestries: list[str]
     sexes: list[str]
 
@@ -95,12 +116,23 @@ def put_upload_options(project_id: str, body: UploadOptions, user: User = Depend
         p.phenotype_descriptions = descs
     else:
         p.phenotype_descriptions = {k: v for k, v in (p.phenotype_descriptions or {}).items() if k in phenos}
+    if body.phenotype_types is not None:
+        types = phenotype_types(phenos, body.phenotype_types)
+        # A phenotype's datasets were described for its type (cases/controls or a total), so it can't change under them.
+        in_use = {ph for (ph,) in db.execute(select(Dataset.phenotype).where(Dataset.project_id == project_id))}
+        changed = [ph for ph in phenos if ph in in_use and types.get(ph, "binary") != services.trait_type(p, ph)]
+        if changed:
+            raise HTTPException(409, f"{', '.join(changed)} already has datasets, so its trait type can't change")
+        p.phenotype_types = types
+    else:
+        p.phenotype_types = {k: v for k, v in (p.phenotype_types or {}).items() if k in phenos}
     p.phenotypes = phenos
     p.ancestries = [a for a in ALL_ANCESTRIES if a in body.ancestries]
     p.sexes = [s for s in ALL_SEXES if s in body.sexes]
     db.commit()
     in_use = {ph for (ph,) in db.execute(select(Dataset.phenotype).where(Dataset.project_id == project_id))}
-    return {"phenotypes": p.phenotypes, "phenotype_descriptions": p.phenotype_descriptions, "ancestries": p.ancestries,
+    return {"phenotypes": p.phenotypes, "phenotype_descriptions": p.phenotype_descriptions,
+            "phenotype_types": {ph: services.trait_type(p, ph) for ph in p.phenotypes}, "ancestries": p.ancestries,
             "sexes": p.sexes, "removed_but_in_use": sorted(in_use - set(phenos))}
 
 
@@ -113,15 +145,85 @@ class MetadataConfig(BaseModel):
 
 @router.put("/projects/{project_id}/metadata-config")
 def put_metadata_config(project_id: str, body: MetadataConfig, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """Which metadata fields this project shows, and which must be filled in at upload. Platform admins set
-    it up; the project's reviewers can change it. Existing datasets missing a newly required field are
+    """Which metadata fields this project shows, and which must be filled in at upload. Reviewers only (a platform
+    admin is the first reviewer of a project they create). Existing datasets missing a newly required field are
     shown as "metadata incomplete"; nothing is blocked."""
-    m = require_member(db, user, project_id)
-    if m.role != "reviewer" and not user.is_admin:
-        raise HTTPException(403, "Only reviewers can change which metadata fields are collected")
-    m.project.metadata_config = metadata_schema.validate_config(body.model_dump())
+    m = require_member(db, user, project_id, role="reviewer")
+    m.project.metadata_config = metadata_schema.validate_config(body.model_dump(), services.custom_fields(m.project))
     db.commit()
     return m.project.metadata_config
+
+
+class CustomField(BaseModel):
+    key: str | None = None  # absent for a new field (one is made from the label)
+    label: str
+    level: str  # cohort | dataset
+    type: str  # text | number | integer | yesno | select | date
+    options: list[str] = []  # select only
+    hidden: bool = False  # "deleted": off the forms, values kept
+
+
+class CustomFields(BaseModel):
+    fields: list[CustomField]
+
+
+@router.put("/projects/{project_id}/metadata-fields")
+def put_metadata_fields(project_id: str, body: CustomFields, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Reviewers manage the project's own metadata fields: add, rename, add choices, hide (delete) or unhide. A field's
+    key, level and type are fixed once it exists, its choices can only grow, and it can't be removed outright (hide it),
+    so saved values and the edit history stay valid. Hidden fields leave the shown/required settings."""
+    m = require_member(db, user, project_id, role="reviewer")
+    p = m.project
+    old = {c["key"]: c for c in services.custom_fields(p)}
+    builtin = {f["label"].lower() for f in metadata_schema.FIELDS.values()}
+    out, labels = [], set()
+    for f in body.fields:
+        label = " ".join(f.label.split())
+        if not label or len(label) > 120:
+            raise HTTPException(422, "Give each field a name of up to 120 characters")
+        if label.lower() in labels or label.lower() in builtin:
+            raise HTTPException(422, f"There's already a field called {label}")
+        labels.add(label.lower())
+        if f.level not in metadata_schema.CUSTOM_SECTIONS or f.type not in metadata_schema.CUSTOM_TYPES:
+            raise HTTPException(422, f"{label}: level must be cohort or dataset, and type one of {', '.join(metadata_schema.CUSTOM_TYPES)}")
+        options = list(dict.fromkeys(o.strip() for o in f.options if o.strip())) if f.type == "select" else []
+        if f.type == "select" and not options:
+            raise HTTPException(422, f"{label}: a choice field needs at least one choice")
+        if f.key:
+            was = old.get(f.key)
+            if not was:
+                raise HTTPException(422, f"No field {f.key} in this project")
+            if (was["level"], was["type"]) != (f.level, f.type):
+                raise HTTPException(422, f"{label}: a field's level and type can't change once it exists (add a new field instead)")
+            lost = [o for o in was.get("options") or [] if o not in options]
+            if lost:
+                raise HTTPException(422, f"{label}: choices can be added but not removed ({', '.join(lost)})")
+            key = f.key
+        else:
+            base = "custom_" + (re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")[:40] or "field")
+            key, n = base, 2
+            while key in old or key in metadata_schema.FIELDS or any(c["key"] == key for c in out):
+                key, n = f"{base}_{n}", n + 1
+        out.append({"key": key, "label": label, "level": f.level, "type": f.type, "options": options, "hidden": f.hidden})
+    missing = [old[k]["label"] for k in old if k not in {c["key"] for c in out}]
+    if missing:
+        raise HTTPException(422, f"Fields can't be removed, only hidden: {', '.join(missing)}")
+    p.metadata_custom = out
+    # New fields start shown; hidden fields can't be shown or required.
+    cfg = services.metadata_config(p)
+    added = [c["key"] for c in out if c["key"] not in old and not c["hidden"]]
+    p.metadata_config = metadata_schema.normalise_config({**cfg, "shown": cfg["shown"] + added}, out)
+    db.commit()
+    return project_metadata(p)
+
+
+def project_metadata(p) -> dict:
+    """The project's metadata settings for the website: its own fields (for editing, and as catalogue sections and
+    units to add to the built-in ones) and which fields are shown and required."""
+    custom = services.custom_fields(p)
+    return {"metadata_custom": custom, "metadata_custom_sections": metadata_schema.custom_sections(custom),
+            "metadata_custom_units": [u for u in metadata_schema.units(custom) if u["section"] in ("custom_cohort", "custom_dataset")],
+            "metadata_config": services.metadata_config(p)}
 
 
 @router.get("/projects/{project_id}/summary")
@@ -169,6 +271,8 @@ def _reviewer_count(db, project_id) -> int:
 def add_member(project_id: str, body: MemberIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Reviewer-only. Adds someone to the project; new people get an account and an invitation email."""
     require_member(db, user, project_id, role="reviewer")
+    if project_id == practice.PROJECT_ID:
+        raise HTTPException(409, "Everyone is a reviewer in the Practice project: its members can't be changed")
     _check_role(body.role)
     try:
         person, how = find_or_invite(db, body.email, body.name, body.institution)
@@ -186,6 +290,8 @@ def add_member(project_id: str, body: MemberIn, user: User = Depends(current_use
 @router.patch("/projects/{project_id}/members/{user_id}")
 def change_role(project_id: str, user_id: int, body: RoleIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     require_member(db, user, project_id, role="reviewer")
+    if project_id == practice.PROJECT_ID:
+        raise HTTPException(409, "Everyone is a reviewer in the Practice project: its members can't be changed")
     _check_role(body.role)
     m = db.scalar(select(Membership).where(Membership.project_id == project_id, Membership.user_id == user_id))
     if not m:
@@ -201,6 +307,8 @@ def change_role(project_id: str, user_id: int, body: RoleIn, user: User = Depend
 def remove_member(project_id: str, user_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Reviewer-only. The person keeps their account and their uploaded datasets stay in the project."""
     require_member(db, user, project_id, role="reviewer")
+    if project_id == practice.PROJECT_ID:
+        raise HTTPException(409, "Everyone is a reviewer in the Practice project: its members can't be changed")
     m = db.scalar(select(Membership).where(Membership.project_id == project_id, Membership.user_id == user_id))
     if not m:
         raise HTTPException(404, "Not a member of this project")
@@ -221,6 +329,7 @@ class ProjectIn(BaseModel):
     short: str
     description: str = ""
     phenotypes: list[str]
+    phenotype_types: dict[str, str] = {}  # code -> binary | quantitative (unlisted: binary)
     metadata_preset: str = "default"  # "default" (the HERMES set) or "all" (every field, HERMES and SGC)
 
 
@@ -244,10 +353,75 @@ def create_project(body: ProjectIn, user: User = Depends(current_user), db: Sess
         raise HTTPException(422, "metadata_preset must be default or all")
     preset = METADATA_PRESETS[body.metadata_preset]
     p = Project(id=pid, name=name, short=short, description=body.description.strip(), phenotypes=phenos,
-                metadata_config=preset() if preset else None)
+                phenotype_types=phenotype_types(phenos, body.phenotype_types), metadata_config=preset() if preset else None)
     db.add(p)
     db.flush()
     db.add(Membership(user_id=user.id, project_id=pid, role="reviewer"))
     services.ensure_project_pipeline(db, p, user.id)
     db.commit()
     return {"id": pid}
+
+
+class ProjectDelete(BaseModel):
+    confirm: str  # the project's name, typed out
+
+
+@router.delete("/projects/{project_id}", status_code=204)
+def delete_project(project_id: str, body: ProjectDelete, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Platform admins only: delete a project and everything in it (datasets, QC runs, meta-analyses, cohorts,
+    pipelines, project resources, members) and all its files in storage. The project's name must be given exactly.
+    On AWS the buckets are versioned: deleted files stay recoverable until the lifecycle rule expires them."""
+    if not user.is_admin:
+        raise HTTPException(403, "Only platform admins can delete projects")
+    p = db.get(Project, project_id)
+    if not p:
+        raise HTTPException(404, "Project not found")
+    if body.confirm != p.name:
+        raise HTTPException(422, "Type the project's name exactly to delete it")
+    datasets = db.scalars(select(Dataset).where(Dataset.project_id == project_id)).all()
+    metas = db.scalars(select(MetaAnalysis).where(MetaAnalysis.project_id == project_id)).all()
+    busy = sum(ds.status == "processing" for ds in datasets) + sum(ma.status in ("queued", "running") for ma in metas)
+    if busy:
+        raise HTTPException(409, f"Jobs still running in this project: {busy} (QC runs and meta-analyses). Delete it when they have finished.")
+    resources = db.scalars(select(Resource).where(Resource.project_id == project_id)).all()
+    # Every folder the records point at, then the project's own prefixes in each area (catches anything left over).
+    folders = [storage.parent(ds.storage_path) for ds in datasets if ds.storage_path]
+    folders += [r.run_dir for ds in datasets for r in ds.runs] + [ma.run_dir for ma in metas]
+    folders += [storage.parent(r.storage_path) for r in resources if r.storage_path]
+    folders += [storage.location("uploads", f"uploads/{project_id}"), storage.location("results", f"qc/{project_id}"),
+                storage.location("results", f"meta/{project_id}"), storage.location("resources", f"resources/{project_id}")]
+    for ds in datasets:
+        if ds.status == "uploading" and ds.upload_id:
+            storage.abort_multipart(ds.storage_path, ds.upload_id)
+    counts = {"datasets": len(datasets), "meta-analyses": len(metas), "resources": len(resources)}
+    for ds in datasets:
+        db.delete(ds)  # and its QC runs
+    for rows in (metas, resources):
+        for r in rows:
+            db.delete(r)
+    db.flush()
+    for model in (Cohort, PipelineVersion, Pipeline, ApiToken):
+        for r in db.scalars(select(model).where(model.project_id == project_id)):
+            db.delete(r)
+        db.flush()
+    db.delete(p)  # and its memberships
+    db.commit()
+    log.info("Project %s (%s) deleted by %s: %s", project_id, p.name, user.email, counts)
+    for loc in dict.fromkeys(f for f in folders if f):
+        storage.delete_prefix(loc)
+
+
+# ---------- the Practice project's files ----------
+
+@router.get("/practice/files")
+def practice_files(user: User = Depends(current_user)):
+    """The synthetic files for the Practice project, with the details to enter for each."""
+    return practice.files()
+
+
+@router.get("/practice/files/{name}")
+def practice_file(name: str, user: User = Depends(current_user)):
+    path = practice.file_path(name)
+    if not path:
+        raise HTTPException(404, "No such practice file")
+    return FileResponse(path, filename=name, media_type="application/gzip")

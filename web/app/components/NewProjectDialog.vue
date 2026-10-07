@@ -49,7 +49,7 @@ async function submit() {
           <InputText v-model="newPheno" placeholder="e.g. All-cause HF" class="grow" @keydown.enter.prevent="addPheno" />
           <Button label="Add" icon="pi pi-plus" size="small" outlined :disabled="!newPheno.trim()" @click="addPheno" />
         </div>
-        <small class="muted">What uploaders choose from. Reviewers can change these later under Upload options.</small>
+        <small class="muted">What uploaders choose from. Each starts as case/control; mark quantitative traits (and edit the list) under Upload options, before their first dataset.</small>
       </div>
       <div class="field"><label>Study metadata fields</label>
         <SelectButton v-model="form.metadata_preset" :options="[{ l: 'HERMES default set', v: 'default' }, { l: 'Every field (HERMES + SGC)', v: 'all' }]"

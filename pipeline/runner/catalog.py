@@ -47,6 +47,7 @@ class StepDef:
     pythonpath: list = field(default_factory=list)
     always_run: bool = False  # run even after the pipeline was blocked (e.g. the report)
     compute: dict = field(default_factory=dict)  # {"vcpus", "memory_gb"} this step needs on AWS Batch
+    narrative: str = ""  # what the script does, in plain words (step.yaml `narrative:`; the website's step contract)
 
     @property
     def owner(self):
@@ -82,7 +83,7 @@ def load_steps(qc_steps_dir=QC_STEPS_DIR):
             workdir = os.path.join(qc_steps_dir, owner, name)
             schema = P.normalise(d.get("params"))
             steps[key] = StepDef(
-                key=key, title=d["title"], description=d.get("description", ""), workdir=workdir,
+                key=key, title=d["title"], description=d.get("description", ""), narrative=d.get("narrative", ""), workdir=workdir,
                 command=list(d["command"]), image=d["image"], default_on_fail=d.get("default_on_fail", "flag"),
                 resources=list(d.get("resources") or []), optional_resources=list(d.get("optional_resources") or []),
                 params=P.defaults(schema), param_schema=schema,
@@ -166,6 +167,7 @@ class AnalysisDef:
     param_schema: list = field(default_factory=list)
     reference: str = ""  # citation shown with the method
     source: dict = field(default_factory=dict)
+    narrative: str = ""  # what the method's script does, in plain words (analysis.yaml `narrative:`)
 
     @property
     def owner(self):
@@ -185,7 +187,7 @@ def load_analyses(root=META_ANALYSIS_DIR):
             key = f"{owner}/{d['name']}"
             workdir = os.path.join(root, owner, name)
             out[key] = AnalysisDef(
-                key=key, title=d["title"], description=d.get("description", ""), workdir=workdir,
+                key=key, title=d["title"], description=d.get("description", ""), narrative=d.get("narrative", ""), workdir=workdir,
                 command=list(d["command"]), image=d["image"], param_schema=P.normalise(d.get("params")),
                 reference=d.get("reference", ""),
                 source={"repo": "gwashub", "path": os.path.relpath(os.path.join(workdir, d["command"][-1]), REPO_ROOT)})

@@ -1,24 +1,25 @@
-# Parse (GWASHub default step, R): the only step that reads the upload as received.
-# Picks the mapped columns, recodes common problems, checks every value and writes the GWASHub format
-# (_lib/common.py STANDARD): chr pos ea oa beta se p [eaf n ncase ncontrol rsid info], positions in the
-# uploaded build. Rows whose required values (chr pos ea oa beta se p) are missing or invalid are dropped;
-# invalid optional values become NA (gwashub/filter decides what to do with those).
+# Parse (GWASHub default step, R): the only step that reads the upload as received. It reports on the data as it
+# arrived (missingness and out-of-bounds values per column, indels, chromosomes present), wrangles it into the GWASHub
+# format (_lib/common.py STANDARD: chr pos ea oa beta se p eaf [n ncase ncontrol rsid info], positions in the uploaded
+# build; P from BETA/SE where P is missing, N from cases + controls or the study details), and removes the rows it
+# can't recover: a required value (chr pos ea oa beta se p eaf) missing or invalid, or EAF of exactly 0 or 1.
+# Invalid optional values become NA (gwashub/filter decides what to do with those).
 #
 # Refactored from hermes3_dcm scripts/gwas_qc_parse.R (commit ff35109). The recoding and validity rules are
-# those of that script; the thresholds it applied (|BETA| < 20, 0 < EAF < 1, required EAF/INFO/N) are now
-# gwashub/filter's parameters, and the gwas2vcf column JSON is written by gwashub/harmonise_liftover.
+# those of that script; its value thresholds (|BETA| < 20, required INFO/N) are gwashub/filter's parameters, and the
+# gwas2vcf column JSON is written by gwashub/harmonise_liftover.
 suppressPackageStartupMessages({ library(data.table); library(jsonlite) })
 
 DEFAULTS <- list(
   fill_counts = TRUE,         # missing N / cases / controls come from the dataset's study details
-  p_from_log10p = "beta_se",  # how P is made when only -log10 P is given: "beta_se" (as hermes3_dcm) or "log10p"
+  p_from_log10p = "beta_se",  # how a missing P is made: "beta_se" (as hermes3_dcm) or "log10p" (when -log10 P is mapped)
   neglog10p_fraction = 0.01,  # P values above 1 in more than this share of rows: the column is -log10 P
   min_rows = 1000,
   warn_drop_fraction = 0.01,
   fail_drop_fraction = 0.5
 )
 MAPPABLE <- c("rsid", "chr", "pos", "ea", "oa", "eaf", "beta", "se", "p", "log10p", "n", "ncase", "ncontrol", "info")
-REQUIRED <- c("chr", "pos", "ea", "oa", "beta", "se", "p")
+REQUIRED <- c("chr", "pos", "ea", "oa", "beta", "se", "p", "eaf")
 OUT_ORDER <- c("chr", "pos", "ea", "oa", "beta", "se", "p", "eaf", "n", "ncase", "ncontrol", "rsid", "info")
 CHROMS <- c(as.character(1:22), "X", "Y")
 
@@ -77,15 +78,38 @@ summary <- data.table(column = names(gwas), mapped_from = unlist(colmap)[names(g
 messages <- character()
 metrics <- list(rows_in = rows_in, columns_mapped = length(colmap))
 
-# chromosome: drop a "chr" prefix, upper case, 23 -> X, 24 -> Y; anything else is invalid
+# chromosome: drop a "chr" prefix, upper case, 23 -> X, 24 -> Y; anything else (MT, contigs) is invalid
+received_chr <- gwas$chr
 gwas[, chr := toupper(sub("(?i)^chr", "", trimws(chr), perl = TRUE))]
 gwas[, chr := fcase(chr %in% CHROMS, chr, chr == "23", "X", chr == "24", "Y", default = NA_character_)]
+chroms <- data.table(as_received = received_chr, chromosome = gwas$chr)[, .(rows = .N), by = .(as_received, chromosome)]
+chroms[, chromosome := fifelse(is.na(chromosome), "(removed: not 1-22, X, Y)", chromosome)]
+setorder(chroms, chromosome, as_received)
+fwrite(chroms, file.path(art_dir, "chromosomes.tsv"), sep = "\t", na = "NA")
+present <- intersect(CHROMS, unique(gwas$chr))
+messages <- c(messages, sprintf("Chromosomes present: %s%s.", if (length(present)) paste(present, collapse = ", ") else "none",
+                                if (length(setdiff(CHROMS, present))) sprintf(" (absent: %s)", paste(setdiff(CHROMS, present), collapse = ", ")) else ""))
+other <- sum(is.na(gwas$chr) & !is.na(received_chr))
+if (other) messages <- c(messages, sprintf("%s rows on other chromosomes or contigs (%s) are removed.", format(other, big.mark = ","),
+                                          paste(head(unique(received_chr[is.na(gwas$chr) & !is.na(received_chr)]), 5), collapse = ", ")))
+metrics$chromosomes_present <- length(present)
 
 # sample sizes: strip non-numeric characters ("<=40" -> 40); fill from the study details
 for (col in intersect(c("n", "ncase", "ncontrol"), names(gwas))) gwas[, (col) := count(get(col))]
+# N from the row's own cases + controls where N is missing
+if (all(c("ncase", "ncontrol") %in% names(gwas))) {
+  if (!"n" %in% names(gwas)) gwas[, n := NA_real_]
+  k <- gwas[is.na(n) & !is.na(ncase) & !is.na(ncontrol), .N]
+  if (k) {
+    gwas[is.na(n) & !is.na(ncase) & !is.na(ncontrol), n := ncase + ncontrol]
+    metrics$n_from_cases_controls <- k
+    messages <- c(messages, sprintf("Filled N for %s rows from their cases + controls.", format(k, big.mark = ",")))
+  }
+}
 if (isTRUE(sp$fill_counts)) {
+  # Case/control datasets give cases and controls; quantitative ones only the total (n_total).
   cases <- params$n_cases; controls <- params$n_controls
-  total <- if (!is.null(cases) && !is.null(controls)) cases + controls else NULL
+  total <- params$n_total %||% (if (!is.null(cases) && !is.null(controls)) cases + controls else NULL)
   for (fill in list(list("n", total), list("ncase", cases), list("ncontrol", controls))) {
     col <- fill[[1]]; value <- fill[[2]]
     if (is.null(value)) next
@@ -118,6 +142,9 @@ if ("p" %in% names(gwas)) {
   }
 }
 
+# P missing as received (computed below); an out-of-bounds P is not "missing": it is reported and the row removed
+p_missing <- if ("p" %in% names(gwas)) is.na(gwas$p) else rep(TRUE, nrow(gwas))
+
 # alleles: upper case A/C/G/T only
 for (col in c("ea", "oa")) gwas[, (col) := toupper(trimws(get(col)))]
 
@@ -140,22 +167,32 @@ valid <- list(
   info     = function(x) !is.na(x) & x >= 0 & x <= 1,
   rsid     = function(x) !is.na(x)
 )
-summary[, invalid := sapply(column, function(col) sum(!is.na(gwas[[col]]) & !valid[[col]](gwas[[col]])))]
+summary[, out_of_bounds := sapply(column, function(col) sum(!is.na(gwas[[col]]) & !valid[[col]](gwas[[col]])))]
 for (col in names(gwas)) gwas[!valid[[col]](get(col)), (col) := NA]
 identical_alleles <- gwas[!is.na(ea) & ea == oa, .N]
 gwas[!is.na(ea) & ea == oa, c("ea", "oa") := NA_character_]
 
-# P from -log10 P when there is no usable P column (hermes3_dcm: 2 * pnorm(-|beta / se|))
-if (!"p" %in% names(gwas) || all(is.na(gwas$p))) {
-  if (sp$p_from_log10p == "log10p") {
-    gwas[, p := 10^(-log10p)]
-    messages <- c(messages, "No P column: P computed from -log10 P.")
-  } else {
-    gwas[, p := 2 * pnorm(-abs(beta / se))]
-    messages <- c(messages, "No P column: P computed from BETA / SE (normal approximation).")
-  }
-  metrics$p_from_log10p <- TRUE
+# EAF of exactly 0 or 1 (monomorphic): no information, and harmonisation can't use them; removed
+monomorphic <- gwas[!is.na(eaf) & (eaf == 0 | eaf == 1), .N]
+gwas[!is.na(eaf) & (eaf == 0 | eaf == 1), eaf := NA_real_]
+if (monomorphic) messages <- c(messages, sprintf("%s rows with EAF of 0 or 1 (monomorphic) are removed.", format(monomorphic, big.mark = ",")))
+
+# P where it is missing: from -log10 P (when mapped and chosen) or BETA / SE (hermes3_dcm: 2 * pnorm(-|beta / se|))
+if (!"p" %in% names(gwas)) gwas[, p := NA_real_]
+need <- p_missing & is.na(gwas$p)
+from_log <- 0L
+if (sp$p_from_log10p == "log10p" && "log10p" %in% names(gwas)) {
+  use <- need & !is.na(gwas$log10p)
+  from_log <- sum(use)
+  gwas[use, p := 10^(-log10p)]
+  need <- need & !use
 }
+use <- need & !is.na(gwas$beta) & !is.na(gwas$se)
+gwas[use, p := 2 * pnorm(-abs(beta / se))]
+filled_p <- from_log + sum(use)
+if (from_log) messages <- c(messages, sprintf("P missing for %s rows: computed from -log10 P.", format(from_log, big.mark = ",")))
+if (sum(use)) messages <- c(messages, sprintf("P missing for %s rows: computed from BETA / SE (normal approximation).", format(sum(use), big.mark = ",")))
+metrics$p_computed <- filled_p
 
 # P = 0 -> the smallest positive double (as hermes3_dcm); gwas2vcf needs P > 0
 zero_p <- gwas[!is.na(p) & p == 0, .N]
@@ -169,19 +206,30 @@ keep <- stats::complete.cases(gwas[, ..REQUIRED])
 gwas <- gwas[keep]
 rows_out <- nrow(gwas)
 dropped <- rows_in - rows_out
+summary[, `:=`(missing_pct = round(100 * missing / max(rows_in, 1), 2), out_of_bounds_pct = round(100 * out_of_bounds / max(rows_in, 1), 2))]
 summary[, kept_non_missing := sapply(column, function(col) if (col %in% names(gwas)) sum(!is.na(gwas[[col]])) else 0L)]
+setcolorder(summary, c("column", "mapped_from", "missing", "missing_pct", "out_of_bounds", "out_of_bounds_pct", "kept_non_missing"))
 fwrite(summary, file.path(art_dir, "parse_summary.tsv"), sep = "\t")
+# Removed rows by reason: a required column missing or out of bounds as received (a row can have more than one).
+for (i in seq_len(nrow(summary))) {
+  r <- summary[i]
+  if (r$missing + r$out_of_bounds == 0) next
+  messages <- c(messages, sprintf("%s: %s missing (%.2f%%), %s out of bounds (%.2f%%)%s.", toupper(r$column), format(r$missing, big.mark = ","),
+                                  r$missing_pct, format(r$out_of_bounds, big.mark = ","), r$out_of_bounds_pct,
+                                  if (r$column %in% REQUIRED) "; those rows are removed" else "; set to missing"))
+}
 
 gwas[, pos := as.integer(pos)]
 for (col in intersect(c("n", "ncase", "ncontrol"), names(gwas))) gwas[, (col) := round(get(col))]
 gwas <- gwas[, intersect(OUT_ORDER, names(gwas)), with = FALSE]
 fwrite(gwas, opt$input, sep = "\t", na = "NA", quote = FALSE)
 
+indels <- gwas[nchar(ea) > 1 | nchar(oa) > 1, .N]
+messages <- c(messages, sprintf("Indels: %s (%.2f%%); kept (gwashub/filter can remove them).", format(indels, big.mark = ","), 100 * indels / max(rows_out, 1)))
 metrics <- c(metrics, list(rows_out = rows_out, rows_removed = dropped, p_zero_recoded = zero_p,
-                           identical_alleles = identical_alleles,
-                           indels = gwas[nchar(ea) > 1 | nchar(oa) > 1, .N]))
+                           identical_alleles = identical_alleles, eaf_monomorphic = monomorphic, indels = indels))
 frac <- if (rows_in) dropped / rows_in else 1
-messages <- c(sprintf("Parsed %s of %s rows (%.2f%% removed: a required value missing or invalid).",
+messages <- c(sprintf("Parsed %s of %s rows (%.2f%% removed: a required value missing or out of bounds, or EAF 0 or 1).",
                       format(rows_out, big.mark = ","), format(rows_in, big.mark = ","), 100 * frac), messages)
 verdict <- "pass"
 if (rows_out < sp$min_rows) {
@@ -194,4 +242,5 @@ if (rows_out < sp$min_rows) {
   verdict <- "warn"
 }
 write_log(verdict, metrics, messages,
-          list(list(type = "table", path = "parse_summary.tsv", label = "Columns: missing and invalid values")))
+          list(list(type = "table", path = "parse_summary.tsv", label = "Columns: missing and out-of-bounds values"),
+               list(type = "table", path = "chromosomes.tsv", label = "Chromosomes present")))
