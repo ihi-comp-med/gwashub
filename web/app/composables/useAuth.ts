@@ -6,7 +6,7 @@ export function useAuth() {
 
   async function load() {
     if (checked.value) return me.value
-    try { me.value = await api<Me>('/me') }
+    try { me.value = await api<Me>('/me', { stay: true }) }  // the home and About pages are public: no redirect
     catch { me.value = null }
     checked.value = true
     return me.value

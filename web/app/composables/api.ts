@@ -7,7 +7,9 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message) }
 }
 
-export async function api<T = any>(path: string, opts: { method?: string, body?: any, query?: Record<string, any> } = {}): Promise<T> {
+// A 401 (not signed in) sends you to the login page, except with stay: true (checking whether someone is signed in, on
+// pages anyone may see).
+export async function api<T = any>(path: string, opts: { method?: string, body?: any, query?: Record<string, any>, stay?: boolean } = {}): Promise<T> {
   try {
     return await $fetch<T>(`/api${path}`, { method: (opts.method ?? 'GET') as any, body: opts.body, query: opts.query, credentials: 'include' })
   }
@@ -15,7 +17,7 @@ export async function api<T = any>(path: string, opts: { method?: string, body?:
     const status = e?.response?.status ?? 0
     const detail = e?.data?.detail
     const msg = typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map((d: any) => d.msg).join('; ') : (e?.message ?? 'Request failed')
-    if (status === 401 && !path.startsWith('/auth')) {
+    if (status === 401 && !path.startsWith('/auth') && !opts.stay) {
       useState<any>('me').value = null
       navigateTo('/login')
     }
