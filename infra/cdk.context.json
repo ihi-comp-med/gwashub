@@ -4,5 +4,13 @@
     "eu-west-2b",
     "eu-west-2c",
     "eu-west-2d"
-  ]
+  ],
+  "hosted-zone:account=203248996074:domainName=gwashub.com:region=us-east-1": {
+    "Id": "/hostedzone/Z0435955547JO0GA9HHA",
+    "Name": "gwashub.com."
+  },
+  "hosted-zone:account=203248996074:domainName=gwashub.com:region=eu-west-2": {
+    "Id": "/hostedzone/Z0435955547JO0GA9HHA",
+    "Name": "gwashub.com."
+  }
 }

@@ -71,10 +71,6 @@ for svc in ecs.amazonaws.com batch.amazonaws.com spot.amazonaws.com; do
 done
 cd infra
 aws cloudformation describe-stacks --stack-name CDKToolkit >/dev/null 2>&1 || npx --yes aws-cdk@2 bootstrap -c env="$ENV_NAME" -c image_tag="$TAG" -c pipeline_images="$PIPELINE_IMAGES" "aws://$ACCOUNT/$AWS_REGION"
-# With a domain, its certificate stack lives in us-east-1 (CloudFront's only certificate region), which needs bootstrapping too.
-if [ -n "$(.venv/bin/python -c "from gwashub_infra.config import ENVIRONMENTS; print(ENVIRONMENTS['$ENV_NAME'].domain)")" ]; then
-  aws cloudformation describe-stacks --stack-name CDKToolkit --region us-east-1 >/dev/null 2>&1 || npx --yes aws-cdk@2 bootstrap -c env="$ENV_NAME" -c image_tag="$TAG" -c pipeline_images="$PIPELINE_IMAGES" "aws://$ACCOUNT/us-east-1"
-fi
 npx --yes aws-cdk@2 deploy --all -c env="$ENV_NAME" -c image_tag="$TAG" -c pipeline_images="$PIPELINE_IMAGES" --require-approval never --outputs-file "cdk-outputs-$ENV_NAME.json"
 URL=$(python3 -c "import json;d=json.load(open('cdk-outputs-$ENV_NAME.json'));print(d['Gwashub-$ENV_NAME-App']['OutSiteUrl'])")
 echo

@@ -22,7 +22,7 @@ production. The AWS accounts themselves are described in `docs/AWS_ACCOUNT_SETUP
 
 | Piece | AWS service | Notes |
 |---|---|---|
-| Website | S3 + CloudFront | Static files from `nuxt generate`. Address: the environment's `domain` (`infra/gwashub_infra/config.py`) with an ACM certificate from the `Gwashub-<env>-Cert` stack in us-east-1; `https://<id>.cloudfront.net` without one |
+| Website | S3 + CloudFront | Static files from `nuxt generate`. Address: the environment's `domain` (`infra/gwashub_infra/config.py`) with an ACM certificate in us-east-1, requested by the App stack (the region guardrail blocks CloudFormation there); `https://<id>.cloudfront.net` without one |
 | API | ECS Fargate (Graviton) behind an **internal** load balancer | Reached only through CloudFront (`/api/*`, VPC origin). No public address |
 | Worker | ECS Fargate | Reads Batch job events from SQS and records results in the database |
 | QC runs and meta-analyses | AWS Batch on EC2 Spot, scales to zero: Graviton (m7g/r7g) for arm64 images, queue `gwashub-<env>`; Intel (m7i/r7i) for x86-64 images, queue `gwashub-<env>-x86`. Jobs get a 200 GB (dev) / 500 GB (prod) encrypted volume and a 12 h timeout | One job per *image group* of a run (below); `python -m pipeline.runner.aws.batch_entry s3://.../spec.json --group N` |
