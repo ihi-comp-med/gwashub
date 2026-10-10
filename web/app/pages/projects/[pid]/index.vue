@@ -29,7 +29,7 @@ const menuItems = computed(() => !menuFor.value ? [] : [
   { label: 'Remove from project', icon: 'pi pi-user-minus', command: () => removeMember(menuFor.value) },
 ])
 function openMenu(ev: Event, m: any) { menuFor.value = m; memberMenu.value.toggle(ev) }
-const statuses: DatasetStatus[] = ['passed', 'review', 'failed', 'processing', 'pending']
+const statuses: DatasetStatus[] = ['passed', 'review', 'changes_requested', 'failed', 'processing', 'pending']
 const groupings = [
   { label: 'Phenotype × ancestry × sex', value: 'phenotype_ancestry_sex' },
   { label: 'Ancestry × sex', value: 'ancestry_sex' },
@@ -41,10 +41,18 @@ const groupBy = ref('phenotype_ancestry_sex')
 const fieldLabel: Record<string, string> = { phenotype: 'Phenotype', ancestry: 'Ancestry', sex: 'Sex' }
 // Blank a cell when it and every column to its left repeat the previous row (reads as a hierarchy).
 const repeats = (i: number, j: number) => i > 0 && summary.value.fields.slice(0, j + 1).every((f: string) => rows.value[i - 1]?.[f] === rows.value[i][f])
-const { data: summary } = useApiGet<any>(() => `/projects/${pid.value}/summary?by=${groupBy.value}`)
+const { data: summary } = useApiGet<any>(() => `/projects/${pid.value}/summary?by=${groupBy.value}`, { keep: true })
 const rows = computed(() => summary.value?.rows ?? [])
 const datasetsLink = (query: Record<string, string>) => ({ path: `/projects/${pid.value}/datasets`, query })
 const rowQuery = (r: any) => Object.fromEntries((summary.value?.fields ?? []).map((f: string) => [f, r[f]]))
+// Sample sizes by (phenotype ×) ancestry × sex: every dataset, or those that haven't failed QC.
+const excludeFailed = ref(false)
+// keep: the current table stays while the other one loads (no jump when toggling)
+const { data: sizes } = useApiGet<any>(() => `/projects/${pid.value}/sample-sizes?exclude_failed=${excludeFailed.value}`, { keep: true })
+const sizeRows = computed(() => sizes.value?.rows ?? [])
+const sizeRepeats = (i: number, j: number) => i > 0 && sizes.value.fields.slice(0, j + 1).every((f: string) => sizeRows.value[i - 1]?.[f] === sizeRows.value[i][f])
+const sizeTotal = (k: string) => sizeRows.value.some((r: any) => r[k] != null) ? sizeRows.value.reduce((a: number, r: any) => a + (r[k] ?? 0), 0) : null
+const fmtCount = (v: number | null | undefined) => v == null ? '–' : v.toLocaleString()
 const reviewers = computed(() => project.value?.members.filter((m: any) => m.role === 'reviewer') ?? [])
 const uploaders = computed(() => project.value?.members.filter((m: any) => m.role === 'uploader') ?? [])
 </script>
@@ -66,6 +74,51 @@ const uploaders = computed(() => project.value?.members.filter((m: any) => m.rol
             </template>
           </Card>
           <PracticeFiles v-if="project.is_practice" />
+
+          <Card v-if="sizeRows.length">
+            <template #title>
+              <div class="row">Sample sizes<span class="spacer" />
+                <label class="row toggle small"><ToggleSwitch v-model="excludeFailed" input-id="exclude-failed" />
+                  <span>Exclude datasets that failed QC</span></label>
+              </div>
+            </template>
+            <template #subtitle>Cases, controls and total N, summed over {{ excludeFailed ? "the datasets that haven't failed QC" : 'every dataset submitted' }}.</template>
+            <template #content>
+              <div class="table-wrap">
+                <table class="summary">
+                  <thead>
+                    <tr>
+                      <th v-for="f in sizes.fields" :key="f">{{ fieldLabel[f] }}</th>
+                      <th class="num">Datasets</th>
+                      <th class="num">Cases</th>
+                      <th class="num">Controls</th>
+                      <th class="num">N total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(r, i) in sizeRows" :key="i" :class="{ first: sizes.fields.length > 1 && sizeRows[i - 1]?.[sizes.fields[0]] !== r[sizes.fields[0]] }">
+                      <td v-for="(f, j) in sizes.fields" :key="f" :class="{ strong: j < sizes.fields.length - 1 }">
+                        {{ j < sizes.fields.length - 1 && sizeRepeats(i, j) ? '' : r[f] }}
+                      </td>
+                      <td class="num">{{ fmtCount(r.datasets) }}</td>
+                      <td class="num">{{ fmtCount(r.n_cases) }}</td>
+                      <td class="num">{{ fmtCount(r.n_controls) }}</td>
+                      <td class="num strong">{{ fmtCount(r.n_total) }}</td>
+                    </tr>
+                  </tbody>
+                  <tfoot v-if="!sizes.fields.includes('phenotype')"><!-- no grand total across phenotypes -->
+                    <tr>
+                      <td :colspan="sizes.fields.length">Total</td>
+                      <td class="num">{{ fmtCount(sizeTotal('datasets')) }}</td>
+                      <td class="num">{{ fmtCount(sizeTotal('n_cases')) }}</td>
+                      <td class="num">{{ fmtCount(sizeTotal('n_controls')) }}</td>
+                      <td class="num">{{ fmtCount(sizeTotal('n_total')) }}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </template>
+          </Card>
 
           <Card data-tour="overview-summary">
             <template #title>
@@ -166,6 +219,7 @@ const uploaders = computed(() => project.value?.members.filter((m: any) => m.rol
 </template>
 
 <style scoped>
+.toggle { gap: 8px; font-weight: 400; cursor: pointer; }
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
 @media (max-width: 960px) { .layout { grid-template-columns: 1fr; } }
 .main, .side { display: flex; flex-direction: column; gap: 16px; }

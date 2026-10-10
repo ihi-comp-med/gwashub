@@ -1,11 +1,19 @@
 """EAF check (GWASHub default step): compares each variant's effect-allele frequency with 1000 Genomes for the
-dataset's ancestry. GWASHub format (GRCh38, after gwashub/harmonise_liftover) in and out; nothing is removed.
+dataset's ancestry. GWASHub format (GRCh38, after gwashub/harmonise_liftover) in and out; nothing is removed unless
+remove_large_diff is on.
 
 As the allele-frequency section of the HERMES 3 DCM QC report (hermes3_dcm scripts/gwas_qc_report.R, commit
 ff35109): variants are matched on chromosome, GRCh38 position and alleles (either order; the reference frequency is
 flipped when EA = REF), and the share differing by more than 0.2 is reported. Strongly negative correlation means
 EA and OA were swapped in the upload; a high share of large differences can mean a wrong ancestry or strand problems.
-Warns (never fails) when more than 5% of matched variants differ by more than 0.2.
+Warns (never fails) when more than 5% of matched variants differ by more than 0.2. With remove_large_diff, those
+variants are removed (and written to removed_rows.tsv.gz); the warning is still judged on the share before removal.
+Variants not found in 1000 Genomes are always kept.
+
+Three common mistakes are named when seen: a wrong ancestry (the frequencies fit another 1000 Genomes population
+clearly better than the declared one), an EAF column that is really the minor allele frequency (frequencies agree with
+the reference once both are folded to MAF, but not as given), and strand problems in A/T and C/G SNPs (which
+harmonisation can't see from the alleles: those SNPs then disagree with the reference far more often than the others).
 
 Reference: all_afreq_b38.tsv.gz, tab-separated with id, chr, pos_b38, ref, alt and <pop>_afreq (ALT allele
 frequency) for afr, amr, eas, eur, sas (resources/build/kg1000_b38.sh).
@@ -17,22 +25,27 @@ import pandas as pd
 
 from _lib.common import load_params, parse_args, read_working, step_params, write_log
 
-DEFAULTS = {"diff_threshold": 0.2, "warn_diff_fraction": 0.05}
+DEFAULTS = {"diff_threshold": 0.2, "warn_diff_fraction": 0.05, "remove_large_diff": False}
+AMBIGUOUS = {("A", "T"), ("T", "A"), ("C", "G"), ("G", "C")}
+KEYS = ["chr", "pos", "ea", "oa"]
 REFERENCE = "all_afreq_b38.tsv.gz"
 POPULATION = {"EUR": "eur", "AFR": "afr", "AMR": "amr", "EAS": "eas", "SAS": "sas"}
 CHUNK = 2_000_000
 
 
 def reference_frequencies(path, gwas, col):
-    """The reference rows at the dataset's positions, read in chunks so the whole file is never in memory."""
+    """The reference rows at the dataset's positions, read in chunks so the whole file is never in memory: afreq for
+    the dataset's population (col), and every population's <pop>_afreq (for the ancestry fit)."""
     keys = gwas[["chr", "pos"]].drop_duplicates()
+    header = pd.read_csv(path, sep="\t", comment="#", nrows=0).columns
+    pops = [f"{p}_afreq" for p in POPULATION.values() if f"{p}_afreq" in header]
     found = []
-    for chunk in pd.read_csv(path, sep="\t", comment="#", usecols=["chr", "pos_b38", "ref", "alt", col], chunksize=CHUNK,
+    for chunk in pd.read_csv(path, sep="\t", comment="#", usecols=["chr", "pos_b38", "ref", "alt", *pops], chunksize=CHUNK,
                              dtype={"chr": str, "ref": str, "alt": str}):
-        chunk = chunk.rename(columns={"pos_b38": "pos", col: "afreq"}).dropna(subset=["afreq"])
+        chunk = chunk.rename(columns={"pos_b38": "pos"}).assign(afreq=chunk[col]).dropna(subset=["afreq"])
         chunk["chr"] = chunk["chr"].str.replace(r"^chr", "", regex=True)
         found.append(chunk.merge(keys, on=["chr", "pos"]))
-    return pd.concat(found, ignore_index=True) if found else pd.DataFrame(columns=["chr", "pos", "ref", "alt", "afreq"])
+    return pd.concat(found, ignore_index=True) if found else pd.DataFrame(columns=["chr", "pos", "ref", "alt", "afreq", *pops])
 
 
 def plot(m, pop, path):
@@ -76,6 +89,8 @@ def main():
     same["ref_eaf"] = same["afreq"]
     flipped = g.merge(ref, left_on=["chr", "pos", "ea", "oa"], right_on=["chr", "pos", "ref", "alt"])
     flipped["ref_eaf"] = 1 - flipped["afreq"]
+    pops = [c for c in ref.columns if c.endswith("_afreq")]
+    flipped[pops] = 1 - flipped[pops]  # every population's frequency of the effect allele
     m = pd.concat([same, flipped], ignore_index=True).drop_duplicates(["chr", "pos", "ea", "oa"])
 
     n = len(m)
@@ -86,7 +101,8 @@ def main():
                   [f"Only {n} variants matched 1000 Genomes {pop.upper()}; EAF check not run."])
         return
     diff = (m["eaf"] - m["ref_eaf"]).abs()
-    frac = float((diff > opts["diff_threshold"]).mean())
+    large = diff > opts["diff_threshold"]
+    frac = float(large.mean())
     r = float(np.corrcoef(m["eaf"], m["ref_eaf"])[0, 1])
     metrics.update(eaf_correlation=r, large_diff_fraction=frac, large_diff=int((diff > opts["diff_threshold"]).sum()),
                    mean_abs_diff=float(diff.mean()))
@@ -99,7 +115,55 @@ def main():
                         f"{opts['diff_threshold']}: check the plot.")
     if r < 0:
         messages.append("Frequencies are negatively correlated with the reference: effect and other allele may be swapped.")
+    # Strand problems hide in A/T and C/G SNPs: they then disagree with the reference far more often than the rest.
+    ambiguous = np.array([(a, b) in AMBIGUOUS for a, b in zip(m["ea"], m["oa"])], dtype=bool)
+    if ambiguous.sum() >= 100 and (~ambiguous).sum() >= 100:
+        amb, other = float(large[ambiguous].mean()), float(large[~ambiguous].mean())
+        metrics.update(ambiguous_large_diff_fraction=amb, other_large_diff_fraction=other)
+        if amb > opts["warn_diff_fraction"] and amb > 2 * other:
+            verdict = "warn"
+            messages.append(f"Strand-ambiguous SNPs (A/T, C/G) differ from the reference far more often than the others "
+                            f"({100 * amb:.2f}% vs {100 * other:.2f}%): some are probably on the other strand. The filter step "
+                            "can remove them (Strand-ambiguous SNPs).")
+    # EAF that is really MAF: folding both to MAF removes the differences. Judged on the other SNPs, since a strand
+    # flip of an A/T SNP also turns f into 1 - f; and not when 1 - EAF fits (swapped allele columns, also hidden by folding).
+    rest = ~ambiguous
+    if rest.sum() >= 100:
+        maf_diff = (np.minimum(m["eaf"], 1 - m["eaf"]) - np.minimum(m["ref_eaf"], 1 - m["ref_eaf"])).abs()[rest]
+        swap_frac = float(((1 - m["eaf"] - m["ref_eaf"]).abs()[rest] > opts["diff_threshold"]).mean())
+        maf_frac, rest_frac = float((maf_diff > opts["diff_threshold"]).mean()), float(large[rest].mean())
+        metrics["large_diff_fraction_as_maf"] = maf_frac
+        if (rest_frac > opts["warn_diff_fraction"] and swap_frac > opts["warn_diff_fraction"]
+                and maf_frac < min(opts["warn_diff_fraction"], rest_frac / 3)):
+            messages.append(f"As minor allele frequencies only {100 * maf_frac:.2f}% differ: the EAF column looks like the minor "
+                            "allele frequency, not the frequency of the effect allele. Upload the effect allele's frequency.")
+    # Wrong ancestry declared: the dataset's frequencies sit clearly closer to another population's.
+    fit = {c.split("_")[0].upper(): float((m["eaf"] - m[c]).abs().mean()) for c in pops if m[c].notna().sum() >= 100}
+    if fit:
+        best = min(fit, key=fit.get)
+        metrics.update(ancestry_best_fit=best, **{f"mean_abs_diff_{k.lower()}": round(v, 4) for k, v in fit.items()})
+        if best != pop.upper() and fit[best] < 0.6 * fit[pop.upper()] and fit[pop.upper()] > 0.03:
+            verdict = "warn"
+            messages.append(f"Frequencies fit 1000 Genomes {best} better than the declared {pop.upper()} (mean difference "
+                            f"{fit[best]:.3f} vs {fit[pop.upper()]:.3f}): check the dataset's ancestry.")
     artifacts = []
+    if opts["remove_large_diff"] and large.any():
+        drop = m.loc[large, KEYS].assign(ref_eaf=m.loc[large, "ref_eaf"], eaf_diff=diff[large])
+        flagged = gwas.merge(drop, on=KEYS, how="left", indicator=True)["_merge"].eq("both").to_numpy()
+        removed = gwas[flagged].merge(drop, on=KEYS, how="left")
+        removed["reason"] = f"EAF differs from 1000 Genomes {pop.upper()} by more than {opts['diff_threshold']}"
+        kept = gwas[~flagged].copy()
+        for col in ("n", "ncase", "ncontrol"):  # whole numbers, as the other steps write them
+            if col in kept:
+                kept[col] = kept[col].round().astype("Int64")
+        kept.to_csv(args.input, sep="\t", index=False, na_rep="NA")
+        metrics.update(rows_removed=int(flagged.sum()), rows_out=int((~flagged).sum()))
+        messages.append(f"Removed {int(flagged.sum()):,} variants with a large difference.")
+        if art:
+            removed.to_csv(os.path.join(art, "removed_rows.tsv.gz"), sep="\t", index=False, na_rep="NA")
+            artifacts.append({"type": "table", "path": "removed_rows.tsv.gz", "label": "Removed rows", "rows": len(removed),
+                              "description": "Variants whose EAF differs from 1000 Genomes by more than the threshold, "
+                                             "with the reference EAF and the difference."})
     if art:
         plot(m, pop, os.path.join(art, "eaf_vs_reference.png"))
         artifacts.append({"type": "image", "path": "eaf_vs_reference.png", "label": "EAF vs 1000 Genomes"})

@@ -1,0 +1,101 @@
+# Test 4: QC catches planted problems (docs/VALIDATION_PLAN.md).
+title: QC catches planted problems
+claim: >-
+  Each QC rule removes or fixes exactly the variants it describes and nothing else, harmonisation flips effects
+  correctly, and each common whole-file mistake is caught and named.
+
+inputs: [UKB]                  # the clean base: test 1's prepared UKB file (run 01_gwama_default/1_prepare.R first)
+base: 01_gwama_default/inputs/UKB.tsv   # under local/validation/
+upload:                        # what UKB is (validation/sources.yaml): entered on the site for every upload
+  build: GRCh37
+  ancestry: EUR
+  sex: Combined
+  effect_type: beta
+  n_cases: 7452
+  n_controls: 412106
+  info: 0.95                   # Pan-UKB has no INFO column; the planted file gets one, 0.95 where not planted
+
+# Part A: one file, problems planted in separate, recorded rows (rows each, from variants with MAF >= 0.02 that are
+# not A/T or C/G SNPs, so every planted row has exactly one problem). expect: kept or removed, and by which step.
+planted:
+  seed: 2026
+  rows: 100
+  problems:
+    - {id: eaf_missing,  label: EAF missing,                         expect: removed, step: parse}
+    - {id: eaf_0_1,      label: EAF exactly 0 or 1,                  expect: removed, step: parse}
+    - {id: p_out,        label: P outside 0 to 1,                    expect: removed, step: parse}
+    - {id: beta_text,    label: BETA not a number,                   expect: removed, step: parse}
+    - {id: chr_mt,       label: Chromosome MT,                       expect: removed, step: parse}
+    - {id: header_line,  label: Header line repeated mid-file,       expect: removed, step: parse, rows: 1}
+    - {id: chr_y,        label: Chromosome Y,                        expect: removed, step: filter, reason: chromosome not in the kept set}
+    - {id: beta_large,   label: "|BETA| of 25",                      expect: removed, step: filter, reason: "|BETA| outside the limits"}
+    - {id: se_large,     label: SE of 12,                            expect: removed, step: filter, reason: SE outside the limits}
+    - {id: info_low,     label: INFO of 0.5,                         expect: removed, step: filter, reason: INFO outside the limits}
+    - {id: info_missing, label: INFO missing,                        expect: removed, step: filter, reason: INFO missing}
+    - {id: maf_low,      label: EAF of 0.004 (MAF below 0.01),       expect: removed, step: filter, reason: MAF outside the limits}
+    - {id: n_low,        label: N of 50,                             expect: removed, step: filter, reason: N outside the limits}
+    - {id: indel,        label: Indel (a base added to the effect allele), expect: removed, step: filter, reason: indel}
+    - {id: dup_exact,    label: Exact duplicate row,                 expect: one_kept, step: filter, reason: duplicate variant}
+    - {id: dup_swapped,  label: Duplicate with alleles the other way round, expect: one_kept, step: filter, reason: duplicate variant}
+    - {id: wrong_pos,    label: Position beyond the chromosome's end, expect: removed, step: harmonise_liftover, reason: "gwas2vcf: REF does not match"}
+    - {id: n_missing,    label: N missing,                           expect: kept, note: N filled with the study total}
+    - {id: swapped,      label: "EA is the reference allele (alleles swapped, BETA negated, EAF 1 - EAF)", expect: kept, note: switched back}
+    # gwas2vcf (as in HERMES 3) switches REF and ALT but never complements: a minus-strand SNP can't match REF and is removed.
+    - {id: minus_strand, label: Non-palindromic SNP on the minus strand (alleles complemented), expect: removed, step: harmonise_liftover, reason: "gwas2vcf: REF does not match"}
+
+# Natural removals among the unplanted rows, computed by 2_reference.R with these rules (the site settings below):
+# EAF of 0 or 1 (parse), then MAF < maf_min, |BETA| > beta_max, SE > se_max, and A/T or C/G SNPs with MAF > palindromic_maf_max (filter).
+# The only other losses allowed are harmonise_liftover's liftover drops (unmapped, lifted to another chromosome).
+
+# Part B: whole-file mistakes, each a separate upload of the base file changed once (and one unchanged control).
+# expect: the step, its allowed verdicts, and a phrase its messages must contain.
+cases:
+  - {id: control,          change: none (the base file as it is),                  expect: {no_gotcha_messages: true}}
+  - {id: truncated_gzip,   change: gzip file cut in half,                           expect: {step: parse, verdict: [fail], message: cut short}}
+  # The upload wizard suggests "Odds ratios" for this file: override it to BETA when uploading (parse's check is what
+  # guards uploads by script, where nothing suggests the effect type).
+  - {id: or_as_beta,       change: BETA replaced by exp(BETA) (odds ratios given as BETA), expect: {step: parse, verdict: [fail], message: look like odds ratios}}
+  - {id: beta_as_or,       change: none; uploaded with effect type odds ratio,      upload: {effect_type: or}, expect: {step: parse, verdict: [fail], message: looks like log-odds}}
+  - {id: neglog10p,        change: P replaced by -log10 P,                          expect: {step: parse, verdict: [fail], message: "-log10"}}
+  - {id: wrong_build,      change: none; uploaded as GRCh38,                        upload: {build: GRCh38}, expect: {step: harmonise_liftover, verdict: [warn, fail], message: look like GRCh37}}
+  - {id: maf_as_eaf,       change: EAF replaced by MAF,                             expect: {step: eaf_check, verdict: [warn], message: minor allele frequency}}
+  - {id: swapped_columns,  change: EA and OA columns exchanged (BETA, EAF unchanged), expect: {step: eaf_check, verdict: [warn], message: may be swapped}}
+  - {id: strand_ambiguous, change: A/T and C/G SNPs' alleles complemented (minus strand), expect: {step: eaf_check, verdict: [warn], message: Strand-ambiguous}}
+  - {id: linear_scale,     change: "BETA and SE times φ(1 - φ), φ = cases / (cases + controls)", expect: {step: stats_summary, verdict: [warn], message: linear 0/1 scale}}
+  - {id: se_scale,         change: SE times 3 (P unchanged),                        expect: {step: stats_summary, verdict: [warn], message: another scale}}
+  - {id: rounded_se,       change: SE rounded to 3 decimal places,                  expect: {step: parse, verdict: [warn], message: SE has only}}
+  - {id: no_chr22,         change: chromosome 22 deleted,                           expect: {step: parse, verdict: [warn], message: chromosome 22}}
+  - {id: n_above_total,    change: N doubled,                                       expect: {step: parse, verdict: [warn], message: above the study's total}}
+  - {id: alleles_12,       change: 1000 rows' alleles recoded 1/2,                  expect: {step: parse, verdict: [pass, warn], message: coded 1/2}}
+
+# Phrases that name a gotcha: the control upload must show none of them.
+gotcha_messages: [cut short, look like odds ratios, looks like log-odds, "-log10", look like GRCh, minor allele frequency,
+                  may be swapped, Strand-ambiguous, linear 0/1 scale, another scale, has only, "No variants on chromosome",
+                  above the study's total, "coded 1/2", "coded I/D", repeated header]
+
+site:                          # what to choose on the site (record what you actually did in site_run.yaml)
+  project: validation
+  planted_pipeline:            # a named QC pipeline in the project, pinned to the planted dataset
+    name: planted problems
+    filter: {chromosomes: "1-22, X", beta: {on: true, max: 20}, se: {on: true, max: 10}, info: {on: true, min: 0.8},
+             missing_info: remove the variant, maf: {on: true, min: 0.01}, n: {on: true, min: 1000},
+             palindromic: {on: true, max: 0.4}, drop_indels: true, drop_duplicates: true}
+  cases_pipeline: default pipeline, default settings
+
+reference:                     # the rules 2_reference.R applies to the unplanted rows (= planted_pipeline's filter)
+  maf_min: 0.01
+  beta_max: 20
+  se_max: 10
+  palindromic_maf_max: 0.4
+
+thresholds:                    # read by 3_compare.R and shown on the Validation page
+  planted_rows_wrong: 0                 # per planted problem: rows not removed or kept as expected
+  unplanted_unexpected_losses: 0        # unplanted rows lost other than by the rules above or the liftover
+  rows_unaccounted: 0                   # rows neither in the QC'd file nor in any step's removed rows
+  beta_se_max_abs_diff: 1.0e-6          # kept rows, site vs the original (aligned to the same effect allele)
+  eaf_max_abs_diff: 1.0e-6
+  step_counts_identical: true           # rows removed by parse and filter: site vs expected
+  cases_caught: true                    # every whole-file case: the step's verdict and message as expected
+  control_gotcha_messages: 0
+
+archive: null                  # Zenodo DOI or S3 location of local/validation/04_qc_planted/, once archived

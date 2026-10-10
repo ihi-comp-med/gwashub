@@ -22,9 +22,11 @@ max_rel_diff <- function(x, y, floor = 1e-300) {
 neglog10_diff <- function(x, y) max(abs(-log10(x) + log10(y)), na.rm = TRUE)
 
 # One check for result.json: observed value against a threshold (direction "max": observed must be <= threshold;
-# "equal": observed must equal threshold).
-check <- function(id, label, observed, threshold, direction = c("max", "equal")) {
+# "equal": observed must equal threshold). group: the heading the Validation page shows it under (e.g. a run), so
+# the label needn't repeat it.
+check <- function(id, label, observed, threshold, direction = c("max", "equal"), group = NULL) {
   direction <- match.arg(direction)
   passed <- if (direction == "max") isTRUE(observed <= threshold) else isTRUE(all.equal(observed, threshold))
-  list(id = id, label = label, observed = observed, threshold = threshold, direction = direction, passed = passed)
+  c(list(id = id, label = label, observed = observed, threshold = threshold, direction = direction, passed = passed),
+    if (!is.null(group)) list(group = group))
 }

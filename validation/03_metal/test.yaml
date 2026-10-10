@@ -1,0 +1,45 @@
+# Test 3: METAL, both schemes, and agreement with GWAMA (docs/VALIDATION_PLAN.md).
+title: METAL, both schemes, and agreement with GWAMA
+claim: >-
+  METAL on GWASHub matches METAL run by hand in both schemes and with its options, and two independent programs
+  (METAL and GWAMA) give the same fixed-effect answer through GWASHub.
+
+inputs: [UKB, HERMES, FINNGEN]
+qc_from_test: 01_gwama_default   # the agreed inputs: test 1's QC'd files (local/validation/01_gwama_default/site/)
+gwama_from_test: 01_gwama_default   # test 1's site GWAMA results (site/meta_results.tsv.gz), for the cross-program check
+
+runs:
+  stderr:                      # METAL defaults on the site
+    site_params: {scheme: stderr, min_studies: 2, maf_min: 0, genomic_control: false, overlap: false, zcutoff: 1,
+                  min_weight: 1, minmax_freq: false, precision: 8}
+  samplesize_plain:            # sample-size scheme, defaults: for the cross-scheme check against stderr
+    site_params: {scheme: samplesize, min_studies: 2, maf_min: 0, genomic_control: false, overlap: false, zcutoff: 1,
+                  min_weight: 1, minmax_freq: false, precision: 8}
+  samplesize:                  # with its options on
+    site_params: {scheme: samplesize, min_studies: 2, maf_min: 0, genomic_control: false, overlap: true, zcutoff: 1,
+                  min_weight: 10000, minmax_freq: true, precision: 8}
+
+site:
+  project: validation
+  qc: test 1's QC'd datasets (nothing new to upload)
+
+reference:
+  metal_image: gwashub/metal   # the site's own image, so the same METAL release (2020-05-05)
+
+thresholds:                    # read by 3_compare.R and shown on the Validation page
+  # site vs METAL by hand: the site re-writes METAL's printed numbers, so they should agree to METAL's precision (8)
+  metal_max_abs_diff: 1.0e-12           # β, se, Z, weight, EAF, min/max EAF, Q, I²
+  p_max_rel_diff: 1.0e-10               # p and the heterogeneity p, p > 1e-300
+  # cross-program: METAL stderr vs GWAMA fixed effects (test 1), both through the site
+  cross_beta_se_max_abs_diff: 1.0e-5
+  cross_neglog10p_max_abs_diff: 0.01
+  cross_p_above: 1.0e-5                 # ... for p above this: GWAMA's own p drifts from the normal tail beyond it
+                                        # (0.046 in -log10 p at p ~ 1e-50 in the dry run, where METAL is within 0.0002)
+  # cross-scheme: METAL samplesize (plain) vs stderr (overlap correction changes the weights, so not that run)
+  cross_scheme_neglog10p_min_cor: 0.99
+  lead_locus_window_kb: 500             # a lead locus in one run counts as found in the other within this distance
+  lead_locus_firm_p: 5.0e-9             # lead loci this strong must be in both runs; weaker ones (near 5e-8) can fall
+                                        # either side of the line between schemes, and are listed in the notes
+  rerun_identical: true
+
+archive: null                  # Zenodo DOI or S3 location of local/validation/03_metal/, once archived

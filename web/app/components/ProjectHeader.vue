@@ -6,7 +6,8 @@ const base = computed(() => `/projects/${props.project.id}`)
 const tabs = computed(() => [
   { label: 'Overview', icon: 'pi pi-home', to: base.value },
   { label: 'Cohorts', icon: 'pi pi-sitemap', to: `${base.value}/cohorts` },
-  { label: 'Datasets', icon: 'pi pi-table', to: `${base.value}/datasets` },
+  { label: 'Datasets', icon: 'pi pi-table', to: `${base.value}/datasets`, badge: props.project.my_changes_requested || 0,
+    badgeTip: 'Your datasets a reviewer sent back: changes requested' },
   { label: 'Meta-analysis', icon: 'pi pi-chart-bar', to: `${base.value}/meta` },
 ])
 // Settings sit apart on the right; the left tabs are about the data.
@@ -33,6 +34,7 @@ const isActive = (to: string) => route.path === to || (to.endsWith('/meta') && r
       <nav class="tabs" data-tour="project-tabs">
         <NuxtLink v-for="t in tabs" :key="t.to" :to="t.to" :class="['tab', { active: isActive(t.to) }]">
           <i :class="t.icon" /> {{ t.label }}
+          <Badge v-if="t.badge" v-tooltip.top="t.badgeTip" :value="t.badge" severity="warn" />
         </NuxtLink>
         <span class="spacer" />
         <NuxtLink :to="settingsTab.to" :class="['tab', { active: isActive(settingsTab.to) }]">

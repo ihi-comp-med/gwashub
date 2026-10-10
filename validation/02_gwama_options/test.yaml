@@ -1,0 +1,46 @@
+# Test 2: GWAMA with every option on (docs/VALIDATION_PLAN.md).
+title: GWAMA with every option on
+claim: >-
+  Each GWAMA setting on GWASHub (random effects, genomic control on the datasets and on the results, the MAF filter,
+  minimum datasets, the direction threshold and the sex-differentiated test) does what GWAMA does with that option.
+
+inputs: [UKB, HERMES, FINNGEN, UKB_F, UKB_M]   # names in validation/sources.yaml
+qc_from_test: 01_gwama_default   # UKB, HERMES and FINNGEN: test 1's QC'd files (local/validation/01_gwama_default/site/)
+recipe:                          # UKB_F and UKB_M: the variants of test 1's UKB input (by rsID), so the sets match
+  same_variants_as: 01_gwama_default/inputs/UKB.tsv
+
+# Two site meta-analyses. GWAMA's sex-differentiated test needs every dataset to be male-only or female-only, so it is
+# a run of its own on the female and male files.
+runs:
+  options:
+    datasets: [UKB, HERMES, FINNGEN]
+    site_params: {model: random, min_studies: 3, maf_min: 0.01, genomic_control: true, genomic_control_output: true,
+                  direction_threshold: 0.05, sex_differentiated: false}
+    gwama_args: [-qt, --indel_alleles, --threshold, "0.05", --random, --genomic_control, --genomic_control_output]
+    maf_min: 0.01                # applied to each input before GWAMA, as the site does
+    min_studies: 3               # applied to GWAMA's output, as the site does
+  sex:
+    datasets: [UKB_F, UKB_M]
+    site_params: {model: fixed, min_studies: 2, maf_min: 0, genomic_control: false, genomic_control_output: false,
+                  direction_threshold: 1, sex_differentiated: true}
+    gwama_args: [-qt, --indel_alleles, --threshold, "1", --sex]
+    maf_min: 0
+    min_studies: 2
+
+site:
+  project: validation
+  qc: "default pipeline, default settings (UKB_F and UKB_M: upload with sex Female and Male)"
+
+reference:
+  gwama_image: gwashub/gwama   # the site's own image, so the same GWAMA release (2.2.2)
+
+thresholds:                    # read by 3_compare.R and shown on the Validation page
+  beta_se_max_abs_diff: 1.0e-6          # site vs GWAMA by hand (GWAMA's printed precision)
+  p_max_rel_diff: 1.0e-4                # site vs GWAMA by hand, p > 1e-300 (also the two sex-differentiated p-values)
+  het_max_abs_diff: 1.0e-6              # Q, its p and I²
+  n_eaf_max_abs_diff: 1.0e-6            # total N and EAF
+  gc_lambda_max_abs_diff: 1.0e-6        # λ per dataset (GWAMA's genomic control file)
+  maf_removed_identical: true           # variants each dataset loses to the MAF filter: site (datasets.tsv) vs R
+  rerun_identical: true                 # two site runs, same sha256
+
+archive: null                  # Zenodo DOI or S3 location of local/validation/02_gwama_options/, once archived

@@ -11,7 +11,16 @@ chromosome check in gwas_qc_report.R; commit ff35109):
   4. bcftools query back to a table. Removed here: variants lifted to a different chromosome, variants on
      contigs other than 1-22/X/Y, alleles other than A/C/G/T, and duplicates created by the liftover.
 Warns (never fails) when fewer than 95% of variants harmonise or lift over. Fails only if no variants are left.
+
+Wrong build declared (the commonest upload mistake): before harmonising, up to 20,000 autosomal SNPs are looked up in
+both FASTAs; in the right build nearly every one has one of its alleles as the reference base, in the wrong one about
+half. When the other build matches clearly better, the step warns and names it.
+
+Every removed variant is written to removed_rows.tsv.gz with its stage and reason: gwas2vcf's drops from its
+--rejected list (a GWASHub addition to the edited copy: data line and reason), the liftover's from bcftools' --reject
+file, and the later ones from the masks below. chr_input/pos_input give each one's position in this step's input.
 """
+import gzip
 import json
 import os
 import re
@@ -31,10 +40,25 @@ DBSNP = "dbSNP157_b38_clean.vcf.gz"
 DEFAULTS = {"warn_harmonised_fraction": 0.95, "warn_lifted_fraction": 0.95}
 FIELDS = ["chr", "pos", "id", "ref", "alt", "es", "se", "lp", "af", "ss", "si", "nc", "pv", "c37", "p37"]
 QUERY = "%CHROM\t%POS\t%ID\t%REF\t%ALT\t[%ES\t%SE\t%LP\t%AF\t%SS\t%SI\t%NC\t%PV\t%C37\t%P37]"
+REMOVED = ["stage", "reason", "line", "chr_input", "pos_input", "chr", "pos", "ea", "oa", "beta", "se", "p", "eaf"]
 # gwas2vcf's closing log lines -> metric names
 COUNTERS = {"Total variants": "gwas2vcf_total", "Variants could not be read": "not_read", "Variants harmonised": "harmonised",
             "Variants discarded during harmonisation": "not_harmonised", "Alleles switched": "alleles_switched",
             "Normalised variants": "normalised"}
+
+
+BUILD_SAMPLE = 20_000
+# Run with gwas2vcf's Python (it has pysam, which reads plain and bgzipped FASTAs): stdin "chr<TAB>pos" lines, stdout
+# the reference base at each ("" off the contig or for a contig the FASTA lacks).
+FETCH = """
+import sys, pysam
+fa = pysam.FastaFile(sys.argv[1])
+size = dict(zip(fa.references, fa.lengths))
+for line in sys.stdin:
+    c, p = line.split()
+    p = int(p)
+    print(fa.fetch(c, p - 1, p).upper() if 0 < p <= size.get(c, 0) else "")
+"""
 
 
 class StepFailed(Exception):
@@ -93,9 +117,63 @@ def main():
 def artifacts(art):
     out = []
     for path, label, kind in (("harmonise_liftover_summary.tsv", "Variants at each stage", "table"),
+                              ("removed_rows.tsv.gz", "Removed rows", "table"),
                               ("gwas2vcf.log", "gwas2vcf log", "text"), ("bcftools.log", "bcftools log", "text")):
         if os.path.exists(os.path.join(art, path)):
             out.append({"type": kind, "path": path, "label": label})
+    for a in out:
+        if a["path"] == "removed_rows.tsv.gz":
+            a["rows"] = sum(1 for _ in gzip.open(os.path.join(art, a["path"]), "rt")) - 1
+            a["description"] = ("Every removed variant with the stage and reason; line is its row in this step's input "
+                                "(gwas2vcf drops only), chr_input/pos_input its position there.")
+    return out
+
+
+def input_rows(path, lines):
+    """The rows at these data line numbers (1 = first data row) of the working file, as text."""
+    want, rows = set(lines), []
+    with open(path) as f:
+        header = f.readline().rstrip("\n").split("\t")
+        for i, line in enumerate(f, 1):
+            if i in want:
+                rows.append([i, *line.rstrip("\n").split("\t")])
+    return pd.DataFrame(rows, columns=["line", *header], dtype=str)
+
+
+def vcf_rows(query):
+    """bcftools query rows (FIELDS) as the GWASHub columns of REMOVED; chr_input/pos_input from C37/P37 when there.
+    A record with two ALT alleles holds one value per ALT (e.g. ".,0.7459"): kept as text, and P left empty."""
+    num = lambda col: pd.to_numeric(query[col], errors="coerce")
+    return pd.DataFrame({"chr": query["chr"], "pos": query["pos"], "ea": query["alt"], "oa": query["ref"], "beta": query["es"],
+                         "se": query["se"], "p": num("pv").fillna(10 ** -num("lp")), "eaf": query["af"],
+                         "chr_input": query["c37"].fillna(query["chr"]), "pos_input": query["p37"].fillna(query["pos"])})
+
+
+def write_removed(parts, art):
+    """One gzipped table of every removed variant (nothing written when none were)."""
+    parts = [p for p in parts if len(p)]
+    if parts:
+        pd.concat(parts, ignore_index=True).reindex(columns=REMOVED).to_csv(
+            os.path.join(art, "removed_rows.tsv.gz"), sep="\t", index=False, na_rep="NA")
+
+
+def build_match(path, python37, fastas):
+    """{build: share of sampled SNPs whose reference base in that build's FASTA is EA or OA}; {} when too few SNPs."""
+    d = pd.read_csv(path, sep="\t", usecols=["chr", "pos", "ea", "oa"], dtype={"chr": str, "ea": str, "oa": str})
+    d = d[d["chr"].isin([str(i) for i in range(1, 23)]) & d["ea"].str.len().eq(1) & d["oa"].str.len().eq(1)]
+    if len(d) < 1000:
+        return {}
+    d = d.sample(min(BUILD_SAMPLE, len(d)), random_state=1)
+    regions = "".join(f"{c}\t{p}\n" for c, p in zip(d["chr"], d["pos"]))
+    out = {}
+    for build, fasta in fastas.items():
+        if not os.path.exists(fasta):
+            continue
+        proc = subprocess.run([python37, "-c", FETCH, fasta], input=regions, capture_output=True, text=True)
+        if proc.returncode != 0:
+            continue
+        bases = proc.stdout.split("\n")[:len(d)]
+        out[build] = sum(b in (ea, oa) for b, ea, oa in zip(bases, d["ea"], d["oa"])) / len(d)
     return out
 
 
@@ -116,27 +194,38 @@ def harmonise(args, params, opts, art):
     open(bcf_log, "w").close()
     threads = str(max(1, min(4, os.cpu_count() or 1)))
 
+    # 0. is the declared build the right one?
+    match = build_match(args.input, python37, {b: res(f) for b, f in FASTA.items()})
+    other = next(b for b in FASTA if b != build)
+
     # 1. gwas2vcf: harmonise to the uploaded build's FASTA
     json_path = os.path.join(tmp, "gwas2vcf.json")
     with open(json_path, "w") as f:
         json.dump(gwas2vcf_json(header, build), f)
     vcf = os.path.join(tmp, "gwas.vcf.gz")
+    rejected_g2v = os.path.join(tmp, "gwas2vcf_rejected.tsv")
     study = "-".join(re.sub(r"[^A-Za-z0-9]+", "", str(params.get(k) or "")) for k in ("cohort", "phenotype", "ancestry", "sex")).strip("-")
     with open(g2v_log, "w") as log:
         proc = subprocess.run([python37, GWAS2VCF, "--data", args.input, "--json", json_path, "--id", study or "dataset",
-                               "--ref", res(FASTA[build]), "--out", vcf],
+                               "--ref", res(FASTA[build]), "--out", vcf, "--rejected", rejected_g2v],
                               cwd=os.path.dirname(GWAS2VCF), stdout=log, stderr=subprocess.STDOUT, env={**os.environ, "TMPDIR": tmp})
     # gwas2vcf reports bad input with sys.exit() (exit code 0) and no output: check for the file, not just the code.
     if proc.returncode != 0 or not os.path.exists(vcf):
         raise StepFailed("gwas2vcf didn't write a VCF:\n" + tail(g2v_log))
     with open(g2v_log) as f:
         text = f.read()
-    metrics = {"rows_in": rows_in, "build_in": build}
+    metrics = {"rows_in": rows_in, "build_in": build, **{f"build_match_{b}": round(v, 4) for b, v in match.items()}}
     for label, key in COUNTERS.items():
         m = re.findall(rf"{label}: (\d+)", text)
         if m:
             metrics[key] = int(m[-1])
     stages = [("input", rows_in), ("harmonised to the FASTA", metrics.get("harmonised"))]
+    removed = []  # DataFrames of removed variants (REMOVED columns)
+    if os.path.exists(rejected_g2v) and os.path.getsize(rejected_g2v):
+        rej = pd.read_csv(rejected_g2v, sep="\t", header=None, names=["line", "reason"], dtype={"line": "Int64", "reason": str})
+        rows = input_rows(args.input, rej["line"].dropna().astype(int)).assign(line=lambda d: d["line"].astype(int))
+        g = rej.merge(rows, on="line", how="left")
+        removed.append(g.assign(stage="gwas2vcf", chr_input=g.get("chr"), pos_input=g.get("pos")))
 
     # 2. GRCh37 -> GRCh38
     flags = ""
@@ -149,6 +238,12 @@ def harmonise(args, params, opts, art):
         run(["bcftools", "sort", "-T", os.path.join(tmp, "sort"), "-Oz", "-o", lifted, lifted_raw], bcf_log)
         metrics["lifted"] = count_records(lifted)
         metrics["unmapped"] = count_records(rejected)
+        if metrics["unmapped"]:
+            rq = os.path.join(tmp, "rejected.tsv")
+            with open(rq, "w") as out:
+                run(["bcftools", "query", "-f", QUERY + "\n", rejected], bcf_log, stdout=out)
+            r = pd.read_csv(rq, sep="\t", header=None, names=FIELDS, dtype=str, na_values=["."], keep_default_na=False)
+            removed.append(vcf_rows(r).assign(stage="liftover", reason="could not be lifted to GRCh38"))
         stages.append(("lifted to GRCh38", metrics["lifted"]))
         vcf, flags = lifted, "\t%INFO/FLIP\t%INFO/SWAP"
     run(["bcftools", "index", "-f", "--csi", vcf], bcf_log)
@@ -167,21 +262,32 @@ def harmonise(args, params, opts, art):
         metrics["strand_flipped"] = int(q["flip"].fillna("0").ne("0").sum())
         metrics["ref_alt_swapped"] = int(q["swap"].fillna("0").ne("0").sum())
 
-    moved = q["c37"].notna() & (q["c37"] != q["chr"])
-    metrics["chromosome_changed"] = int(moved.sum())
-    q = q[~moved]
-    other = ~q["chr"].isin(CHROMS_XY)
-    metrics["other_contigs"] = int(other.sum())
-    q = q[~other]
-    bad = ~(q["ref"].str.fullmatch("[ACGT]+", na=False) & q["alt"].str.fullmatch("[ACGT]+", na=False))
-    metrics["invalid_alleles"] = int(bad.sum())  # e.g. an N from the reference next to an indel
-    q = q[~bad]
-    dup = q.duplicated(["chr", "pos", "ref", "alt"])
-    metrics["duplicates"] = int(dup.sum())
-    q = q[~dup]
+    def drop(mask, metric, reason):
+        nonlocal q
+        metrics[metric] = int(mask.sum())
+        if mask.any():
+            r = vcf_rows(q[mask])
+            removed.append(r.assign(stage="after liftover" if build == "GRCh37" else "after harmonisation",
+                                    reason=reason(r) if callable(reason) else reason))
+        q = q[~mask]
 
+    drop(q["c37"].notna() & (q["c37"] != q["chr"]), "chromosome_changed",
+         lambda r: "lifted to another chromosome (from " + r["chr_input"] + ")")
+    drop(~q["chr"].isin(CHROMS_XY), "other_contigs", "on a contig other than 1-22, X, Y")
+    # bcftools +liftover makes a record multi-allelic ("reference added") when the GRCh38 base is neither allele:
+    # it adds that base as REF and both alleles become ALTs (ALT "A,T")
+    metrics["multiallelic"] = int(q["alt"].str.contains(",", na=False).sum())
+    drop(~(q["ref"].str.fullmatch("[ACGT]+", na=False) & q["alt"].str.fullmatch("[ACGT]+", na=False)), "invalid_alleles",
+         lambda r: r["ea"].fillna("").str.contains(",").map(
+             {True: "two ALT alleles after the liftover (the GRCh38 reference base is neither allele)",
+              False: "alleles other than A/C/G/T"}))  # e.g. an N from the reference next to an indel
+    drop(q.duplicated(["chr", "pos", "ref", "alt"]), "duplicates", "duplicate (same chr:pos:alleles) after liftover"
+         if build == "GRCh37" else "duplicate (same chr:pos:alleles) after harmonisation")
+    write_removed(removed, art)
+
+    # + 0.0 turns -0.0 (a BETA of 0 negated when gwas2vcf switched the alleles) into 0, so no program reads it as negative
     out = pd.DataFrame({"chr": q["chr"], "pos": q["pos"].astype(int), "ea": q["alt"], "oa": q["ref"],
-                        "beta": q["es"].astype(float), "se": q["se"].astype(float),
+                        "beta": q["es"].astype(float) + 0.0, "se": q["se"].astype(float),
                         "p": q["pv"].astype(float).fillna(10 ** -q["lp"].astype(float))})
     ss, nc = q["ss"].astype(float), q["nc"].astype(float)
     optional = {"eaf": q["af"].astype(float), "n": ss, "ncase": nc, "ncontrol": ss - nc,
@@ -211,6 +317,11 @@ def harmonise(args, params, opts, art):
         verdict = "warn"
         messages.append(f"Fewer than {100 * opts['warn_harmonised_fraction']:.0f}% of variants match the {build} reference"
                         + (": check the genome build." if harmonised_fraction < 0.5 else "."))
+    if other in match and build in match and match[other] >= 0.9 and match[other] > match[build] + 0.2:
+        verdict = "warn"
+        messages.append(f"The positions look like {other}, not {build}: {100 * match[other]:.1f}% of sampled SNPs "
+                        f"have an allele matching the {other} reference base, against {100 * match[build]:.1f}% for {build}. "
+                        f"Change the dataset's build to {other} and re-run.")
     if build == "GRCh37":
         lifted_fraction = metrics["lifted"] / metrics["harmonised"] if metrics.get("harmonised") else 0
         metrics["lifted_fraction"] = lifted_fraction
@@ -223,7 +334,9 @@ def harmonise(args, params, opts, art):
     if removed:
         messages.append(f"Removed {metrics['chromosome_changed']:,} variants lifted to another chromosome, "
                         f"{metrics['other_contigs']:,} on other contigs, {metrics['invalid_alleles']:,} with alleles other than "
-                        f"A/C/G/T and {metrics['duplicates']:,} duplicates.")
+                        f"A/C/G/T" + (f" ({metrics['multiallelic']:,} with two ALT alleles after the liftover: the GRCh38 "
+                                      "reference base is neither allele)" if metrics["multiallelic"] else "")
+                        + f" and {metrics['duplicates']:,} duplicates.")
     if rows_out == 0:
         verdict = "fail"
         messages.append("No variants left.")

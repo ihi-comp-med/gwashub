@@ -56,3 +56,45 @@ def test_ranges_switch_each_limit_on_or_off(tmp_path):
 def test_filter_on_a_missing_column_fails_clearly(tmp_path):
     log, _ = run_step("filter", frame().drop(columns=["info"]), {"step": {"info": rng(min=0.8)}}, tmp_path)
     assert log["verdict"] == "fail" and "INFO" in log["messages"][0]
+
+
+@needs_image("gwashub/base-r")
+def test_removed_rows_have_one_reason_each(tmp_path):
+    log, out = run_step("filter", frame(), {}, tmp_path)
+    removed = pd.read_csv(tmp_path / "artifacts" / "removed_rows.tsv.gz", sep="\t", dtype={"chr": str})
+    assert sorted(removed["pos"]) == [20, 80] and len(removed) + len(out) == len(frame())
+    assert removed.set_index("pos").loc[20, "reason"].startswith("|BETA| outside the limits")
+    assert removed.set_index("pos").loc[80, "reason"].startswith("duplicate variant")
+    art = {a["path"]: a for a in log["artifacts"]}
+    assert art["removed_rows.tsv.gz"]["rows"] == 2
+    summary = pd.read_csv(tmp_path / "artifacts" / "filter_summary.tsv", sep="\t").set_index("reason")["removed"]
+    assert removed["reason"].value_counts().to_dict() == summary[summary > 0].to_dict()
+
+
+@needs_image("gwashub/base-r")
+def test_no_removed_rows_file_when_nothing_is_removed(tmp_path):
+    log, _ = run_step("filter", frame().iloc[[0, 2, 3]], {}, tmp_path)
+    assert not (tmp_path / "artifacts" / "removed_rows.tsv.gz").exists()
+    assert [a["path"] for a in log["artifacts"]] == ["filter_summary.tsv"]
+
+
+@needs_image("gwashub/base-r")
+def test_strand_ambiguous_snps_by_maf(tmp_path):
+    """A/T and C/G SNPs above the MAF maximum go when the rule is on; other SNPs and indels stay whatever their MAF."""
+    df = pd.DataFrame({"chr": "1", "pos": [10, 20, 30, 40, 50, 60], "ea": ["A", "C", "T", "A", "A", "AT"],
+                       "oa": ["T", "G", "A", "G", "T", "A"], "beta": 0.1, "se": 0.01, "p": 0.5,
+                       "eaf": [0.45, 0.58, 0.2, 0.5, 0.1, 0.5]})
+    log, out = run_step("filter", df, {}, tmp_path)
+    assert len(out) == len(df) and log["metrics"]["removed_strand_ambiguous_snp_with_maf_outside_the_limits"] == 0  # off by default
+    (tmp_path / "b").mkdir()
+    log, out = run_step("filter", df, {"step": {"palindromic": rng(max=0.4)}}, tmp_path / "b")
+    assert sorted(out["pos"]) == [30, 40, 50, 60] and log["metrics"]["removed_strand_ambiguous_snp_with_maf_outside_the_limits"] == 2
+
+
+@needs_image("gwashub/base-r")
+def test_minor_allele_count(tmp_path):
+    """MAC = 2 x MAF x N: a rare variant in a small sample goes, the same frequency in a large one stays."""
+    df = pd.DataFrame({"chr": "1", "pos": [10, 20, 30], "ea": ["A", "C", "G"], "oa": ["G", "T", "A"], "beta": 0.1, "se": 0.01,
+                       "p": 0.5, "eaf": [0.005, 0.005, 0.3], "n": [400, 100000, 400]})  # MAC 4, 1000, 240
+    log, out = run_step("filter", df, {"step": {"mac": rng(min=6)}}, tmp_path)
+    assert sorted(out["pos"]) == [20, 30] and log["metrics"]["removed_mac_outside_the_limits"] == 1

@@ -67,6 +67,40 @@ DATASET_COLUMNS = [
 ]
 
 
+def dataset_overlap(specs, z_max=2.0, warn_r=0.1, same_r=0.98, min_variants=1000):
+    """Pairs of datasets whose Z-scores correlate across mostly-null variants (|Z| < z_max in both): shared samples
+    (shared controls, one dataset inside another) or the same data uploaded twice. Fixed-effect meta-analysis assumes
+    independent datasets, so overlap makes its results overconfident (EasyQC's meta-level check, Winkler et al. 2014).
+    Returns ([{a, b, n_variants, z_correlation}], messages). Shared polygenic signal adds a little correlation too, so
+    this warns rather than judges."""
+    z = []
+    for s in specs:
+        df = pd.read_csv(s["path"], sep="\t", usecols=["chr", "pos", "ea", "oa", "beta", "se"], dtype={"chr": str})
+        df = df[df["se"] > 0]
+        a1 = np.minimum(df["ea"], df["oa"])
+        zz = np.where(df["ea"] == a1, 1, -1) * df["beta"] / df["se"]  # Z for the alphabetically first allele
+        key = df["chr"] + ":" + df["pos"].astype(str) + ":" + a1 + ":" + np.maximum(df["ea"], df["oa"])
+        z.append(pd.Series(zz.to_numpy(), index=key.to_numpy()).groupby(level=0).first())
+    pairs, messages = [], []
+    for i in range(len(specs)):
+        for j in range(i + 1, len(specs)):
+            both = pd.concat([z[i], z[j]], axis=1, join="inner").dropna()
+            both = both[(both.abs() < z_max).all(axis=1)]
+            if len(both) < min_variants:
+                continue
+            r = float(np.corrcoef(both.iloc[:, 0], both.iloc[:, 1])[0, 1])
+            a, b = specs[i]["label"], specs[j]["label"]
+            pairs.append({"a": a, "b": b, "n_variants": int(len(both)), "z_correlation": round(r, 4)})
+            if r >= same_r:
+                messages.append(f"{a} and {b} look like the same data (Z-score correlation {r:.3f}): check that one isn't "
+                                "uploaded twice.")
+            elif r > warn_r:
+                messages.append(f"{a} and {b} may share samples (Z-scores of null variants correlate, r = {r:.2f}), e.g. shared "
+                                "controls or one including the other: fixed-effect results will be overconfident. METAL's "
+                                "overlap correction (sample-size scheme) allows for it.")
+    return pairs, messages
+
+
 def lead_locus_agreement(forest, studies):
     """Per dataset, at the lead loci (forest-plot data): how many it covers, the share with the same effect direction as
     the pooled estimate, and how many it is an outlier at (|beta - pooled beta| > 3 SE of the dataset's beta)."""
@@ -196,11 +230,13 @@ def main():
            if loci_info["loci_method"] == "clumping" else f"a {opts['boundary_kb']} kb distance window (no LD panel uploaded)")
     write_readme(res, specs, a, opts, a.out, how)
     n_het = int((pd.to_numeric(leads["het_p"], errors="coerce") < opts["het_p_threshold"]).sum()) if len(leads) else 0
+    pairs, overlap_messages = dataset_overlap(specs)
     summary = {
         "n_datasets": len(specs), "method": a.method, "method_title": a.title, "n_variants": int(len(res)),
         "n_genome_wide_sig": int((res["p"] < opts["gws"]).sum()), "n_loci": int(len(leads)), "n_loci_heterogeneous": n_het,
         "lambda_gc": None if not np.isfinite(lam) else round(lam, 4), "studies": studies, **loci_info,
         "n_region_files": len(region_files), "gene_track": regions.load_genes(a.resources) is not None,
+        "dataset_pairs": pairs,
     }
     with open(os.path.join(a.out, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2, default=float)
@@ -209,7 +245,8 @@ def main():
     if loci_info.get("n_gws_not_in_panel"):
         messages.append(f"{loci_info['n_gws_not_in_panel']:,} genome-wide significant variants aren't in the LD panel and "
                         "couldn't be clumped.")
-    verdict = "warn" if n_het or mlog.get("verdict") == "warn" else "pass"
+    messages += overlap_messages
+    verdict = "warn" if n_het or overlap_messages or mlog.get("verdict") == "warn" else "pass"
     with open(a.log, "w") as f:
         json.dump({**mlog, "verdict": verdict, "messages": messages,
                    "metrics": {**(mlog.get("metrics") or {}), **{k: summary[k] for k in ("n_datasets", "n_variants", "n_genome_wide_sig",

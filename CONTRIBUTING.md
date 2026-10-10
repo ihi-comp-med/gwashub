@@ -86,10 +86,19 @@ The runner calls your script as
 - `--log`: write JSON like
   ```json
   {"step": "exclusion_regions", "verdict": "pass", "metrics": {"rows_removed": 12},
-   "messages": ["Removed 12 variants in 2 regions."], "artifacts": [{"type": "table", "path": "removed.tsv", "label": "Removed variants"}]}
+   "messages": ["Removed 12 variants in 2 regions."],
+   "artifacts": [{"type": "table", "path": "removed_rows.tsv.gz", "label": "Removed rows", "rows": 12,
+                  "description": "Every removed variant, with the region that removed it."}]}
   ```
   `verdict` is `pass`, `warn` or `fail`. Artifact files go in `$GWASHUB_ARTIFACT_DIR`; everything written
-  there can be viewed and downloaded from the run.
+  there can be viewed and downloaded from the run. An artifact's `type` is `image`, `table` (`.tsv` or `.tsv.gz`),
+  `text` or `report`; `rows` (a table's row count) and `description` (one sentence) are optional and shown with it.
+  The dataset page shows the log as written: the messages, every metric (names with `_` shown as spaces;
+  `*_fraction` values as percentages) and the artifacts, each to open or download.
+- **Removed rows:** a step that removes rows should list them in `removed_rows.tsv.gz` (gzipped, tab-separated,
+  header, `NA` for missing): the rows as the step received them plus a `reason` column, declared as above with
+  `rows`. Write it only when something was removed. The default steps all do (`parse` also gives each row's `line`
+  in the upload; `harmonise_liftover` a `stage`).
 - Exit 0 when the step ran, whatever the verdict. A non-zero exit is reported as a crash.
 - Work only with your inputs: no network calls, no database, nothing outside the given paths.
 

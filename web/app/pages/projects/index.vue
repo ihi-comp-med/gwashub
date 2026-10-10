@@ -3,7 +3,7 @@ const { data: projects, error } = useApiGet<any[]>('/projects')
 const { me, load } = useAuth()
 onMounted(load)
 const newOpen = ref(false)
-const statuses: DatasetStatus[] = ['passed', 'review', 'failed', 'processing']
+const statuses: DatasetStatus[] = ['passed', 'review', 'changes_requested', 'failed', 'processing']
 </script>
 
 <template>

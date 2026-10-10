@@ -161,8 +161,12 @@ class Dataset(Base):
     upload_id: Mapped[str] = mapped_column(String(300), default="")  # multipart upload in progress
     uploaded_with_token: Mapped[int | None] = mapped_column(ForeignKey("api_token.id", ondelete="SET NULL"), nullable=True)
     sha256: Mapped[str] = mapped_column(String(64), default="")  # as reported by the upload script (duplicate checks)
-    status: Mapped[str] = mapped_column(String(20), default="pending")  # uploading|pending (QC not started)|processing|passed|review|failed
+    # uploading|pending (QC not started)|processing|passed|review|changes_requested (sent back by a reviewer)|failed
+    status: Mapped[str] = mapped_column(String(20), default="pending")
     review: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {decision, note, by, at}
+    # A corrected file being uploaded in place of this one: {path, upload_id, file_name, file_size}; the dataset keeps
+    # its current file until the upload completes.
+    replacement: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     runs: Mapped[list["QCRun"]] = relationship(back_populates="dataset", order_by="QCRun.id", cascade="all, delete-orphan")
     uploader: Mapped[User] = relationship()

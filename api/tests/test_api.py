@@ -89,6 +89,19 @@ def test_upload_runs_qc_and_enforces_dataset_permissions(client, synth_small):
     art = client.get(f"/api/datasets/{up['id']}/files/artifact", params={"path": f"{plots}/manhattan.png"})
     assert art.status_code == 200 and art.headers["content-type"] == "image/png"
     assert client.get(f"/api/datasets/{up['id']}/files/artifact", params={"path": "../../../gwashub.db"}).status_code == 404
+    # Table previews: the header and the first 100 rows, gzipped or not; the full file by download.
+    import gzip
+    from gwashub_api.db import SessionLocal
+    from gwashub_api.models import Dataset
+    with SessionLocal() as db:
+        run_dir = db.get(Dataset, up["id"]).runs[-1].run_dir
+    big = "\n".join(["a\tb", *(f"{i}\t{i * 2}" for i in range(500))]) + "\n"
+    with gzip.open(os.path.join(run_dir, plots, "big.tsv.gz"), "wt") as f:
+        f.write(big)
+    prev = client.get(f"/api/datasets/{up['id']}/files/artifact", params={"path": f"{plots}/big.tsv.gz", "preview": 1})
+    assert prev.status_code == 200 and prev.text.splitlines()[0] == "a\tb" and len(prev.text.splitlines()) == 101
+    whole = client.get(f"/api/datasets/{up['id']}/files/artifact", params={"path": f"{plots}/big.tsv.gz", "download": 1})
+    assert gzip.decompress(whole.content).decode() == big
 
     as_user(client, "mei@example.org")  # another uploader
     rows = client.get("/api/projects/hermes3/datasets").json()
@@ -352,6 +365,19 @@ def test_summary_counts(client):
     as_user(client, "mei@example.org")
     s = client.get("/api/projects/hermes3/summary", params={"by": "ancestry"}).json()
     assert s["totals"]["total"] == 2 and s["totals"]["failed"] == 1 and s["totals"]["passed"] == 1
+
+
+def test_sample_sizes(client):
+    """Cases, controls and N summed by ancestry and sex: every dataset, or with exclude_failed those that didn't fail QC."""
+    as_user(client, "mei@example.org")
+    every = [d for d in client.get("/api/projects/hermes3/datasets").json() if d["status"] != "uploading"]
+    for exclude, ds in ((False, every), (True, [d for d in every if d["status"] != "failed"])):
+        s = client.get("/api/projects/hermes3/sample-sizes", params={"exclude_failed": exclude}).json()
+        assert s["fields"][-2:] == ["ancestry", "sex"]
+        assert sum(r["datasets"] for r in s["rows"]) == len(ds)
+        assert sum(r["n_total"] for r in s["rows"]) == sum(d["n_total"] or 0 for d in ds)
+        assert all(r["n_cases"] + r["n_controls"] == r["n_total"] for r in s["rows"] if r["n_cases"] is not None)
+    assert any(d["status"] == "failed" for d in every)  # so the two differ
 
 
 def test_pipeline_permissions_and_versions(client):
@@ -739,6 +765,66 @@ def test_upload_in_parts(client, synth_small, monkeypatch):
     assert client.post(f"/api/datasets/{up['id']}/upload/complete", json={"parts": parts}).status_code == 409
 
 
+def test_changes_requested_and_replacing_the_file(client, synth_small, monkeypatch):
+    """A reviewer requests changes: the dataset gets its own status (kept out of meta-analysis), the uploader sees a
+    badge count and can re-run QC or upload a corrected file. The corrected file must have the mapped columns; it
+    replaces the old one, which is deleted, and QC starts."""
+    import gzip as gz
+    from gwashub_api import storage
+    monkeypatch.setattr(storage, "PART_SIZE", 50_000)
+    entry = synth_small["manifest"][0]
+    as_user(client, "jonas@example.org")
+    up = upload(client, synth_small, entry)
+    as_user(client, "ama@example.org")
+    r = client.post(f"/api/datasets/{up['id']}/review", json={"decision": "request_changes", "note": "Wrong build?"})
+    assert r.json()["status"] == "changes_requested" and r.json()["review"]["note"] == "Wrong build?"
+    as_user(client, "jonas@example.org")
+    assert client.get("/api/projects/hermes3").json()["my_changes_requested"] >= 1
+    assert client.get("/api/projects/hermes3/summary").json()["totals"]["changes_requested"] >= 1
+    old = client.get(f"/api/datasets/{up['id']}").json()["upload_location"]
+
+    def replace(data: bytes, name: str):
+        start = client.post(f"/api/datasets/{up['id']}/replacement", json={"file_name": name, "file_size": len(data)})
+        assert start.status_code == 201, start.text
+        n = start.json()["parts"]
+        urls = client.post(f"/api/datasets/{up['id']}/replacement/urls", json={"parts": list(range(1, n + 1))}).json()["urls"]
+        parts = []
+        for k in range(1, n + 1):
+            put = client.put(urls[str(k)], content=data[(k - 1) * 50_000:k * 50_000])
+            assert put.status_code == 200
+            parts.append({"n": k, "etag": put.headers["etag"]})
+        return client.post(f"/api/datasets/{up['id']}/replacement/complete", json={"parts": parts})
+
+    with open(os.path.join(synth_small["dir"], "fake_gwas", entry["file"]), "rb") as f:
+        data = f.read()
+    text = gz.decompress(data).decode() if data[:2] == b"\x1f\x8b" else data.decode()
+    se_col = entry["column_mapping"]["se"]
+    sep = "\t" if "\t" in text.splitlines()[0] else ","
+    header = text.splitlines()[0].split(sep)
+    renamed = sep.join("SE_RENAMED" if c == se_col else c for c in header) + "\n" + text.split("\n", 1)[1]
+    r = replace(renamed.encode(), "corrected.tsv")  # a mapped column missing: refused, the dataset keeps its file
+    assert r.status_code == 422 and se_col in r.json()["detail"]
+    d = client.get(f"/api/datasets/{up['id']}").json()
+    assert d["status"] == "changes_requested" and d["upload_location"] == old
+
+    r = replace(data, "corrected_" + entry["file"])
+    assert r.status_code == 200, r.text
+    d = client.get(f"/api/datasets/{up['id']}").json()
+    assert d["file_name"] == "corrected_" + entry["file"] and d["review"] is None and d["status"] in ("passed", "review")
+    assert d["upload_location"] != old and not os.path.exists(old)  # the old file is gone
+    assert d["edits"][-1]["changes"]["file"] == [entry["file"], "corrected_" + entry["file"]]
+    assert client.get(f"/api/datasets/{up['id']}/files/raw").content == data
+
+    # Once it has passed again, only a reviewer can replace it; another uploader never can.
+    assert client.post(f"/api/datasets/{up['id']}/replacement", json={"file_name": "x.tsv", "file_size": 10}).status_code == 403
+    as_user(client, "ama@example.org")
+    client.post(f"/api/datasets/{up['id']}/review", json={"decision": "request_changes"})
+    as_user(client, "jonas@example.org")
+    assert client.post(f"/api/datasets/{up['id']}/rerun").status_code == 200  # the uploader can re-run after a request
+    as_user(client, "mei@example.org")
+    assert client.post(f"/api/datasets/{up['id']}/replacement", json={"file_name": "x.tsv", "file_size": 10}).status_code in (403, 404)
+
+
 def test_abandoned_upload_can_be_deleted(client, synth_small):
     entry = synth_small["manifest"][0]
     meta = {k: entry[k] for k in ("cohort", "phenotype", "ancestry", "sex", "build", "effect_type", "n_cases", "n_controls", "column_mapping")}
@@ -975,38 +1061,62 @@ def test_step_files_listing_and_download(client, synth_small):
     assert client.get(f"/api/datasets/{up['id']}/runs/{run_id}/files", params={"dir": plots}).status_code == 403
 
 
-def test_grouped_batch_events(client, synth_small):
-    """A run of three Batch jobs: an early group's success doesn't finish it; any group's failure fails it."""
+def test_grouped_batch_events(client, synth_small, tmp_path, monkeypatch):
+    """QC groups run one Batch job at a time: a group's success submits the group its hand-over names (a repeated
+    event changes nothing), the job that writes result.json records the run, and any group's failure fails it."""
+    import shutil
     from gwashub_api import jobs
     from gwashub_api.db import SessionLocal
     from gwashub_api.models import QCRun
     as_user(client, "jonas@example.org")
     up = upload(client, synth_small, synth_small["manifest"][0])
+    submitted = []
+    monkeypatch.setattr(jobs, "_submit_batch", lambda spec, name, image, extra_args=(), put_spec=True, compute=None:
+                        submitted.append((name, image, list(extra_args))) or f"job-{len(submitted)}")
     db = SessionLocal()
     try:
         done = db.get(QCRun, client.get(f"/api/datasets/{up['id']}").json()["run"]["id"])
+        run_dir = tmp_path / "run"
+        (run_dir / "_state").mkdir(parents=True)
+        (run_dir / "spec.json").write_text(json.dumps({"groups": [{"image": "gwashub/base-r", "steps": [0, 1]},
+                                                                  {"image": "gwashub/vcf", "steps": [2, 3]},
+                                                                  {"image": "gwashub/base", "steps": [4]}]}))
+        (run_dir / "_state" / "state.json").write_text(json.dumps({"status": "blocked", "next_group": 2}))  # skip group 1
         run = QCRun(dataset_id=done.dataset_id, pipeline_version_id=done.pipeline_version_id, status="queued",
-                    run_dir=done.run_dir, batch_job_id="last-job")
+                    run_dir=str(run_dir), batch_job_id="first-job")
         db.add(run)
         db.commit()
         ev = lambda job, k, status, **kw: {"detail": {"jobId": job, "jobName": f"gwashub-qc-{run.id}-g{k}", "status": status, **kw}}  # noqa: E731
         assert "running" in jobs.handle_batch_event(db, ev("first-job", 0, "RUNNING"))
-        assert "finished a group" in jobs.handle_batch_event(db, ev("first-job", 0, "SUCCEEDED"))
+        assert "submitted group 2" in jobs.handle_batch_event(db, ev("first-job", 0, "SUCCEEDED"))
         db.refresh(run)
-        assert run.status == "running"
-        assert "recorded: completed" in jobs.handle_batch_event(db, ev("last-job", 2, "SUCCEEDED"))
+        assert run.status == "running" and run.batch_job_id == "job-1"
+        assert submitted == [(f"gwashub-qc-{run.id}-g2", "gwashub/base", ["--group", "2"])]
+        assert "finished a group" in jobs.handle_batch_event(db, ev("first-job", 0, "SUCCEEDED"))  # SQS delivered it twice
+        assert len(submitted) == 1
+        shutil.copyfile(os.path.join(done.run_dir, "result.json"), run_dir / "result.json")
+        assert "recorded: completed" in jobs.handle_batch_event(db, ev("job-1", 2, "SUCCEEDED"))
 
+        # A job that leaves neither result.json nor a hand-over fails the run.
+        run3 = QCRun(dataset_id=done.dataset_id, pipeline_version_id=done.pipeline_version_id, status="running",
+                     run_dir=str(tmp_path / "empty"), batch_job_id="r3-first")
+        db.add(run3)
+        db.commit()
+        jobs.handle_batch_event(db, {"detail": {"jobId": "r3-first", "jobName": f"gwashub-qc-{run3.id}-g0", "status": "SUCCEEDED"}})
+        db.refresh(run3)
+        assert run3.status == "failed" and "next group" in run3.error
+
+        # A group's job failing fails the run; a later event for it is ignored, the first reason stays.
         run2 = QCRun(dataset_id=done.dataset_id, pipeline_version_id=done.pipeline_version_id, status="running",
-                     run_dir=done.run_dir, batch_job_id="r2-last")
+                     run_dir=done.run_dir, batch_job_id="r2-mid")
         db.add(run2)
         db.commit()
         jobs.handle_batch_event(db, {"detail": {"jobId": "r2-mid", "jobName": f"gwashub-qc-{run2.id}-g1", "status": "FAILED",
                                                 "statusReason": "OutOfMemoryError: Container killed due to memory usage"}})
         db.refresh(run2)
         assert run2.status == "failed" and "OutOfMemoryError" in run2.error
-        # The dependent last job then fails too; that's ignored, the first reason stays.
-        assert "already recorded" in jobs.handle_batch_event(db, {"detail": {"jobId": "r2-last", "jobName": f"gwashub-qc-{run2.id}-g2",
-                                                                             "status": "FAILED", "statusReason": "Dependent Job failed"}})
+        assert "already recorded" in jobs.handle_batch_event(db, {"detail": {"jobId": "r2-mid", "jobName": f"gwashub-qc-{run2.id}-g1",
+                                                                             "status": "FAILED", "statusReason": "Essential container exited"}})
     finally:
         db.close()
 

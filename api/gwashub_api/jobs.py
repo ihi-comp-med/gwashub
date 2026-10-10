@@ -4,9 +4,10 @@ Each job is described by a spec (see pipeline/runner/jobspec.py) and leaves resu
 output location. GWASHUB_JOBS picks where it runs:
   local  a thread in this process (development; tests run it inline);
   batch  AWS Batch. A QC run is one job per group of consecutive steps that share an image, each in
-         that image and depending on the previous job; a meta-analysis is one job in gwashub/base.
-         Batch state changes reach an SQS queue through EventBridge, and the worker
-         (gwashub_api.worker) calls handle_batch_event to record the outcome.
+         that image, submitted one at a time: the worker submits the next group when a job succeeds, the group
+         its hand-over names (after a block, straight to the report's, so the groups between never start a
+         machine). A meta-analysis is one job. Batch state changes reach an SQS queue through EventBridge, and
+         the worker (gwashub_api.worker) calls handle_batch_event to record them.
 """
 import json
 import logging
@@ -119,7 +120,8 @@ def start_qc(run_id: int):
         run.progress = [{"key": s["step"], "title": titles.get(s["step"], s["step"]), "state": "queued"} for s in spec["steps"]]
         db.commit()
         if settings().jobs == "batch":
-            run.batch_job_id = _submit_qc_groups(spec, run.id)
+            _put_spec(spec)
+            run.batch_job_id = _submit_qc_group(spec, run.id, 0)
             db.commit()
         else:
             _in_background(_run_qc_locally, run.id, spec)
@@ -163,34 +165,41 @@ def _put_spec(spec: dict) -> str:
     return spec_loc
 
 
-def _submit_batch(spec: dict, name: str, image: str, extra_args=(), depends_on: str | None = None, put_spec=True,
-                  compute: dict | None = None) -> str:
+def _submit_batch(spec: dict, name: str, image: str, extra_args=(), put_spec=True, compute: dict | None = None) -> str:
     """image_cfg may name its own job queue (x86-64 images run on their own compute environment)."""
     image_cfg = settings().images.get(image)
     if not image_cfg:
         raise RuntimeError(f"No Batch job definition for image {image}; deploy it first (pipeline/images)")
     spec_loc = _put_spec(spec) if put_spec else storage.join(spec["output"], "spec.json")
-    kwargs = {"dependsOn": [{"jobId": depends_on, "type": "SEQUENTIAL"}]} if depends_on else {}
     overrides = {"command": ["python", "-m", "pipeline.runner.aws.batch_entry", spec_loc, *extra_args]}
     if compute:
         overrides["resourceRequirements"] = [{"type": "VCPU", "value": str(compute["vcpus"])},
                                              {"type": "MEMORY", "value": str(int(compute["memory_gb"] * 1024))}]
     r = _batch().submit_job(jobName=name, jobQueue=image_cfg.get("job_queue") or settings().batch_queue,
                             jobDefinition=image_cfg["job_definition"], containerOverrides=overrides,
-                            tags={"gwashub": name}, **kwargs)
+                            tags={"gwashub": name})
     log.info("Submitted %s (%s) as Batch job %s", name, image, r["jobId"])
     return r["jobId"]
 
 
-def _submit_qc_groups(spec: dict, run_id: int) -> str:
-    """One job per image group, each waiting for the previous one. Returns the last job's id, whose
-    success means the run finished (result.json written)."""
-    _put_spec(spec)
-    previous = None
-    for k, g in enumerate(spec["groups"]):
-        previous = _submit_batch(spec, f"gwashub-qc-{run_id}-g{k}", g["image"], ["--group", str(k)], depends_on=previous,
-                                 put_spec=False, compute=g.get("compute"))
-    return previous
+def _submit_qc_group(spec: dict, run_id: int, k: int) -> str:
+    """The job for group k of a QC run (its spec.json already written). Returns the job id."""
+    g = spec["groups"][k]
+    return _submit_batch(spec, f"gwashub-qc-{run_id}-g{k}", g["image"], ["--group", str(k)], put_spec=False, compute=g.get("compute"))
+
+
+def next_qc_group(db, run: QCRun) -> str:
+    """After a QC job that didn't finish the run: submit the group its hand-over names (state.json next_group)."""
+    state_loc = storage.join(run.run_dir, "_state", "state.json")
+    if not storage.exists(state_loc):
+        raise RuntimeError("The job finished without writing result.json or a hand-over for the next group")
+    nxt = json.loads(storage.read_bytes(state_loc)).get("next_group")
+    if nxt is None:
+        raise RuntimeError("The job finished without writing result.json, and its hand-over names no next group")
+    spec = json.loads(storage.read_bytes(storage.join(run.run_dir, "spec.json")))
+    run.batch_job_id = _submit_qc_group(spec, run.id, nxt)
+    db.commit()
+    return f"qc run {run.id}: submitted group {nxt}"
 
 
 # ---------- local execution ----------
@@ -207,8 +216,8 @@ def _run_qc_locally(run_id: int, spec: dict):
             prog = [dict(p) for p in run.progress]
             if i < len(prog):
                 prog[i]["state"] = state
-                if res:
-                    prog[i]["messages"] = res.get("messages", [])[:2]
+                if res:  # the whole step record, so the website shows a finished step in full while the run goes on
+                    prog[i].update({k: v for k, v in res.items() if k != "state"})
             run.progress = prog
             db.commit()
 
@@ -378,10 +387,16 @@ def handle_batch_event(db, event: dict) -> str:
         db.commit()  # the status, or just the Batch state (attempt) recorded above
         return f"{job_id} running"
     if status == "SUCCEEDED" and run and job_id != run.batch_job_id:
-        return f"{job_id} finished a group of run {run.id}"
+        return f"{job_id} finished a group of run {run.id}"  # an earlier job (or, before one-at-a-time, a chained one)
     if status == "SUCCEEDED":
         result = read_result(target.run_dir)
-        if result is None:
+        if result is None and run:
+            try:
+                return next_qc_group(db, run)
+            except Exception as e:
+                db.rollback()
+                status, d["statusReason"] = "FAILED", f"Could not start the next group: {e}"
+        elif result is None:
             status, d["statusReason"] = "FAILED", "The job finished without writing result.json"
         elif run:
             apply_qc_result(db, run, result)

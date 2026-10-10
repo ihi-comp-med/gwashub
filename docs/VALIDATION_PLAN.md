@@ -1,9 +1,8 @@
 # Validation plan
 
-Five tests that show, with numbers, that GWASHub gives the same answers as the tools and pipelines people already
-trust. Each test runs the same inputs two ways: through the website, and through the original program or pipeline run
-outside GWASHub (GWAMA or METAL by hand, the HERMES 3 HPC pipeline, or a file whose correct QC outcome is known in
-advance). Then it compares the outputs
+Four tests that show, with numbers, that GWASHub gives the same answers as the tools people already trust. Each test
+runs the same inputs two ways: through the website, and through the original program run outside GWASHub (GWAMA or
+METAL by hand), or against a file whose correct QC outcome is known in advance. Then it compares the outputs
 against thresholds fixed in advance. The results become a public **Validation** page on the site (sketch at the end).
 
 ## Principles
@@ -30,7 +29,6 @@ record the exact file and version used):
 | FINNGEN | FinnGen public release, endpoint I9_HEARTFAIL_NS | GRCh38 | EUR; has EAF, N via cases/controls |
 | UKB | UK Biobank: Pan-UKB or Neale lab heart failure (ICD-10 I50 / phecode 428) | GRCh37 | EUR; Neale lab also has female and male files (needed for test 2) |
 | BBJ | BioBank Japan heart failure (Ishigaki et al. 2020, JENGER) | GRCh37 | EAS; useful for heterogeneity (random effects) |
-| HERMES2019 | HERMES 2019 HF meta-analysis (Shah et al. 2020) | GRCh37 | Only for test 5 or as a sanity reference; it is itself a meta-analysis |
 
 **Size:** keep uploads small and the tests quick. A fixed recipe so it is repeatable: autosomes only; variants present
 in all files; then **all** variants in 2 Mb windows around a few known HF loci (for example 9p21 CDKN2B-AS1, 4q25
@@ -88,19 +86,25 @@ difference 0) and two runs were byte-identical.
 
 **Claim:** each GWAMA setting on the site does what GWAMA does with that option, including in combination.
 
-**Inputs:** test 1's three QC'd files, plus UKB **female** and **male** files (same recipe, uploaded with sex set to
-Female and Male) for the sex-differentiated test.
+**Inputs:** test 1's three QC'd files, plus UK Biobank **female** and **male** heart failure files (Neale lab round 2,
+ICD-10 I50; test 1's UKB variants; uploaded with sex Female and Male) for the sex-differentiated test.
 
-**Site settings:** random effects; genomic control per dataset; genomic control on the results; minimum MAF 0.01;
-minimum datasets 3; direction shown below P 0.05; sex-differentiated test (on the female + male + the other datasets).
+**Site settings:** two runs, since the site (like GWAMA's --sex) needs every dataset in a sex-differentiated run to be
+male-only or female-only. *options*: random effects; genomic control per dataset and on the results; minimum MAF 0.01;
+minimum datasets 3; direction shown below P 0.05, on test 1's three datasets. *sex*: the sex-differentiated test on the
+female and male files.
 
-**Reference:** GWAMA by hand with `--random --genomic_control --genomic_control_output --sex --threshold 0.05`, the
+**Reference:** GWAMA by hand with `--random --genomic_control --genomic_control_output --threshold 0.05` (options) and
+`--sex` (sex), the
 MAF filter applied to each input first (MAF < 0.01 removed, as the site does before GWAMA) and `n_studies ≥ 3` applied
 after.
 
 **Pass if:** identical to GWAMA by hand as in test 1 (β, se, p, n_studies, direction, heterogeneity, N, EAF, and the
 two sex-differentiated p-values); the genomic control factors in the site's GWAMA output equal those of the run by
 hand; the number of variants removed by the MAF filter equals the count in R.
+
+Set up in `validation/02_gwama_options/`. The Neale lab files are linear regressions on the 0/1 trait, so QC warns that
+their effects are on the linear scale (a real-world case of that check); it doesn't affect the comparison.
 
 **Why it matters:** the defaults are what most people run, but the options are where wrappers usually go wrong (a flag
 not passed, a filter applied after instead of before). One test with everything on shows they are all wired up.
@@ -133,6 +137,18 @@ programs agree with each other where they should.
 | METAL stderr vs GWAMA fixed (cross-program) | β, se abs difference ≤ 1e-5; −log10 p difference ≤ 0.01 |
 | METAL samplesize vs stderr (cross-scheme) | −log10 p correlation ≥ 0.99; same lead loci |
 
+Set up in `validation/03_metal/`, with a third run, *samplesize_plain* (sample-size scheme, defaults), for the
+cross-scheme check: the overlap correction changes the weights, so the run with it on isn't comparable to stderr.
+
+**Found by the dry run (run locally with the site's code and images):** site METAL matched METAL by hand exactly in all
+three runs once one bug was fixed: a BETA of exactly 0 negated by an allele switch was written as −0.0, which METAL's
+sample-size scheme read as a negative effect (135 HERMES variants), shifting its direction string and overlap
+weights; harmonise_liftover and the meta-analysis loader now write it as 0. GWAMA's own p-values drift from the exact
+normal tail as Z grows (0.046 in −log10 p at p ≈ 1e-50, METAL within 0.0002), so the cross-program p check covers
+p > 1e-5 and the drift is a note. Three lead loci at p ≈ 4e-8 were significant in one scheme only, so the lead-locus
+check covers loci with p < 5e-9 and lists the rest. With the overlap correction on, METAL bins variants by total weight,
+and with per-variant N most bins hold one variant: the correction is erratic on such data (a caution for users).
+
 **Why it matters:** the cross-program check is the strongest statement on the page: two independent implementations
 of the same model, run through GWASHub, give the same answer.
 
@@ -160,8 +176,28 @@ a separate, recorded set of rows (for example 100 rows each):
 | Chromosome Y, MT | Chromosomes kept "1-22, X" | removed |
 | P outside 0 to 1, non-numeric β | (always) | removed by parse |
 | Alleles swapped relative to the reference (EA = reference base) | harmonise | kept, β sign flipped, EAF → 1 − EAF |
-| Non-palindromic SNP given on the minus strand | harmonise | kept, alleles complemented |
+| Non-palindromic SNP given on the minus strand | harmonise | removed: gwas2vcf (as HERMES 3) switches REF/ALT but doesn't complement (found by the dry run) |
 | A few variants deliberately at wrong positions (alleles can't match the reference) | harmonise | not harmonised, removed |
+| A header line repeated mid-file | (always) | removed by parse, reason "repeated header line" |
+| Chromosome coded 25 / XY | (always) | kept as X |
+| A/T and C/G SNPs with MAF > 0.4 | Strand-ambiguous SNPs on, max 0.4 | removed |
+
+Whole-file gotchas can't be planted in rows, so each is its own small upload of the same clean file, changed once,
+with the expected verdict and message (these check the named diagnosis, not row counts). The full list, with an
+unchanged control that must name no gotcha, is `validation/04_qc_planted/test.yaml` `cases`:
+
+| Whole-file problem | Expected |
+|---|---|
+| gzip cut in half | parse fails: "cut short" |
+| BETA replaced by exp(BETA) (odds ratios given as BETA) | parse fails: "look like odds ratios" |
+| Uploaded as GRCh38 when it is GRCh37 | harmonise warns, naming GRCh37 |
+| EAF replaced by MAF, alleles unchanged | eaf_check names "minor allele frequency" |
+| A/T, C/G SNPs strand-flipped (alleles complemented, EAF → 1 − EAF) | eaf_check warns: strand-ambiguous SNPs |
+| BETA and SE multiplied by φ(1 − φ) (linear 0/1 scale) | stats_summary warns: "linear 0/1 scale" |
+| SE rounded to 3 decimal places | parse warns: rounded |
+| Chromosome 22 deleted | parse warns: chromosome 22 |
+
+Set up in `validation/04_qc_planted/` (part A: the planted rows below; part B: the whole-file mistakes after them).
 
 **Reference:** `reference.R` knows the row ids of every planted set, so it writes the expected output: which rows
 survive and, for swapped/flipped rows, the expected β, EAF and alleles after harmonisation (and their GRCh38 positions
@@ -171,42 +207,14 @@ from the UCSC chain, via R `liftOver` or the step's own counts).
 small, explained number lost in liftover, which must equal the step's own `unmapped` and `chromosome_changed` counts);
 the per-step row counts on the site equal the expected counts; the step logs name each rule's removals.
 
+**Found by the dry run (run locally with the real references, 41 of 41 checks passing):** minus-strand SNPs are
+removed, not complemented: gwas2vcf (as HERMES 3) switches REF and ALT but never complements, so the expectation was
+corrected. dbSNP 157 names 3 kept variants differently from Pan-UKB (matched on β and se, and reported). A/T and C/G SNPs
+in regions inverted between builds are complemented by the liftover, which from alleles alone looks like a switch:
+EAF decides their orientation in the comparison.
+
 **Why it matters:** QC is where most mistakes in consortium meta-analyses come from. Showing each rule with a known
 answer makes the QC report trustworthy.
-
----
-
-## Test 5: replicates the HERMES 3 HPC pipeline on real cohort files
-
-**Claim:** the GWASHub default QC gives the same cleaned file and QC metrics as the HERMES 3 DCM pipeline on the HPC
-(the Snakemake pipeline it was ported from).
-
-**Inputs:** 2 or 3 real HERMES 3 cohort files that already went through the HPC pipeline (their `*-hg38_clean.tsv.gz`
-outputs and logs are on Myriad), ideally one GRCh37 and one GRCh38 upload, one EUR and one non-EUR. If cohort data
-can't go on the page, use the public HERMES 2019 file through both pipelines instead, and report cohort results
-privately.
-
-**Steps:** upload each file with the same column mapping and study details as on the HPC; run the default pipeline;
-download the QC'd file and the step logs; compare with the HPC outputs.
-
-**Pass if**
-| Check | Threshold |
-|---|---|
-| Variants out | Jaccard overlap ≥ 0.999; every difference explained (listed by reason) |
-| Effect allele and position (GRCh38) for shared variants | identical |
-| β, se, EAF, N | max abs difference ≤ 1e-8 (or exact text match) |
-| p | max relative difference ≤ 1e-6 |
-| rsID | identical where both have one |
-| Per-step counts (harmonised, lifted, removed by each filter) | identical to the HPC logs |
-| LDSC h² and intercept; λGC | equal to the HPC values within 1e-4 (same ldsc release, same references) |
-| EAF check flags | identical list |
-
-**Known causes of difference to check first:** reference file versions (dbSNP build, FASTA contigs, 1000G release:
-GWASHub uses the 2022 high-coverage panel for the EAF check, HERMES 3 used phase 3 lifted), and R/Python version
-differences in number formatting. Any difference caused by a deliberate change must be listed on the page as such.
-
-**Why it matters:** this is the claim consortium members care about most: "uploading here is the same as sending it to
-the HPC pipeline".
 
 ---
 
@@ -225,10 +233,8 @@ Data for the page: each `validation/<nn>_<name>/result.json` (checks, thresholds
 committed with the scripts, so the page is static and versioned with the code. Re-running a test updates the JSON in a
 pull request, which shows exactly what changed.
 
-## Order for tomorrow
+## Status
 
-1. Pick and download the public files; write the size recipe once (shared by tests 1 to 4).
-2. Test 1 (it also produces the QC'd files tests 2 and 3 use).
-3. Test 3, then test 2.
-4. Test 4 (needs the most scripting: the planted problems and expected output).
-5. Test 5 (needs HPC access and a decision on what can be shown publicly).
+Tests 1 to 4 run on gwashub-dev and passed (7/7, 18/18, 19/19, 41/41). In test 4 the upload wizard itself suggests
+"Odds ratios" for the odds-ratios-as-BETA file; it is uploaded as BETA on purpose, so parse's check (which guards
+uploads by script) is what's tested.

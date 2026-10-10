@@ -38,6 +38,27 @@ def test_parse_writes_gwashub_format(tmp_path):
 
 
 @needs_image("gwashub/base-r")
+def test_parse_writes_removed_rows_as_received(tmp_path):
+    df = upload()
+    df = df.astype({"SE": object, "BETA": object, "FRQ": object})
+    df.loc[1, "SE"] = -1
+    df.loc[2, "FRQ"] = 1.5
+    df.loc[3, "CHR"] = "MT"
+    df.loc[4, "A1"] = "a"
+    df.loc[5, "FRQ"] = 0
+    df.loc[6, ["BETA", "SE"]] = ["oops", ""]  # two problems in one row
+    log, out = run_step("parse", df, {"column_mapping": MAP}, tmp_path)
+    removed = pd.read_csv(tmp_path / "artifacts" / "removed_rows.tsv.gz", sep="\t", dtype=str).set_index("line")
+    assert list(removed.index) == ["2", "3", "4", "5", "6", "7"] and len(out) + len(removed) == len(df)
+    assert "EXTRA" not in removed and removed.loc["4", "CHR"] == "MT" and removed.loc["5", "A1"] == "a"  # as received
+    assert removed["reason"].to_dict() == {
+        "2": "SE not a positive number", "3": "EAF outside 0-1", "4": "CHR not 1-22, X or Y", "5": "EA and OA identical",
+        "6": "EAF 0 or 1 (monomorphic)", "7": "BETA not a number; SE missing"}
+    art = {a["path"]: a for a in log["artifacts"]}
+    assert art["removed_rows.tsv.gz"]["rows"] == 6 == log["metrics"]["rows_removed"]
+
+
+@needs_image("gwashub/base-r")
 def test_parse_or_and_log10p(tmp_path):
     df = upload()
     df["OR"] = np.exp(df["BETA"])
@@ -88,3 +109,69 @@ def test_parse_reports_and_wrangles(tmp_path):
     assert summary.loc["p", "missing"] == 10 and summary.loc["p", "out_of_bounds"] == 5 and summary.loc["p", "missing_pct"] == 0.5
     chroms = pd.read_csv(tmp_path / "artifacts" / "chromosomes.tsv", sep="\t")
     assert {"as_received", "chromosome", "rows"} <= set(chroms.columns) and chroms["rows"].sum() == len(df)
+
+
+@needs_image("gwashub/base-r")
+def test_parse_stops_on_the_wrong_effect_type(tmp_path):
+    """Odds ratios uploaded as BETA (all positive, around 1), or log-odds uploaded as odds ratios (negative values)."""
+    df = upload()
+    df["BETA"] = np.exp(df["BETA"])
+    log, _ = run_step("parse", df, {"column_mapping": MAP}, tmp_path)
+    assert log["verdict"] == "fail" and "odds ratios" in log["messages"][0]
+    log, _ = run_step("parse", upload(), {"column_mapping": MAP, "effect_type": "or"}, tmp_path)
+    assert log["verdict"] == "fail" and "log-odds" in log["messages"][0]
+
+
+@needs_image("gwashub/base-r")
+def test_parse_stops_on_a_truncated_gzip(tmp_path):
+    src = tmp_path / "upload.tsv.gz"
+    with gzip.open(src, "wt") as f:
+        upload(n=20000).to_csv(f, sep="\t", index=False)
+    data = src.read_bytes()
+    src.write_bytes(data[: len(data) // 2])
+    log, _ = run_step("parse", str(src), {"column_mapping": MAP}, tmp_path, raw=True)
+    assert log["verdict"] == "fail" and "cut short" in log["messages"][0]
+
+
+@needs_image("gwashub/base-r")
+def test_parse_header_lines_xy_and_allele_codes(tmp_path):
+    """Header lines inside the data (files joined together) are removed and named; chromosome 25 / XY is X; alleles
+    coded 1/2 are named."""
+    df = upload().astype(str)
+    df.iloc[100] = df.columns  # the header again
+    df.loc[101:102, "CHR"] = ["XY", "25"]
+    df.loc[200:239, ["A1", "A2"]] = ["1", "2"]
+    log, out = run_step("parse", df, {"column_mapping": MAP}, tmp_path)
+    msgs = " ".join(log["messages"])
+    assert log["metrics"]["header_lines"] == 1 and "repeated header lines" in msgs
+    assert out.set_index("rsid").loc[["rs101", "rs102"], "chr"].tolist() == ["X", "X"] and "read as X" in msgs
+    assert "coded 1/2" in msgs
+    removed = pd.read_csv(tmp_path / "artifacts" / "removed_rows.tsv.gz", sep="\t", dtype=str).set_index("line")
+    assert removed.loc["101", "reason"] == "repeated header line"
+
+
+def genome_wide(n=120_000, seed=2):
+    """A clean genome-wide-sized upload: every autosome, unrounded values, N of the study's total."""
+    rng = np.random.default_rng(seed)
+    beta, se = rng.normal(0, 0.02, n), rng.uniform(0.01, 0.05, n)
+    from scipy import stats
+    return pd.DataFrame({"SNP": [f"rs{i}" for i in range(n)], "CHR": np.repeat([str(c) for c in range(1, 23)], -(-n // 22))[:n],
+                         "BP": np.arange(n) + 1, "A1": "C", "A2": "A", "FRQ": rng.uniform(0.01, 0.99, n),
+                         "BETA": beta, "SE": se, "P": 2 * stats.norm.sf(np.abs(beta / se)), "N": 1000})
+
+
+@needs_image("gwashub/base-r")
+def test_parse_warns_on_rounding_n_and_missing_autosomes(tmp_path):
+    params = {"column_mapping": {**MAP, "n": "N"}, "n_cases": 400, "n_controls": 600}
+    log, _ = run_step("parse", genome_wide(), params, tmp_path)
+    assert log["verdict"] == "pass", log
+    df = genome_wide()
+    df["SE"] = df["SE"].round(2)
+    df.loc[df["CHR"] == "22", "CHR"] = "21"
+    df.loc[:9, "N"] = 5000
+    (tmp_path / "b").mkdir()
+    log, _ = run_step("parse", df, params, tmp_path / "b")
+    m, msgs = log["metrics"], " ".join(log["messages"])
+    assert log["verdict"] == "warn"
+    assert m["rounded_columns"] == "SE" and "SE has only" in msgs
+    assert m["n_above_total"] == 10 and m["autosomes_absent"] == 1 and "chromosome 22" in msgs

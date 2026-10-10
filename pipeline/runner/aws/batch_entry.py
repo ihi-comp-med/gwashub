@@ -2,9 +2,9 @@
 
     python -m pipeline.runner.aws.batch_entry s3://<results-bucket>/qc/<run-id>/spec.json [--group N]
 
-A QC run is one Batch job per group of consecutive steps that share an image (--group N), chained
-with Batch job dependencies; a meta-analysis is a single job. Outputs go to the spec's output prefix,
-and the last group writes result.json. The job exits 0 whenever it recorded an outcome (including a
+A QC run is one Batch job per group of consecutive steps that share an image (--group N), submitted
+one at a time by the worker from each job's hand-over (next_group); a meta-analysis is a single job. Outputs go to
+the spec's output prefix, and the job that ends the run writes result.json. The job exits 0 whenever it recorded an outcome (including a
 QC fail); a non-zero exit means an infrastructure error, which the worker records from Batch.
 
 SIGTERM (Batch stopping the job, e.g. its Spot machine being reclaimed) stops the job at once without recording

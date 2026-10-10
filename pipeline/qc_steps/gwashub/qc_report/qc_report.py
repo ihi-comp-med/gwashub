@@ -73,17 +73,40 @@ def embed(path):
         return "data:image/png;base64," + base64.b64encode(f.read()).decode()
 
 
+def metric_value(k, v):
+    if isinstance(v, float) and k.endswith("_fraction") and 0 <= v <= 1:
+        return f"{100 * v:.2f}%"
+    return fmt(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else str(v)
+
+
+def step_section(log):
+    """One step's log laid out as the step contract: verdict, rows, messages, metrics, artifacts (listed, not embedded)."""
+    v = log.get("verdict", "")
+    cells = [("verdict", f"<span class='v' style='background:{COLORS.get(v, '#666')}'>{html.escape(v)}</span>")]
+    before, after = (log.get("_rows") or [None, None])[:2]
+    if after is not None:
+        gone = before - after if before is not None else 0
+        cells.append(("rows", f"{fmt(before)} → {fmt(after)}" + (f" (−{fmt(gone)})" if gone > 0 else "") if before is not None else fmt(after)))
+    if log.get("messages"):
+        cells.append(("messages", "<ul>" + "".join(f"<li>{html.escape(m)}</li>" for m in log["messages"]) + "</ul>"))
+    if log.get("metrics"):
+        cells.append(("metrics", "<div class='mg'>" + "".join(
+            f"<span><span class='muted'>{html.escape(str(k).replace('_', ' '))}</span> {html.escape(metric_value(str(k), m))}</span>"
+            for k, m in log["metrics"].items()) + "</div>"))
+    if log.get("artifacts"):
+        cells.append(("artifacts", "<ul>" + "".join(
+            f"<li>{html.escape(a.get('label') or a.get('path', ''))} <span class='mono muted'>{html.escape(a.get('path', ''))}</span>"
+            + (f" <span class='muted'>· {a['rows']:,} rows</span>" if isinstance(a.get("rows"), int) else "") + "</li>"
+            for a in log["artifacts"]) + "</ul>"))
+    body = "".join(f"<tr><td class='arg'>{k}</td><td>{c}</td></tr>" for k, c in cells)
+    return f"<section class='step'><h3>{html.escape(str(log.get('step', '')))}</h3><table class='ct'>{body}</table></section>"
+
+
 def build_report(logs, run_dir, params, profiles=(None, None)):
     overall = aggregate_verdict(logs)
     rows, images = [], []
     for log in logs:
-        metrics = "".join(f"<span class='m'><b>{html.escape(str(k))}</b> {html.escape(f'{v:,}' if isinstance(v, int) else str(v))}</span>"
-                          for k, v in (log.get("metrics") or {}).items())
-        msgs = "".join(f"<li>{html.escape(m)}</li>" for m in log.get("messages") or [])
-        v = log.get("verdict", "")
-        rows.append(f"<tr><td>{html.escape(str(log.get('step', '')))}</td>"
-                    f"<td><span class='v' style='background:{COLORS.get(v, '#666')}'>{html.escape(v)}</span></td>"
-                    f"<td><ul>{msgs}</ul>{metrics}</td></tr>")
+        rows.append(step_section(log))
         for a in log.get("artifacts") or []:
             p = os.path.join(run_dir or "", log.get("_dir", ""), a.get("path", ""))
             if a.get("type") == "image" and os.path.exists(p):
@@ -93,11 +116,14 @@ def build_report(logs, run_dir, params, profiles=(None, None)):
 <style>body{{font-family:system-ui,sans-serif;margin:32px;color:#1d2a33;max-width:1100px}}
 table{{border-collapse:collapse;width:100%}}td{{border-top:1px solid #e3e8ec;padding:8px;vertical-align:top}}
 .v{{color:#fff;border-radius:10px;padding:2px 10px;font-size:13px}}.m{{display:inline-block;margin-right:14px;font-size:13px;color:#5b6b77}}
-ul{{margin:0 0 6px;padding-left:18px}}.t td,.t th{{padding:4px 8px;font-size:13px;text-align:left}}.t .n{{text-align:right;font-variant-numeric:tabular-nums}}
+ul{{margin:0;padding-left:18px}}.step{{margin:0 0 18px}}.step h3{{margin:0 0 4px;font-size:16px}}
+.ct td{{border-top:1px solid #e3e8ec;padding:5px 10px 5px 0;font-size:14px}}.ct .arg{{font-family:ui-monospace,Menlo,monospace;color:#1f6f8b;width:1%;white-space:nowrap}}
+.mg{{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:0 18px}}.mg span{{display:flex;justify-content:space-between;border-bottom:1px dotted #e3e8ec;font-size:13px}}
+.mono{{font-family:ui-monospace,Menlo,monospace;font-size:12px}}.t td,.t th{{padding:4px 8px;font-size:13px;text-align:left}}.t .n{{text-align:right;font-variant-numeric:tabular-nums}}
 .muted{{color:#5b6b77}}figure{{display:inline-block;margin:12px}}img{{max-width:100%;border:1px solid #e3e8ec}}</style></head>
 <body><h1>QC report</h1><p>{study}</p>
 <p>Overall verdict: <span class='v' style='background:{COLORS[overall]}'>{overall}</span></p>
-<table>{''.join(rows)}</table>{rows_table(logs)}{profile_table(*profiles)}<h2>Plots</h2>{''.join(images) or '<p>No plots.</p>'}</body></html>"""
+<h2>Steps</h2>{''.join(rows)}{rows_table(logs)}{profile_table(*profiles)}<h2>Plots</h2>{''.join(images) or '<p>No plots.</p>'}</body></html>"""
 
 
 def read_profiles(working):

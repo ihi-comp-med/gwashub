@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 import re
@@ -17,7 +17,7 @@ from gwashub_api.services import current_pipeline
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["projects"])
-STATUSES = ("passed", "review", "failed", "processing", "pending")
+STATUSES = ("passed", "review", "changes_requested", "failed", "processing", "pending")
 
 
 def counts(db, project_id):
@@ -59,6 +59,9 @@ def get_project(project_id: str, user: User = Depends(current_user), db: Session
         "is_admin": user.is_admin,
         "ancestries": p.ancestries, "sexes": p.sexes,
         "created_at": p.created_at, "role": m.role, "counts": counts(db, p.id), "is_practice": p.id == practice.PROJECT_ID,
+        # The caller's datasets a reviewer sent back (a badge on the Datasets tab)
+        "my_changes_requested": db.scalar(select(func.count()).select_from(Dataset).where(
+            Dataset.project_id == project_id, Dataset.uploaded_by == user.id, Dataset.status == "changes_requested")),
         # Everyone is in the Practice project: each person sees only themselves there.
         "members": [{"id": x.user.id, "name": x.user.name, "institution": x.user.institution, "role": x.role,
                      "is_me": x.user_id == user.id, "uploads": uploads.get(x.user_id, 0),
@@ -243,6 +246,32 @@ def summary(project_id: str, by: str = "phenotype_ancestry_sex", user: User = De
         r["total"] += 1
     return {"by": by, "fields": fields, "rows": sorted(rows.values(), key=lambda r: tuple(str(r[f]) for f in fields)),
             "totals": counts(db, project_id)}
+
+
+@router.get("/projects/{project_id}/sample-sizes")
+def sample_sizes(project_id: str, exclude_failed: bool = False, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Cases, controls and total N summed over the project's datasets, by phenotype (when it has several), ancestry and
+    sex, in the project's own order (visible to all members). Every dataset by default; exclude_failed leaves out those
+    that failed QC (they won't be meta-analysed). Cases and controls are None for a quantitative phenotype, which gives
+    only its total."""
+    m = require_member(db, user, project_id)
+    p = m.project
+    fields = (("phenotype",) if len(p.phenotypes) > 1 else ()) + ("ancestry", "sex")
+    rows = {}
+    statuses = [s for s in STATUSES if not (exclude_failed and s == "failed")]
+    for ds in db.scalars(select(Dataset).where(Dataset.project_id == project_id, Dataset.status.in_(statuses))):
+        key = tuple(getattr(ds, f) for f in fields)
+        quantitative = services.trait_type(p, ds.phenotype) == "quantitative"
+        r = rows.setdefault(key, {**dict(zip(fields, key)), "datasets": 0, "n_cases": None if quantitative else 0,
+                                  "n_controls": None if quantitative else 0, "n_total": 0})
+        r["datasets"] += 1
+        r["n_total"] += ds.n_total or 0
+        if not quantitative:
+            r["n_cases"] += ds.n_cases or 0
+            r["n_controls"] += ds.n_controls or 0
+    rank = {"phenotype": p.phenotypes, "ancestry": p.ancestries, "sex": ["Male", "Female", "Combined"]}
+    order = lambda r: tuple(rank[f].index(r[f]) if r[f] in rank[f] else len(rank[f]) for f in fields)
+    return {"fields": fields, "rows": sorted(rows.values(), key=order)}
 
 
 # ---------- members (reviewers manage their project's members) ----------

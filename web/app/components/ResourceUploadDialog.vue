@@ -58,7 +58,8 @@ async function save() {
                     option-label="l" option-value="v" :allow-empty="false" />
     </div>
     <div class="mb">
-      <FileUpload mode="advanced" :auto="false" :show-upload-button="false" :show-cancel-button="false" choose-label="Choose file" @select="onSelect">
+      <FileUpload mode="advanced" :auto="false" :show-upload-button="false" :show-cancel-button="false" choose-label="Choose file" @select="onSelect" @remove="file = null">
+        <template #content="{ files, removeFileCallback }"><ChosenFiles :files="files" :remove="removeFileCallback" /></template>
         <template #empty><div class="drop"><i class="pi pi-cloud-upload" /><p class="m0">Drag a file here.</p></div></template>
       </FileUpload>
     </div>
@@ -99,6 +100,9 @@ async function save() {
 <style scoped>
 .intro { margin: 0 0 16px; font-size: 0.9rem; }
 .mb { margin-bottom: 16px; }
+/* thicker than its percentage label, which sits inside the bar */
+.p-progressbar.mb { height: 22px; }
+.p-progressbar.mb :deep(.p-progressbar-label) { font-size: 0.75rem; line-height: 1; }
 .m0 { margin: 0; }
 .drop { text-align: center; padding: 16px; }
 .drop i { font-size: 1.6rem; color: var(--gh-accent); }

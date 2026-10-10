@@ -1,10 +1,14 @@
 name: stats_summary
 title: Summary statistics
-description: "Genomic inflation (λGC, λ1000), P vs BETA/SE consistency, significant variants and lead loci."
+description: "Genomic inflation (λGC, λ1000), P vs BETA/SE consistency, SE vs sample size, significant variants and lead loci."
 narrative: >
   Computes the genomic inflation factor λGC (median χ² / 0.455), and λ1000 (rescaled to 1,000 cases and controls, or 1,000
   people for a quantitative trait) and λ among common variants; checks that P agrees with BETA/SE; counts genome-wide
   significant and suggestive variants; and finds lead loci by distance. Warns or fails above the set λGC limits.
+  Checks SE against the sample size and EAF (the SE-N check of EasyQC): for a case/control trait, warns when the SEs are
+  far from what log-odds ratios with those cases and controls would have, which catches effects on the linear 0/1
+  scale (BOLT-LMM, linear regression) and wrong N; for a quantitative trait it reports the trait SD this implies.
+  When BETA/SE is consistently more than 25% off the Z implied by P (median ratio), it warns that SE looks to be on another scale.
 command:
 - python
 - stats_summary.py
@@ -15,3 +19,6 @@ params:
   - {key: warn_lambda, label: Warn above λGC, type: number, min: 1, max: 5, default: 1.1}
   - {key: fail_lambda, label: Fail above λGC, type: number, min: 1, max: 5, default: 1.5}
   - {key: clump_kb, label: Lead-locus window (kb), type: integer, min: 10, max: 10000, default: 500}
+  - {key: se_ratio_low, label: Warn below observed / expected SE, type: number, min: 0, max: 1, default: 0.4,
+     help: "Case/control traits: the median of each SE divided by the SE a log-odds ratio would have with these cases, controls and EAF (about 1 when all is well)"}
+  - {key: se_ratio_high, label: Warn above observed / expected SE, type: number, min: 1, max: 100, default: 2.5}

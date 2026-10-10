@@ -257,3 +257,33 @@ def test_results_are_byte_identical_on_rerun(tmp_path):
         write_results(res, str(tmp_path / d))
         time.sleep(1.1)
     assert (tmp_path / "a" / "meta_results.tsv.gz").read_bytes() == (tmp_path / "b" / "meta_results.tsv.gz").read_bytes()
+
+
+def test_negative_zero_beta_is_zero(tmp_path):
+    """-0.0 (a zero BETA negated by an allele switch) is loaded as 0, so no method reads it as a negative effect."""
+    from _metalib.common import load_study
+    p = tmp_path / "s.tsv"
+    study([0.1, 0.2], [0.05, 0.05]).assign(beta=[-0.0, 0.2]).to_csv(p, sep="\t", index=False)
+    df, _ = load_study({"id": 1, "label": "S", "path": str(p)})
+    assert not np.signbit(df["beta"]).any()
+
+
+def test_dataset_overlap_is_named():
+    """Z-scores that correlate across null variants: the same data twice, or shared samples; independent ones pass."""
+    from _metalib.publish import dataset_overlap
+    import tempfile
+    rng = np.random.default_rng(3)
+    n = 5000
+    shared, own = rng.normal(size=n), rng.normal(size=(3, n))
+    z = {"A": shared, "B": shared.copy(), "C": 0.6 * shared + 0.8 * own[0], "D": own[1]}  # B = A; C overlaps A
+    specs = []
+    with tempfile.TemporaryDirectory() as d:
+        for name, zz in z.items():
+            p = os.path.join(d, f"{name}.tsv")
+            pd.DataFrame({"chr": "1", "pos": np.arange(n) + 1, "ea": "A", "oa": "G", "beta": zz * 0.01, "se": 0.01}).to_csv(p, sep="\t", index=False)
+            specs.append({"label": name, "path": p})
+        pairs, messages = dataset_overlap(specs)
+    r = {(p["a"], p["b"]): p["z_correlation"] for p in pairs}
+    assert r[("A", "B")] > 0.98 and 0.3 < r[("A", "C")] < 0.7 and abs(r[("A", "D")]) < 0.1
+    text = " ".join(messages)
+    assert "A and B look like the same data" in text and "A and C may share samples" in text and "A and D" not in text

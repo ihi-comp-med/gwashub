@@ -47,7 +47,9 @@ function clear() { Object.assign(filters, { search: '', cohort: null, ancestry: 
 // A dataset is out of date when its latest run used another pipeline, or an older version of its own.
 const picked = ref<any[]>([])
 const startable = (d: any) => d.status === 'pending' && (isReviewer.value || d.uploaded_by === me.value?.id)
-const rerunnable = (d: any) => isReviewer.value ? !['processing', 'uploading'].includes(d.status) : startable(d)
+// Uploaders also re-run their own datasets a reviewer sent back (changes requested).
+const rerunnable = (d: any) => isReviewer.value ? !['processing', 'uploading'].includes(d.status)
+  : startable(d) || (d.status === 'changes_requested' && d.uploaded_by === me.value?.id)
 const deletable = (d: any) => d.status !== 'processing' && (isReviewer.value || d.uploaded_by === me.value?.id)
 const waiting = computed(() => (datasets.value ?? []).filter(startable))
 const runLabel = computed(() => {

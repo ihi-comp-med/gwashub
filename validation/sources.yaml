@@ -5,6 +5,8 @@
 # effect allele. n may instead be a fixed number (n_fixed), e.g. cases + controls from the study's documentation.
 # Optional:
 #   p_neglog10: true   the mapped p column holds -log10 P; it is converted to P.
+#   variant_column:    chr, pos and alleles packed in one column: {column, sep, parts: [names in order]}
+#   eaf_from_minor:    EAF from a minor-allele column and its frequency: {allele, freq}
 #   rsid_lookup:       for files without rsIDs: another file (url, md5) and its columns {chr, pos, ref, alt, rsid};
 #                      rsIDs are joined on chr, pos and the two alleles (either order).
 
@@ -54,3 +56,49 @@ sources:
     sep: "\t"
     columns: {chr: "#chrom", pos: pos, ea: alt, oa: ref, beta: beta, se: sebeta, eaf: af_alt, p: pval, rsid: rsids}
     n_fixed: 500348    # 37,653 cases + 462,695 controls
+
+  # Sex-specific UK Biobank (test 2's sex-differentiated GWAMA). Neale lab round 2: linear regression on the 0/1 trait,
+  # so BETA is on the linear scale (QC's SE-vs-N check names this; it doesn't affect the GWAMA comparison).
+  UKB_F:
+    title: UK Biobank heart failure (ICD-10 I50), females (Neale lab round 2)
+    portal: http://www.nealelab.is/uk-biobank
+    release: round 2 (2018-08-01), imputed_v3
+    url: "https://broad-ukb-sumstats-us-east-1.s3.amazonaws.com/round2/additive-tsvs/I50.gwas.imputed_v3.female.tsv.bgz"
+    md5: "5294d42a20c58662b2a132a38191a043"
+    build: GRCh37
+    ancestry: EUR
+    sex: Female
+    n_cases: 300
+    n_controls: 193874
+    licence: Neale lab UK Biobank GWAS results, free to use without restriction (cite http://www.nealelab.is/uk-biobank)
+    citation: Neale lab (2018) UK Biobank GWAS round 2, http://www.nealelab.is/uk-biobank
+    sep: "\t"
+    columns: {beta: beta, se: se, p: pval, n: n_complete_samples}
+    variant_column: {column: variant, sep: ":", parts: [chr, pos, oa, ea]}   # chr:pos:ref:alt; BETA is for alt
+    eaf_from_minor: {allele: minor_allele, freq: minor_AF}
+    rsid_lookup:
+      url: "https://broad-ukb-sumstats-us-east-1.s3.amazonaws.com/round2/annotations/variants.tsv.bgz"
+      md5: "4fc9936ba4b4fd446cb4325dd63b6e72"
+      columns: {chr: chr, pos: pos, ref: ref, alt: alt, rsid: rsid}
+
+  UKB_M:
+    title: UK Biobank heart failure (ICD-10 I50), males (Neale lab round 2)
+    portal: http://www.nealelab.is/uk-biobank
+    release: round 2 (2018-08-01), imputed_v3
+    url: "https://broad-ukb-sumstats-us-east-1.s3.amazonaws.com/round2/additive-tsvs/I50.gwas.imputed_v3.male.tsv.bgz"
+    md5: "50533e86abee44f804e7d8ea0b524c4e"
+    build: GRCh37
+    ancestry: EUR
+    sex: Male
+    n_cases: 788
+    n_controls: 166232
+    licence: Neale lab UK Biobank GWAS results, free to use without restriction (cite http://www.nealelab.is/uk-biobank)
+    citation: Neale lab (2018) UK Biobank GWAS round 2, http://www.nealelab.is/uk-biobank
+    sep: "\t"
+    columns: {beta: beta, se: se, p: pval, n: n_complete_samples}
+    variant_column: {column: variant, sep: ":", parts: [chr, pos, oa, ea]}
+    eaf_from_minor: {allele: minor_allele, freq: minor_AF}
+    rsid_lookup:
+      url: "https://broad-ukb-sumstats-us-east-1.s3.amazonaws.com/round2/annotations/variants.tsv.bgz"
+      md5: "4fc9936ba4b4fd446cb4325dd63b6e72"
+      columns: {chr: chr, pos: pos, ref: ref, alt: alt, rsid: rsid}

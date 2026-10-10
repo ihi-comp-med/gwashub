@@ -55,12 +55,63 @@ const srcLabel = (s: any) => !s.source ? '' : s.source.repo === 'gwashub' ? s.so
 const note = ref('')
 const busy = ref(false)
 const overriding = ref(false)
-const showAll = ref(new Set<number>())
-const MAX_METRICS = 4
-const HIDDEN_METRICS = new Set(['rows_out'])  // already shown as the step's row count
-const metricEntries = (s: any) => Object.entries(s.metrics ?? {}).filter(([k]) => !HIDDEN_METRICS.has(k))
-const metricsOf = (s: any, i: number) => { const e = metricEntries(s); return showAll.value.has(i) ? e : e.slice(0, MAX_METRICS) }
-function toggleMetrics(i: number) { const n = new Set(showAll.value); n.has(i) ? n.delete(i) : n.add(i); showAll.value = n }
+// Processing steps: one line each (title, verdict); expanded, the step log laid out as the step contract.
+const openSteps = ref(new Set<number>())
+function toggleStep(i: number) {
+  const n = new Set(openSteps.value)
+  n.has(i) ? n.delete(i) : n.add(i)
+  openSteps.value = n
+  const s = steps.value[i]
+  if (n.has(i) && s?.dir && d.value?.run?.id && !stepFiles.value[s.dir]) loadStepFiles(s.dir)
+}
+watch(() => props.datasetId, () => { openSteps.value = new Set(); stepFiles.value = {} })
+const stepFiles = ref<Record<string, { path: string, size: number }[]>>({})  // sizes of each step's files, once expanded
+async function loadStepFiles(dir: string) {
+  const files = await api<any[]>(`/datasets/${d.value.id}/runs/${d.value.run.id}/files`, { query: { dir } }).catch(() => [])
+  stepFiles.value = { ...stepFiles.value, [dir]: files }
+}
+const fileSize = (s: any, path: string) => stepFiles.value[s.dir]?.find(f => f.path === `${s.dir}/${path}`)?.size
+const metricLabel = (k: string) => k.replaceAll('_', ' ')
+const metricValue = (k: string, v: unknown) => typeof v === 'number' && k.endsWith('_fraction') && v >= 0 && v <= 1 ? `${(100 * v).toFixed(2)}%` : fmtNum(v)
+const rowsLine = (s: any) => {
+  if (s.rows_after == null) return ''
+  if (s.rows_before == null) return `${s.rows_after.toLocaleString()} rows`
+  const gone = s.rows_before - s.rows_after
+  return `${s.rows_before.toLocaleString()} → ${s.rows_after.toLocaleString()}` + (gone > 0 ? ` (−${gone.toLocaleString()}, ${(100 * gone / Math.max(s.rows_before, 1)).toFixed(2)}%)` : gone < 0 ? ` (+${(-gone).toLocaleString()})` : ' (none removed)')
+}
+const ART_ICON: Record<string, string> = { image: 'pi pi-image', table: 'pi pi-table', text: 'pi pi-align-left', report: 'pi pi-file', html: 'pi pi-file' }
+const artUrl = (s: any, a: any, download = false) => `/api/datasets/${d.value?.id}/files/artifact?path=${encodeURIComponent(`${s.dir}/${a.path}`)}${d.value?.run?.id ? `&run_id=${d.value.run.id}` : ''}${download ? '&download=1' : ''}`
+
+// Changes requested: the uploader (or a reviewer) uploads a corrected file in place of this one. It replaces the old
+// file, which is deleted, and QC starts.
+const fileInput = ref<HTMLInputElement>()
+const replacing = ref(false)
+const replaceProgress = ref(0)
+async function replaceFile(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const f = input.files?.[0]
+  input.value = ''
+  if (!f) return
+  if (!window.confirm(`Replace ${d.value.file_name} with ${f.name}?\n\nThe current file will be deleted. This can't be undone. QC starts as soon as the upload finishes.`)) return
+  replacing.value = true
+  replaceProgress.value = 0
+  try {
+    const id = d.value.id
+    const start = await api<{ part_size: number, parts: number }>(`/datasets/${id}/replacement`, { method: 'POST', body: { file_name: f.name, file_size: f.size } })
+    const parts = await uploadInParts(f, {
+      partSize: start.part_size, parts: start.parts, onProgress: (x) => { replaceProgress.value = Math.round(99 * x) },
+      urlFor: async n => (await api<{ urls: Record<string, string> }>(`/datasets/${id}/replacement/urls`, { method: 'POST', body: { parts: [n] } })).urls[String(n)]!,
+    })
+    await api(`/datasets/${id}/replacement/complete`, { method: 'POST', body: { parts } })
+    toast.add({ severity: 'success', summary: 'File replaced: QC started', life: 4000 })
+    await load()
+    clearInterval(timer)
+    timer = setInterval(() => d.value?.status === 'processing' && load(), 2000)
+    emit('changed')
+  }
+  catch (e: any) { toast.add({ severity: 'error', summary: 'Could not replace the file', detail: e.message, life: 7000 }) }
+  finally { replacing.value = false }
+}
 
 async function decide(decision: string) {
   busy.value = true
@@ -119,7 +170,8 @@ function viewCode(key: string) { codeKey.value = key; codeOpen.value = true }
 // --- Step output viewer ---------------------------------------------------------------
 const outOpen = ref(false)
 const outStep = ref<any>(null)
-function viewOutput(s: any) { outStep.value = s; outOpen.value = true }
+const outFocus = ref<string | null>(null)
+function viewOutput(s: any, focus: string | null = null) { outStep.value = s; outFocus.value = focus; outOpen.value = true }
 
 // --- Details tab: edit descriptive fields + study metadata -------------------------------
 const tab = ref('qc')
@@ -259,6 +311,18 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
                 {{ { approve: 'Approved', reject: 'Rejected', request_changes: 'Changes requested' }[d.review.decision as string] }} by {{ d.review.by }}<span v-if="d.review.note">: “{{ d.review.note }}”</span>
               </Message>
 
+              <div v-if="d.status === 'changes_requested' && d.can_edit" class="review attention">
+                <div class="row"><i class="pi pi-reply" /><strong>Changes requested</strong>
+                  <span class="muted small">Upload a corrected file in place of this one, or fix the details (Details tab) and re-run QC.</span></div>
+                <div class="row">
+                  <input ref="fileInput" type="file" accept=".tsv,.txt,.csv,.gz" class="hidden-input" @change="replaceFile">
+                  <Button label="Upload a corrected file" icon="pi pi-upload" size="small" :loading="replacing" @click="fileInput?.click()" />
+                  <Button v-if="!isReviewer" label="Re-run QC" icon="pi pi-refresh" size="small" outlined :disabled="replacing" @click="rerun" />
+                </div>
+                <ProgressBar v-if="replacing" :value="replaceProgress" class="replace-bar" />
+                <small class="muted">The corrected file must have the same column names. It replaces the current file, which is deleted: this can't be undone.</small>
+              </div>
+
               <div v-if="isReviewer && (d.status === 'review' || overriding)" :class="['review', { attention: d.status === 'review' }]" data-tour="panel-review">
                 <div class="row"><i class="pi pi-eye" /><strong>{{ d.status === 'review' ? 'Awaiting review' : 'Override QC outcome' }}</strong>
                   <span class="muted small">{{ d.status === 'review' ? 'QC passed with warnings. Approve it for meta-analysis, or send it back.' : 'Your decision replaces the QC verdict.' }}</span></div>
@@ -277,24 +341,76 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
                   <li v-for="(s, i) in steps" :key="i" :class="['step', s.state]">
                     <div class="rail"><span class="dot"><i :class="STEP_META[s.state as StepState]?.icon" /></span><span v-if="i < steps.length - 1" class="line" /></div>
                     <div class="content">
-                      <div class="row">
+                      <button class="row shead" :aria-expanded="openSteps.has(i)" @click="toggleStep(i)">
                         <strong>{{ s.title }}</strong>
-                        <Button v-tooltip.top="'View code'" icon="pi pi-code" text rounded size="small" class="iconbtn" aria-label="View code" @click="viewCode(s.key)" />
-                        <Button v-if="s.dir && !['queued', 'skipped', 'running'].includes(s.state)" v-tooltip.top="'View output'" icon="pi pi-desktop" text rounded size="small" class="iconbtn" aria-label="View output" @click="viewOutput(s)" />
                         <span class="spacer" />
-                        <span v-if="removed(s) > 0" class="small removed">−{{ removed(s).toLocaleString() }}</span>
-                        <span v-if="s.rows_after != null" class="muted small">{{ s.rows_after.toLocaleString() }} rows</span>
-                        <span class="muted small">{{ dur(s.duration) }}</span>
                         <Tag v-if="s.note" :value="notePill(s.note)" severity="warn" class="note-pill" />
                         <Tag :value="s.state" :severity="STEP_META[s.state as StepState]?.severity" />
-                      </div>
+                        <i :class="['pi pi-angle-down chev', { rot: openSteps.has(i) }]" />
+                      </button>
                       <div v-if="s.note" class="small batch-note"><i class="pi pi-info-circle" /> {{ s.note }}</div>
-                      <div v-if="s.source && s.source.repo !== 'gwashub'" class="src mono muted"><i class="pi pi-github" /> {{ srcLabel(s) }} <i class="pi pi-box" /> {{ s.image }}</div>
-                      <p v-for="(m, k) in s.messages" :key="k" :class="['msg', { pre: m.includes('\n') }]">{{ m }}</p>
-                      <div v-if="metricEntries(s).length" class="metrics">
-                        <span v-for="[k, v] in metricsOf(s, i)" :key="k"><span class="muted">{{ String(k).replaceAll('_', ' ') }}</span> {{ fmtNum(v) }}</span>
-                        <button v-if="metricEntries(s).length > MAX_METRICS" class="more" @click="toggleMetrics(i)">{{ showAll.has(i) ? 'less' : `+${metricEntries(s).length - MAX_METRICS} more` }}</button>
-                      </div>
+                      <table v-if="openSteps.has(i)" class="ct slog">
+                        <tbody>
+                          <tr>
+                            <td class="mono arg">step</td>
+                            <td>
+                              <div class="row wrap">
+                                <span v-tooltip.top="'The step: its script and settings (step.yaml)'" class="ident"><i class="pi pi-code" /><span class="mono">{{ s.key }}</span></span>
+                                <span v-if="s.duration != null" class="muted small">{{ dur(s.duration) }}</span>
+                                <span class="spacer" />
+                                <Button label="Code" icon="pi pi-code" text size="small" class="tbtn" @click="viewCode(s.key)" />
+                                <Button v-if="s.dir && !['queued', 'skipped', 'running'].includes(s.state)" label="All files" icon="pi pi-folder-open" text size="small" class="tbtn" @click="viewOutput(s)" />
+                              </div>
+                              <div v-if="s.source && s.source.repo !== 'gwashub'" class="src mono muted"><i class="pi pi-github" /> {{ srcLabel(s) }}</div>
+                            </td>
+                          </tr>
+                          <tr v-if="s.image">
+                            <td class="mono arg">image</td>
+                            <td><span v-tooltip.top="'The Docker image (software environment) the step ran in'" class="ident"><i class="pi pi-box" /><span class="mono">{{ s.image }}</span></span>
+                              <span class="muted small"> Docker image</span></td>
+                          </tr>
+                          <tr>
+                            <td class="mono arg">verdict</td>
+                            <td><Tag :value="s.verdict ?? s.state" :severity="STEP_META[(s.verdict ?? s.state) as StepState]?.severity" />
+                              <span v-if="s.on_fail" class="muted small"> on fail: {{ s.on_fail }}</span>
+                              <span v-if="s.exit_code != null && s.exit_code !== 0" class="muted small"> · exit code {{ s.exit_code }}</span></td>
+                          </tr>
+                          <tr v-if="rowsLine(s)">
+                            <td class="mono arg">rows</td>
+                            <td><span :class="{ removed: removed(s) > 0 }">{{ rowsLine(s) }}</span></td>
+                          </tr>
+                          <tr v-if="s.messages?.length">
+                            <td class="mono arg">messages</td>
+                            <td><ul class="msgs"><li v-for="(m, k) in s.messages" :key="k" :class="['msg', { pre: m.includes('\n') }]">{{ m }}</li></ul></td>
+                          </tr>
+                          <tr v-if="Object.keys(s.metrics ?? {}).length">
+                            <td class="mono arg">metrics</td>
+                            <td>
+                              <div class="mgrid">
+                                <div v-for="(v, k) in s.metrics" :key="k" class="m"><span class="muted">{{ metricLabel(String(k)) }}</span><span class="mono">{{ metricValue(String(k), v) }}</span></div>
+                              </div>
+                            </td>
+                          </tr>
+                          <tr v-if="s.artifacts?.length">
+                            <td class="mono arg">artifacts</td>
+                            <td>
+                              <div v-for="a in s.artifacts" :key="a.path" class="art">
+                                <button class="thumb" :aria-label="`Open ${a.label || a.path}`" @click="viewOutput(s, a.path)">
+                                  <img v-if="a.type === 'image'" :src="artUrl(s, a)" :alt="a.label">
+                                  <i v-else :class="ART_ICON[a.type] ?? 'pi pi-file'" />
+                                </button>
+                                <div class="ainfo">
+                                  <button class="alabel" @click="viewOutput(s, a.path)">{{ a.label || a.path }}</button>
+                                  <div class="muted small"><span class="mono">{{ a.path }}</span><span v-if="fileSize(s, a.path) != null"> · {{ fmtSize(fileSize(s, a.path)) }}</span><span v-if="a.rows != null"> · {{ a.rows.toLocaleString() }} rows</span></div>
+                                  <div v-if="a.description" class="muted small">{{ a.description }}</div>
+                                </div>
+                                <Button v-tooltip.top="'Open'" icon="pi pi-window-maximize" text rounded size="small" class="iconbtn" :aria-label="`Open ${a.label || a.path}`" @click="viewOutput(s, a.path)" />
+                                <a v-tooltip.top="'Download'" :href="artUrl(s, a, true)" class="p-button p-button-text p-button-rounded p-button-sm p-button-icon-only iconbtn" :aria-label="`Download ${a.label || a.path}`"><i class="pi pi-download" /></a>
+                              </div>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
                     </div>
                   </li>
                 </ol>
@@ -438,7 +554,7 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
     <div v-else class="loading"><ProgressSpinner /></div>
   </Drawer>
   <CodeViewer v-model:visible="codeOpen" :project-id="project.id" :step-key="codeKey" />
-  <StepOutputViewer v-if="d" v-model:visible="outOpen" :dataset-id="d.id" :run-id="d.run?.id" :step="outStep" />
+  <StepOutputViewer v-if="d" v-model:visible="outOpen" :dataset-id="d.id" :run-id="d.run?.id" :step="outStep" :focus="outFocus" />
 </template>
 
 <style scoped>
@@ -479,13 +595,32 @@ h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: .05em; color:
 .src { font-size: 0.72rem; margin-top: 2px; }
 .src i { font-size: 0.7rem; margin: 0 2px 0 6px; }
 .src i:first-child { margin-left: 0; }
-.msg { margin: 6px 0 0; }
-.msg.pre { white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; font-size: 0.75rem; background: #0f1720; color: #fca5a5; padding: 8px; border-radius: 6px; }
-.metrics { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 6px; font-size: 0.85rem; }
-.metrics .muted { margin-right: 4px; }
+.shead { width: 100%; background: none; border: 0; padding: 2px 0; font: inherit; color: inherit; cursor: pointer; text-align: left; min-height: 1.8rem; }
+.shead:hover strong { color: var(--gh-accent); }
+.chev { color: var(--gh-muted); font-size: 0.8rem; transition: transform .15s; }
+.chev.rot { transform: rotate(180deg); }
+.slog { margin-top: 6px; font-size: 0.85rem; }
+.tbtn { padding-top: 0; padding-bottom: 0; }
+.wrap { flex-wrap: wrap; gap: 4px 10px; }
+.msgs { margin: 0; padding-left: 16px; }
+.hidden-input { display: none; }
+.replace-bar { height: 22px; }
+.replace-bar :deep(.p-progressbar-label) { font-size: 0.75rem; line-height: 1; }
+.ident { display: inline-flex; align-items: center; gap: 6px; }
+.ident .pi { color: var(--gh-muted); font-size: 0.85rem; }
+.msg { margin: 0 0 2px; }
+.mgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0 18px; }
+.mgrid .m { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px dotted var(--gh-border); padding: 2px 0; }
+.mgrid .mono { font-size: 0.8rem; }
 .more { background: none; border: 0; color: var(--gh-accent); cursor: pointer; font: inherit; padding: 0; }
-.arts { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; font-size: 0.8rem; }
-.art { text-decoration: none; }
+.art { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.art + .art { border-top: 1px solid var(--gh-border); }
+.thumb { width: 44px; height: 44px; flex-shrink: 0; border: 1px solid var(--gh-border); border-radius: 6px; background: var(--gh-bg); display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; overflow: hidden; color: var(--gh-muted); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; }
+.ainfo { flex: 1; min-width: 0; }
+.alabel { background: none; border: 0; padding: 0; font: inherit; color: var(--gh-accent); cursor: pointer; text-align: left; }
+.alabel:hover { text-decoration: underline; }
+.msg.pre { white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; font-size: 0.75rem; background: #0f1720; color: #fca5a5; padding: 8px; border-radius: 6px; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0 0 20px; font-size: 0.88rem; }
 .kv dt { color: var(--gh-muted); }
 .kv dd { margin: 0; word-break: break-all; }

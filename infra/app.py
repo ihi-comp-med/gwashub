@@ -4,13 +4,14 @@
     npx aws-cdk deploy --all -c env=dev -c image_tag=<tag>
 
 One set of three stacks per environment: Network (VPC), Data (KMS, S3, Postgres) and App (sign-in,
-API, worker, Batch, website).
+API, worker, Batch, website), plus Cert (the site's certificate, in us-east-1) when it has a domain.
 """
 import json
 
 import aws_cdk as cdk
 
 from gwashub_infra.app_stack import AppStack
+from gwashub_infra.cert import CertStack
 from gwashub_infra.config import ENVIRONMENTS
 from gwashub_infra.data import DataStack
 from gwashub_infra.network import NetworkStack
@@ -27,7 +28,12 @@ env = cdk.Environment(account=cfg.account, region=cfg.region)
 
 net = NetworkStack(app, f"Gwashub-{name}-Network", cfg=cfg, env=env)
 data = DataStack(app, f"Gwashub-{name}-Data", cfg=cfg, net=net, env=env)
-AppStack(app, f"Gwashub-{name}-App", cfg=cfg, net=net, data=data, image_tag=image_tag, pipeline_images=pipeline_images, env=env)
+cert = None
+if cfg.domain:
+    cert = CertStack(app, f"Gwashub-{name}-Cert", cfg=cfg, env=cdk.Environment(account=cfg.account, region="us-east-1"),
+                     cross_region_references=True).certificate
+AppStack(app, f"Gwashub-{name}-App", cfg=cfg, net=net, data=data, image_tag=image_tag, pipeline_images=pipeline_images,
+         certificate=cert, env=env, cross_region_references=bool(cert))
 for stack in app.node.children:
     cdk.Tags.of(stack).add("project", "gwashub")
     cdk.Tags.of(stack).add("environment", name)

@@ -116,6 +116,30 @@ def read_bytes(loc: str) -> bytes:
         return f.read()
 
 
+def head_lines(loc: str, n: int) -> str | None:
+    """The first n lines of a text file, gunzipped when it ends in .gz; reads only as far as needed (streamed on S3).
+    None when the file isn't there."""
+    import gzip
+    if is_s3(loc):
+        from botocore.exceptions import ClientError
+        bucket, k = split_s3(loc)
+        try:
+            raw = _s3().get_object(Bucket=bucket, Key=k)["Body"]
+        except ClientError:
+            return None
+    elif os.path.isfile(loc):
+        raw = open(loc, "rb")
+    else:
+        return None
+    lines = []
+    with raw, (gzip.GzipFile(fileobj=raw) if loc.endswith(".gz") else raw) as f:
+        for line in f:
+            lines.append(line.decode("utf-8", errors="replace"))
+            if len(lines) >= n:
+                break
+    return "".join(lines)
+
+
 def exists(loc: str) -> bool:
     if is_s3(loc):
         from botocore.exceptions import ClientError

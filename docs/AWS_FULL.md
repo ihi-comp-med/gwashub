@@ -22,7 +22,7 @@ production. The AWS accounts themselves are described in `docs/AWS_ACCOUNT_SETUP
 
 | Piece | AWS service | Notes |
 |---|---|---|
-| Website | S3 + CloudFront | Static files from `nuxt generate`. Address: `https://<id>.cloudfront.net` until a domain is added |
+| Website | S3 + CloudFront | Static files from `nuxt generate`. Address: the environment's `domain` (`infra/gwashub_infra/config.py`) with an ACM certificate from the `Gwashub-<env>-Cert` stack in us-east-1; `https://<id>.cloudfront.net` without one |
 | API | ECS Fargate (Graviton) behind an **internal** load balancer | Reached only through CloudFront (`/api/*`, VPC origin). No public address |
 | Worker | ECS Fargate | Reads Batch job events from SQS and records results in the database |
 | QC runs and meta-analyses | AWS Batch on EC2 Spot, scales to zero: Graviton (m7g/r7g) for arm64 images, queue `gwashub-<env>`; Intel (m7i/r7i) for x86-64 images, queue `gwashub-<env>-x86`. Jobs get a 200 GB (dev) / 500 GB (prod) encrypted volume and a 12 h timeout | One job per *image group* of a run (below); `python -m pipeline.runner.aws.batch_entry s3://.../spec.json --group N` |
@@ -44,8 +44,10 @@ ECR keeps the 5 newest images per repository and drops untagged ones after a day
 deploy script); an older image a past run used can be rebuilt from git at that commit.
 
 **Image groups.** Consecutive steps that use the same image run as one Batch job in that image; a new
-job starts only where the image changes, and each job depends on the previous one (Batch job
-dependencies). The default pipeline is four jobs (`gwashub/base-r`, `gwashub/vcf`, `gwashub/ldsc`, `gwashub/base`).
+job starts only where the image changes. Jobs are submitted one at a time: when a job succeeds, the worker submits the
+group its hand-over names. That is the next group, or, after a step blocks the run, the next group with a step that
+must still run (the report), so the groups between never start a machine. The default pipeline is four jobs
+(`gwashub/base-r`, `gwashub/vcf`, `gwashub/ldsc`, `gwashub/base`).
 Each job is sized from its steps' `compute:` in `step.yaml` (the largest vCPU and memory among them), passed to Batch
 as overrides. Between jobs, the working file and run state pass through `results/qc/<project>/<dataset>/<run>-<time>/_state/`.
 
@@ -54,12 +56,13 @@ as overrides. Between jobs, the working file and run state pass through `results
 1. The browser asks the API to start an upload; the API creates the dataset (status *uploading*) and an
    S3 multipart upload, then hands out short-lived presigned URLs for each part.
 2. The browser PUTs the parts straight to S3 (4 at a time, with retries) and tells the API it's done.
-3. The API writes a job spec to `results/qc/<project>/<dataset>/<run>-<time>/spec.json` and submits one Batch job per image group.
+3. The API writes a job spec to `results/qc/<project>/<dataset>/<run>-<time>/spec.json` and submits the first image group's job.
 4. Each job downloads what it needs (input or hand-over state, the pinned reference files), runs its
-   steps, and writes outputs and `progress.json` (live step states) to `results/qc/<project>/<dataset>/<run>-<time>/`; the last
-   writes `result.json`.
-5. Batch's state changes go through EventBridge to SQS; the worker records the run when its last job
-   succeeds (or as failed when any job fails). Every 5 minutes it also asks Batch about unfinished runs.
+   steps, and writes outputs and `progress.json` (live step states) to `results/qc/<project>/<dataset>/<run>-<time>/`; each
+   step's files as it finishes, and the job that ends the run writes `result.json`.
+5. Batch's state changes go through EventBridge to SQS. When a job succeeds, the worker records the run if it wrote
+   `result.json`, and otherwise submits the group named in the hand-over (`_state/state.json`, `next_group`); any job
+   failing fails the run. Every 5 minutes it also asks Batch about the job in flight for unfinished runs.
 6. Downloads are presigned S3 links handed out after the API checks permissions.
 
 Code: `api/gwashub_api/storage.py` (files), `jobs.py` (specs, submission, recording results),
@@ -124,7 +127,7 @@ The first deploy takes 25–35 minutes (database and CloudFront); later ones 5�
 is printed at the end and saved in `infra/cdk-outputs-dev.json` (git-ignored; the admin, tunnel and
 bookmarks scripts read it). `GWASHUB_IMAGE_TAG=<tag>` redeploys images already in ECR without rebuilding.
 
-**dev today:** https://d3ap1iypuvmxl8.cloudfront.net (gwashub-dev). Projects for testing and validation, the Practice
+**dev today:** https://gwashub.com (gwashub-dev; the CloudFront address https://d3ap1iypuvmxl8.cloudfront.net still serves the site, but sign-in only returns to gwashub.com). Projects for testing and validation, the Practice
 project, no demo data, and all 37 real reference files (incl. dbSNP 157) registered as shared resources.
 
 ## Running it
@@ -244,7 +247,10 @@ The AWS Organizations pages only work from the management account.
 Open items, most important first:
 
 - **WAF** on CloudFront (AWS managed rules, a rate limit per IP). Not in the lean dev setup.
-- **Custom domain** with an ACM certificate (CloudFront's default certificate allows old TLS versions).
+- **Domain for prod.** gwashub.com serves dev for now. It is registered in the management account; its hosted zone is
+  in the account that serves it (Route 53 → Registered domains → gwashub.com → name servers point there). For prod:
+  move the zone to the prod account (or give prod the apex and delegate `dev.gwashub.com` to dev) and set `domain`
+  in `config.py` for both.
 - **Isolating consortium steps**: they run in their own image group, but in the same compute environment with the same
   job role as the default steps. Still to do: a locked-down environment (no internet, only that run's S3 prefix).
   Consortium code is reviewed by pull request before it runs.

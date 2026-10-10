@@ -1,6 +1,6 @@
 // Thin client for the GWASHub API + shared display helpers.
 export type Role = 'uploader' | 'reviewer'
-export type DatasetStatus = 'passed' | 'review' | 'failed' | 'processing' | 'pending' | 'uploading'
+export type DatasetStatus = 'passed' | 'review' | 'changes_requested' | 'failed' | 'processing' | 'pending' | 'uploading'
 export type StepState = 'pass' | 'warn' | 'fail' | 'running' | 'queued' | 'skipped' | 'error'
 
 export class ApiError extends Error {
@@ -52,6 +52,7 @@ export function useApiGet<T = any>(path: MaybeRefOrGetter<string | null>, opts: 
 export const STATUS_META: Record<DatasetStatus, { label: string, severity: string, icon: string }> = {
   passed: { label: 'Passed QC', severity: 'success', icon: 'pi pi-check-circle' },
   review: { label: 'For review', severity: 'warn', icon: 'pi pi-eye' },
+  changes_requested: { label: 'Changes requested', severity: 'warn', icon: 'pi pi-reply' },
   failed: { label: 'Failed', severity: 'danger', icon: 'pi pi-times-circle' },
   processing: { label: 'Processing', severity: 'info', icon: 'pi pi-spin pi-spinner' },
   pending: { label: 'Pending QC', severity: 'secondary', icon: 'pi pi-pause-circle' },

@@ -60,6 +60,7 @@ class Vcf:
         sample_metadata=None,
         file_metadata=None,
         csi=False,
+        rejected=None,
     ):
         logging.info(f"Writing headers to BCF/VCF: {path}")
 
@@ -223,6 +224,9 @@ class Vcf:
                     logging.warning(
                         f"Skipping variant with null allele: chrom={result.chrom}, pos={result.pos}, ref={result.ref}, alt={result.alt}, dbsnpid={result.dbsnpid}"
                     )
+                    if rejected:  # GWASHub added
+                        with open(rejected, "a") as r:
+                            r.write(f"{getattr(result, 'line', '')}\tnull allele after normalisation\n")
                     continue
 
                 record.alleles = (result.ref, result.alt)

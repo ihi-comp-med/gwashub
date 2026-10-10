@@ -84,6 +84,10 @@ def main():
     parser.add_argument(
         "--alias", dest="alias", required=False, help="Optional chromosome alias file"
     )
+    # GWASHub added: every variant dropped, as "<data line number>\t<reason>" (1 = first data line)
+    parser.add_argument(
+        "--rejected", dest="rejected", required=False, help="Optional file listing the dropped variants"
+    )
 
     args = parser.parse_args()
 
@@ -197,6 +201,7 @@ def main():
             imputed_col_num=json_data.get("imputed_col"),
             alias=alias,
             dbsnp=dbsnp,
+            rejected=args.rejected,
         )
 
     if dbsnp is not None:
@@ -231,6 +236,7 @@ def main():
         sample_metadata,
         file_metadata,
         args.csi,
+        rejected=args.rejected,
     )
 
     # close temp file to release disk space

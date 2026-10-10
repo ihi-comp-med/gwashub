@@ -1,8 +1,8 @@
 # Where GWASHub stands
 
-Current state, decisions and known gaps (2026-10-07). The site is feature-complete for now; what's left is validation
-(tests 2 to 5) and the production items. How things changed day by day is in the git history; how to run
-it is in `README.md`, the AWS deployment in `docs/AWS_FULL.md`.
+Current state, decisions and known gaps (2026-10-10). The site is feature-complete for now and validated; what's left
+is the production items. How things changed day by day is in the git history; how to run it is in `README.md`, the AWS
+deployment in `docs/AWS_FULL.md`.
 
 ## Built
 
@@ -15,8 +15,8 @@ it is in `README.md`, the AWS deployment in `docs/AWS_FULL.md`.
 | Meta-analysis | `gwashub/gwama` (default), `gwashub/metal`, consortium methods by PR; shared post-processing: lead loci by PLINK 2 clumping, signals, locus plots with genes, forest plots, `datasets.tsv`, `README.txt` |
 | Reference files | `resources/catalog.yaml` and build scripts; all 37 real files (~26 GB, incl. dbSNP 157) on AWS dev |
 | AWS | Live in gwashub-dev (`docs/AWS_FULL.md`); prod configured, not deployed |
-| Validation | Test 1 (site GWAMA vs GWAMA by hand) passes 7/7; tests 2 to 5 planned (`docs/VALIDATION_PLAN.md`, `validation/`) |
-| Tests | 99, all passing (`.venv/bin/python -m pytest`; step tests need the images from `./devtools/build_images.sh`) |
+| Validation | All four tests pass on gwashub-dev: GWAMA defaults and options and METAL, each vs the program run by hand, and QC against planted problems (`docs/VALIDATION_PLAN.md`, `validation/`) |
+| Tests | 105, all passing (`.venv/bin/python -m pytest`; step tests need the images from `./devtools/build_images.sh`) |
 
 ## Default QC pipeline
 
@@ -25,12 +25,39 @@ GWASHub format (`_lib/common.py` `STANDARD`: `chr pos ea oa beta se p eaf` + opt
 
 | Step | Image | What it does |
 |---|---|---|
-| `parse` (R) | `gwashub/base-r` | The only step that reads the upload. Recodes and validates; removes rows it can't recover (missing or invalid essentials, EAF missing, 0 or 1); P from BETA/SE only where missing; N from cases + controls. Reports missingness and out-of-bounds counts per column, chromosomes present, indels |
-| `filter` (R) | `gwashub/base-r` | Chromosome set; range filters (\|BETA\|, SE, INFO, MAF, N), each with its own switch and min/max switches; missing INFO filled with 1 or removed; indels; duplicates. Warns above 5% removed |
-| `harmonise_liftover` | `gwashub/vcf` (x86-64) | The edited gwas2vcf (copied into the step) and bcftools +liftover; dbSNP 157 rsIDs. GRCh38 with EA = ALT afterwards |
-| `eaf_check` | `gwashub/vcf` | EAF vs 1000 Genomes; warns above 5% with \|ΔEAF\| > 0.2; removes nothing |
+| `parse` (R) | `gwashub/base-r` | The only step that reads the upload. Recodes and validates; removes rows it can't recover (missing or invalid essentials, EAF missing, 0 or 1); P from BETA/SE only where missing; N from cases + controls. Reports missingness and out-of-bounds counts per column, chromosomes present, indels. Removed rows as uploaded, with line and reasons. Upload gotchas below |
+| `filter` (R) | `gwashub/base-r` | Chromosome set; range filters (\|BETA\|, SE, INFO, MAF, N), each with its own switch and min/max switches; missing INFO filled with 1 or removed; strand-ambiguous (A/T, C/G) SNPs by MAF (off by default); indels; duplicates. Warns above 5% removed. Removed rows with the filter that removed each |
+| `harmonise_liftover` | `gwashub/vcf` (x86-64) | The edited gwas2vcf (copied into the step) and bcftools +liftover; dbSNP 157 rsIDs. GRCh38 with EA = ALT afterwards. Removed rows with stage and reason (gwas2vcf's from a `--rejected` list we added to our copy; liftover's from bcftools' reject file). Checks the declared build first (below) |
+| `eaf_check` | `gwashub/vcf` | EAF vs 1000 Genomes; warns above 5% with \|ΔEAF\| > 0.2; removes them only when `remove_large_diff` is on (default off). Names MAF given as EAF, and strand problems in A/T, C/G SNPs |
 | `ldsc` | `gwashub/ldsc` (x86-64) | The authors' bulik/ldsc (Python 2.7), Pan-UKB LD scores; intercept and ratio |
-| `stats_summary`, `plots`, `qc_report` | `gwashub/base` | λ metrics, hits, lead loci by distance; Manhattan and QQ; the HTML report |
+| `stats_summary`, `plots`, `qc_report` | `gwashub/base` | λ metrics, hits, lead loci by distance, SE vs sample size, BETA/SE vs P; Manhattan and QQ; the HTML report |
+
+**Common GWAS QC gotchas** each have a check that names the problem (rather than letting it show up as a vague
+drop in rows or an odd λ):
+
+| Gotcha | Where | Outcome |
+|---|---|---|
+| gzip upload cut short | `parse` (`gzip -t`) | fail |
+| Odds ratios uploaded as BETA (all positive, median near 1); log-odds uploaded as OR (values ≤ 0) | `parse` | fail |
+| P column holding −log10 P | `parse` | fail (existing) |
+| Header lines inside the data (files joined together) | `parse` | removed, reason "repeated header line" |
+| Alleles coded 1/2 or I/D | `parse` | named in the messages (rows removed as invalid) |
+| PLINK chromosome 25 / XY | `parse` | read as X |
+| BETA, SE or P rounded (fewer than 1,000 distinct values in 50,000+ rows) | `parse` | warn |
+| N above the study's total | `parse` | warn |
+| An autosome missing from a genome-wide file (50,000+ rows) | `parse` | warn |
+| EAF never above 0.5 | `parse` | note (minor-allele coding or MAF; `eaf_check` tells which) |
+| Wrong build declared | `harmonise_liftover`: 20,000 SNPs looked up in both FASTAs | warn, naming the build that fits |
+| MAF uploaded as EAF | `eaf_check`: agrees with 1000 Genomes only once folded to MAF | named |
+| A/T, C/G SNPs on the other strand | `eaf_check`: those SNPs differ far more often than the rest | warn; `filter` can remove them by MAF |
+| Effects on the linear 0/1 scale (BOLT-LMM, linear regression) or N wrong | `stats_summary`: median SE / SE expected from cases, controls, EAF (EasyQC's SE-N check), 0.4 to 2.5 | warn, naming which |
+| SE on another scale (e.g. of the OR) | `stats_summary`: median \|BETA/SE\| / Z from P outside 0.8 to 1.25 | warn |
+| Wrong ancestry declared | `eaf_check`: frequencies clearly closer to another 1000 Genomes population | warn, naming it |
+| Very rare variants in small cohorts | `filter`: minor allele count 2·MAF·N (EasyQC's cut-off 6) | removed when switched on (off by default) |
+| Datasets sharing samples, or the same data twice | meta-analysis post-processing: Z correlation across null variants (\|Z\| < 2) above 0.1 (0.98: same data) | warn; pairs in summary.json |
+
+Checklists compared: EasyQC (Winkler et al. 2014, Nat Protoc 9:1192) and MungeSumstats. Not covered: X-chromosome
+coding in men (0/1 vs 0/2) and Hardy-Weinberg / call-rate checks (need genotype-level fields uploads don't carry).
 
 The runner profiles every run's upload and cleaned file (`_lib/profile.py`) and counts rows before and after each step,
 whatever the pipeline. A QC run is four Batch jobs (one per change of image).
@@ -40,6 +67,9 @@ whatever the pipeline. A QC run is four Batch jobs (one per change of image).
 **Data and QC**
 - Steps follow one contract (`--input --resources --params --log`, JSON step log with a verdict) and never touch the
   database or the network. They declare the resources they need; only those are staged.
+- Steps that remove rows list them in `removed_rows.tsv.gz` with a `reason` (`docs/QC_STEP_OUTPUT_PLAN.md`). The dataset
+  panel shows each step as one line (title, verdict); expanded, its log as the contract (rows, messages, every metric,
+  artifacts to open or download). Table previews show the first 100 rows (`.tsv.gz` streamed and gunzipped).
 - A step always runs in the image its `step.yaml` names. Pipelines choose steps, `on_fail` and parameters only.
 - Typed parameters (`pipeline/runner/params.py`, including `range`) drive the forms and the API's validation.
 - `step.yaml`: `description` is one sentence; `narrative` holds the longer explanation shown on the pipeline page.
@@ -59,7 +89,12 @@ whatever the pipeline. A QC run is four Batch jobs (one per change of image).
   person sees only themselves in its members, which can't be changed; its data is shared and may be deleted.
 - Every upload (website or script) lands as **pending**: QC starts when the uploader (their own datasets) or a reviewer
   clicks Start QC, in the dataset panel or for a selection in the datasets table. Selected datasets can be deleted in bulk.
-- Dataset status: QC pass → passed, warn → for review, fail → failed; a reviewer's decision overrides.
+- Dataset status: QC pass → passed, warn → for review, fail → failed; a reviewer's decision overrides: approve →
+  passed, reject → failed, request changes → **changes requested** (kept out of meta-analysis like failed). The uploader
+  then sees a badge on the Datasets tab and can re-run QC or upload a corrected file with the same column names; the
+  corrected file replaces the old one (deleted; the website warns this can't be undone), clears the review and starts
+  QC. On AWS the uploads bucket is versioned, so a replaced file stays recoverable by an administrator until the
+  lifecycle rule expires it.
 - Reproducibility: pipeline versions pin resource versions; runs record the pipeline version and image digests.
 
 **Pipelines**
@@ -101,14 +136,21 @@ whatever the pipeline. A QC run is four Batch jobs (one per change of image).
   `harmonise_liftover` warns for them. Smoke-test dev with a real file.
 - Job sizes come from each step's `compute:`; they don't yet scale with the uploaded file's size.
 - `stats_summary` finds per-dataset lead loci by distance (a QC indicator); meta-analysis lead loci use LD clumping.
+- harmonise_liftover writes a BETA of −0.0 (a zero negated by an allele switch) as 0, and the meta-analysis loader does
+  the same for QC'd files written before: METAL's sample-size scheme read −0.0 as a negative effect.
+- Deliberate differences from the HERMES 3 pipeline: a warning at 5% removed, missing INFO filled with 1 by default,
+  chromosome 25 / XY read as X, and the gotcha checks above (none of which HERMES 3 had; only the effect-type and
+  truncated-gzip checks fail).
+- METAL's overlap correction bins variants by total weight; with per-variant N most bins hold one variant and the
+  correction is erratic (validation test 3's dry run).
+- The synthetic data's SEs (`devtools/synth.py`, "rough log-OR SE") are half what the counts imply, so
+  `stats_summary`'s observed / expected SE is about 0.5 on them: inside the 0.4 to 2.5 band, but a real file should sit
+  near 1.
 
 ## Not done
 
-- Production deployment and the AWS items in `docs/AWS_FULL.md` → "Before production" (WAF, custom domain, isolated
+- Production deployment and the AWS items in `docs/AWS_FULL.md` → "Before production" (WAF, prod domain, isolated
   consortium steps, malware scanning, alarms, CI/CD, SES for invitations).
-- Validation tests 2 to 5, including the comparison with the HERMES 3 HPC (Snakemake) results. Deliberate differences
-  from HERMES 3 to list there: warning at 5% removed, missing INFO filled with 1 by default.
 - Resource import from a URL (upload only).
-- Idea: when few variants match the declared build's reference, try the other build and say which fits.
 - The stack poster in `docs/images/` predates the vcf and ldsc images and GWAMA; regenerate it when convenient.
 - `.github/CODEOWNERS` has placeholder team names; the `qc-pipeline` repository on GitHub isn't archived.

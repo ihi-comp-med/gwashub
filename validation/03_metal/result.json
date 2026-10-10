@@ -1,0 +1,243 @@
+{
+  "test": "03_metal",
+  "title": "METAL, both schemes, and agreement with GWAMA",
+  "claim": "METAL on GWASHub matches METAL run by hand in both schemes and with its options, and two independent programs (METAL and GWAMA) give the same fixed-effect answer through GWASHub.",
+  "status": "passed",
+  "run_date": "2026-10-10T22:05:12Z",
+  "versions": {
+    "metal": "2020-05-05",
+    "r": "R version 4.6.1 (2026-06-24)",
+    "data.table": "1.18.4",
+    "site_pipeline_version": 2,
+    "site_image_digests": {
+      "gwashub/metal": "sha256:c33f0de1a0838f097f76fdf3054d040fae8acedf89aaa7523d53929bde9b8ea1",
+      "qc": {
+        "gwashub/base-r": "sha256:bcc4829ffadfe45269e268f7bd7b6dd47d44fe0212ccdd5dd0c12745780e7126",
+        "gwashub/vcf": "sha256:ff94dfcedb4bb4c37912ac27d8917a4d8b96d34a41663722297721d1f3ea845e",
+        "gwashub/ldsc": "sha256:257045df1c3fc622f9fd0501fe5863afa3bfae6a2fa566f5cfdeaef0df2382b6",
+        "gwashub/base": "sha256:3ef93d53ed8f407cb6757bdae1e7f201b71ab19e54ad2cd6b09d13b9b52dd956"
+      }
+    }
+  },
+  "site_run": {
+    "site": "https://d3ap1iypuvmxl8.cloudfront.net",
+    "project": "validation",
+    "run_date": "2026-10-10",
+    "datasets": {
+      "UKB": 2,
+      "HERMES": 3,
+      "FINNGEN": 4
+    },
+    "qc_runs": {
+      "UKB": 11,
+      "HERMES": 10,
+      "FINNGEN": 9
+    },
+    "dataset_order": ["FINNGEN", "HERMES", "UKB"],
+    "runs": {
+      "stderr": {
+        "meta_analysis": 7,
+        "meta_analysis_rerun": 10
+      },
+      "samplesize_plain": {
+        "meta_analysis": 8,
+        "meta_analysis_rerun": 11
+      },
+      "samplesize": {
+        "meta_analysis": 9,
+        "meta_analysis_rerun": 12
+      }
+    },
+    "references": ["validation · meta-analysis 7 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/meta/validation/7-20261010-175137", "validation · meta-analysis 10 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/meta/validation/10-20261010-175346", "validation · meta-analysis 8 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/meta/validation/8-20261010-175209", "validation · meta-analysis 11 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/meta/validation/11-20261010-175406", "validation · meta-analysis 9 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/meta/validation/9-20261010-175301", "validation · meta-analysis 12 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/meta/validation/12-20261010-175427"],
+    "pipeline_version": 2,
+    "image_digests": {
+      "gwashub/metal": "sha256:c33f0de1a0838f097f76fdf3054d040fae8acedf89aaa7523d53929bde9b8ea1",
+      "qc": {
+        "gwashub/base-r": "sha256:bcc4829ffadfe45269e268f7bd7b6dd47d44fe0212ccdd5dd0c12745780e7126",
+        "gwashub/vcf": "sha256:ff94dfcedb4bb4c37912ac27d8917a4d8b96d34a41663722297721d1f3ea845e",
+        "gwashub/ldsc": "sha256:257045df1c3fc622f9fd0501fe5863afa3bfae6a2fa566f5cfdeaef0df2382b6",
+        "gwashub/base": "sha256:3ef93d53ed8f407cb6757bdae1e7f201b71ab19e54ad2cd6b09d13b9b52dd956"
+      }
+    }
+  },
+  "checks": [
+    {
+      "id": "stderr_variant_sets",
+      "label": "Same variants, incl. MINWEIGHT removals (variants only in one)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Standard-error scheme vs METAL by hand"
+    },
+    {
+      "id": "stderr_values",
+      "label": "beta, se, eaf, q, i2: largest absolute difference",
+      "observed": 1.11022302462516e-16,
+      "threshold": 1e-12,
+      "direction": "max",
+      "passed": true,
+      "group": "Standard-error scheme vs METAL by hand"
+    },
+    {
+      "id": "stderr_p",
+      "label": "p and heterogeneity p: largest relative difference",
+      "observed": 0,
+      "threshold": 1e-10,
+      "direction": "max",
+      "passed": true,
+      "group": "Standard-error scheme vs METAL by hand"
+    },
+    {
+      "id": "stderr_direction",
+      "label": "n_studies and direction: rows that differ",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Standard-error scheme vs METAL by hand"
+    },
+    {
+      "id": "stderr_rerun",
+      "label": "Second site run byte-identical (0 = same sha256)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Standard-error scheme vs METAL by hand"
+    },
+    {
+      "id": "samplesize_plain_variant_sets",
+      "label": "Same variants, incl. MINWEIGHT removals (variants only in one)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Sample-size scheme vs METAL by hand"
+    },
+    {
+      "id": "samplesize_plain_values",
+      "label": "z, n, eaf, q, i2: largest absolute difference",
+      "observed": 1.11022302462516e-16,
+      "threshold": 1e-12,
+      "direction": "max",
+      "passed": true,
+      "group": "Sample-size scheme vs METAL by hand"
+    },
+    {
+      "id": "samplesize_plain_p",
+      "label": "p and heterogeneity p: largest relative difference",
+      "observed": 0,
+      "threshold": 1e-10,
+      "direction": "max",
+      "passed": true,
+      "group": "Sample-size scheme vs METAL by hand"
+    },
+    {
+      "id": "samplesize_plain_direction",
+      "label": "n_studies and direction: rows that differ",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Sample-size scheme vs METAL by hand"
+    },
+    {
+      "id": "samplesize_plain_rerun",
+      "label": "Second site run byte-identical (0 = same sha256)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Sample-size scheme vs METAL by hand"
+    },
+    {
+      "id": "samplesize_variant_sets",
+      "label": "Same variants, incl. MINWEIGHT removals (variants only in one)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Sample-size scheme, options on vs METAL by hand"
+    },
+    {
+      "id": "samplesize_values",
+      "label": "z, n, eaf, eaf_min, eaf_max, q, i2: largest absolute difference",
+      "observed": 1.11022302462516e-16,
+      "threshold": 1e-12,
+      "direction": "max",
+      "passed": true,
+      "group": "Sample-size scheme, options on vs METAL by hand"
+    },
+    {
+      "id": "samplesize_p",
+      "label": "p and heterogeneity p: largest relative difference",
+      "observed": 0,
+      "threshold": 1e-10,
+      "direction": "max",
+      "passed": true,
+      "group": "Sample-size scheme, options on vs METAL by hand"
+    },
+    {
+      "id": "samplesize_direction",
+      "label": "n_studies and direction: rows that differ",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Sample-size scheme, options on vs METAL by hand"
+    },
+    {
+      "id": "samplesize_rerun",
+      "label": "Second site run byte-identical (0 = same sha256)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Sample-size scheme, options on vs METAL by hand"
+    },
+    {
+      "id": "cross_program_beta_se",
+      "label": "β and se: largest absolute difference",
+      "observed": 5.000000000005e-07,
+      "threshold": 1e-05,
+      "direction": "max",
+      "passed": true,
+      "group": "METAL (standard error) vs GWAMA (fixed effects), both on GWASHub"
+    },
+    {
+      "id": "cross_program_p",
+      "label": "−log10 p for p > 1e-05: largest absolute difference",
+      "observed": 0.00741249848445591,
+      "threshold": 0.01,
+      "direction": "max",
+      "passed": true,
+      "group": "METAL (standard error) vs GWAMA (fixed effects), both on GWASHub"
+    },
+    {
+      "id": "cross_scheme_cor",
+      "label": "1 − correlation of −log10 p",
+      "observed": 0.00341170655645429,
+      "threshold": 0.01,
+      "direction": "max",
+      "passed": true,
+      "group": "METAL sample-size scheme vs standard-error scheme"
+    },
+    {
+      "id": "cross_scheme_lead_loci",
+      "label": "Lead loci with p < 5e-09 in one and none within 500 kb in the other",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "METAL sample-size scheme vs standard-error scheme"
+    }
+  ],
+  "notes": [
+    "Cross-program: 68,960 variants in both METAL stderr and GWAMA (test 1's GWAMA run used QC runs whose files are numerically identical to these)",
+    "p vs the exact normal p of β/se, largest −log10 difference over all variants: METAL 0.0002, GWAMA 0.0460 (GWAMA's p drifts in the far tail)",
+    "Cross-scheme: 68,960 variants; −log10 p correlation 0.99659; lead loci 29 (stderr) and 30 (samplesize, plain)",
+    "Lead loci in one scheme only (all near the threshold): stderr 5:42681983 p=4.1e-08; samplesize_plain 3:25061767 p=3.9e-08; samplesize_plain 17:39674194 p=3.9e-08"
+  ],
+  "archive": null
+}

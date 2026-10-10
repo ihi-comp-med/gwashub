@@ -279,7 +279,7 @@ async def local_part(owner: str, upload_id: str, part: int, expires: int, token:
         raise HTTPException(403, "This upload link has expired; try again")
     if owner.startswith("ds"):
         ds = db.get(Dataset, int(owner[2:])) if owner[2:].isdigit() else None
-        if not ds or ds.upload_id != upload_id:
+        if not ds or upload_id not in (ds.upload_id, (ds.replacement or {}).get("upload_id")):
             raise HTTPException(404, "No such upload")
     elif owner != "res":
         raise HTTPException(404, "No such upload")
@@ -317,6 +317,97 @@ def complete_upload(dataset_id: int, body: UploadComplete, caller: Caller = Depe
     ds.upload_id, ds.status = "", "pending"  # QC starts when someone starts it (start_qc / bulk_rerun)
     db.commit()
     return {"id": ds.id, "status": ds.status}
+
+
+# ---------- replacing a dataset's file (a reviewer requested changes) ----------
+
+def require_can_replace(db, user: User, dataset_id: int) -> Dataset:
+    """Reviewers replace any dataset's file; an uploader their own when it is pending or a reviewer sent it back."""
+    ds, m = require_dataset(db, user, dataset_id)
+    if ds.status in ("processing", "uploading"):
+        raise HTTPException(409, "QC is running or the upload hasn't finished; try again when it has")
+    if not (m.role == "reviewer" or (ds.uploaded_by == user.id and ds.status in UPLOADER_CAN_FIX)):
+        raise HTTPException(403, "Only a reviewer, or the uploader once a reviewer has requested changes, can replace the file")
+    return ds
+
+
+class ReplacementStart(BaseModel):
+    file_name: str
+    file_size: int
+
+
+@router.post("/datasets/{dataset_id}/replacement", status_code=201)
+def start_replacement(dataset_id: int, body: ReplacementStart, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Start uploading a corrected file for this dataset, in parts as a new upload is. The dataset keeps its current
+    file until /replacement/complete, which swaps them, deletes the old file and starts QC."""
+    ds = require_can_replace(db, user, dataset_id)
+    if body.file_size < 1:
+        raise HTTPException(422, "The file is empty")
+    n_parts = -(-body.file_size // storage.PART_SIZE)
+    if n_parts > 10_000:
+        raise HTTPException(422, "The file is too large (limit 640 GB)")
+    if ds.replacement:  # an earlier attempt that didn't finish
+        storage.abort_multipart(ds.replacement["path"], ds.replacement["upload_id"])
+    name = safe_name(body.file_name)
+    path = storage.location("uploads", f"uploads/{ds.project_id}/{ds.id}-{storage.stamp()}/{name}")
+    ds.replacement = {"path": path, "upload_id": storage.start_multipart(path), "file_name": name, "file_size": body.file_size}
+    db.commit()
+    return {"id": ds.id, "part_size": storage.PART_SIZE, "parts": n_parts}
+
+
+@router.post("/datasets/{dataset_id}/replacement/urls")
+def replacement_part_urls(dataset_id: int, body: PartsRequest, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    ds = require_can_replace(db, user, dataset_id)
+    r = ds.replacement
+    if not r:
+        raise HTTPException(409, "No replacement upload in progress")
+    if not body.parts or len(body.parts) > 100 or any(not 1 <= n <= 10_000 for n in body.parts):
+        raise HTTPException(422, "Ask for 1 to 100 part numbers between 1 and 10,000")
+    return {"urls": {str(n): storage.part_url(r["path"], r["upload_id"], n, f"ds{ds.id}") for n in body.parts}}
+
+
+def header_columns(loc: str) -> list[str]:
+    """The column names in a file's first line (tab, comma or whitespace separated)."""
+    first = ((storage.head_lines(loc, 1) or "").splitlines() or [""])[0]
+    sep = "\t" if "\t" in first else "," if first.count(",") >= 2 else None
+    return [c.strip().strip('"') for c in first.split(sep)]
+
+
+@router.post("/datasets/{dataset_id}/replacement/complete")
+def complete_replacement(dataset_id: int, body: UploadComplete, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Finish the corrected file's upload. It must have the columns the dataset's column mapping names (otherwise it is
+    discarded and the dataset keeps its file). Then it replaces the old file, which is deleted (this can't be undone),
+    the review is cleared and QC starts."""
+    ds = require_can_replace(db, user, dataset_id)
+    r = ds.replacement
+    if not r:
+        raise HTTPException(409, "No replacement upload in progress")
+    expected = -(-r["file_size"] // storage.PART_SIZE)
+    if sorted(p.n for p in body.parts) != list(range(1, expected + 1)):
+        raise HTTPException(422, f"Expected parts 1 to {expected}")
+    try:
+        size = storage.complete_multipart(r["path"], r["upload_id"], [p.model_dump() for p in body.parts])
+    except Exception as e:
+        log.warning("Completing the replacement file of dataset %s failed: %s", ds.id, e)
+        raise HTTPException(409, "The upload could not be completed; some parts are missing. Try uploading again.")
+    missing = sorted({c for c in (ds.column_mapping or {}).values() if c} - set(header_columns(r["path"])))
+    if size != r["file_size"] or missing:
+        storage.delete_prefix(storage.parent(r["path"]))
+        ds.replacement = None
+        db.commit()
+        if missing:
+            raise HTTPException(422, f"The new file doesn't have these mapped columns: {', '.join(missing)}. Use the same column "
+                                     "names as the original, or upload it as a new dataset. The current file is unchanged.")
+        raise HTTPException(409, f"Received {size:,} bytes but expected {r['file_size']:,}; try uploading again")
+    old_path, old_name = ds.storage_path, ds.file_name
+    ds.storage_path, ds.file_name, ds.file_size, ds.sha256, ds.replacement = r["path"], r["file_name"], size, "", None
+    ds.edits = [*(ds.edits or []), {"by": user.name, "at": jobs.now().isoformat(), "changes": {"file": [old_name, ds.file_name]}}]
+    ds.status, ds.review = "processing", None
+    run = start_run(db, ds)
+    db.commit()
+    storage.delete_prefix(storage.parent(old_path))  # the replaced file (its folder holds only it)
+    jobs.start_qc(run.id)
+    return {"id": ds.id, "run_id": run.id, "status": ds.status}
 
 
 def token_label(db, token_id: int | None) -> str | None:
@@ -361,6 +452,7 @@ def send_file(loc: str, filename: str | None = None, media_type: str | None = No
 
 
 PREVIEW_LIMIT = 20 * 1024 * 1024  # larger step files are download-only
+PREVIEW_ROWS = 100  # table previews (preview=1): the header and this many rows
 
 
 def step_path_parts(path: str) -> list[str]:
@@ -383,8 +475,9 @@ def run_files(dataset_id: int, run_id: int, dir: str, user: User = Depends(curre
 
 @router.get("/datasets/{dataset_id}/files/{kind}")
 def dataset_file(dataset_id: int, kind: str, path: str | None = None, run_id: int | None = None, download: bool = False,
-                 user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """kind: raw | qc | report | artifact (path = steps/NN_name/file; download=1 for a direct download)."""
+                 preview: bool = False, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """kind: raw | qc | report | artifact (path = steps/NN_name/file; download=1 for a direct download; preview=1 for
+    the first PREVIEW_ROWS rows of a table, .tsv or .tsv.gz)."""
     ds, _ = require_dataset(db, user, dataset_id)
     if kind == "raw":
         if ds.status == "uploading":
@@ -410,6 +503,11 @@ def dataset_file(dataset_id: int, kind: str, path: str | None = None, run_id: in
         if download:  # straight from storage (a presigned S3 link on AWS)
             return send_file(loc, f"run{run.id}_{parts[1]}_{parts[-1]}")
         # Previews in the website (plots, tables, logs) are read through the API, same origin.
+        if preview and parts[-1].endswith((".tsv", ".tsv.gz")):
+            head = storage.head_lines(loc, PREVIEW_ROWS + 1)
+            if head is None:
+                raise HTTPException(404, "No such file")
+            return Response(head, media_type="text/tab-separated-values")
         size = storage.size(loc)
         if size is None:
             raise HTTPException(404, "No such file")
@@ -420,8 +518,12 @@ def dataset_file(dataset_id: int, kind: str, path: str | None = None, run_id: in
 
 
 def can_start_qc(m, user: User, ds: Dataset) -> bool:
-    """Reviewers start or re-run QC on any dataset; an uploader starts QC on their own pending datasets."""
-    return m.role == "reviewer" or (ds.status == "pending" and ds.uploaded_by == user.id)
+    """Reviewers start or re-run QC on any dataset; an uploader on their own datasets that are pending or that a
+    reviewer sent back (changes requested)."""
+    return m.role == "reviewer" or (ds.status in UPLOADER_CAN_FIX and ds.uploaded_by == user.id)
+
+
+UPLOADER_CAN_FIX = ("pending", "changes_requested")  # an uploader may re-run QC or replace the file
 
 
 @router.post("/datasets/{dataset_id}/rerun")
@@ -623,7 +725,7 @@ def review(dataset_id: int, body: Review, user: User = Depends(current_user), db
         raise HTTPException(422, "decision must be approve, reject or request_changes")
     if ds.status == "processing":
         raise HTTPException(409, "QC is still running")
-    ds.status = "passed" if body.decision == "approve" else "failed"
+    ds.status = {"approve": "passed", "reject": "failed", "request_changes": "changes_requested"}[body.decision]
     ds.review = {"decision": body.decision, "note": body.note, "by": user.name, "at": jobs.now().isoformat()}
     db.commit()
     return ds_row(ds, True)

@@ -27,14 +27,30 @@ const num = (v: any) => {
 }
 const threshold = (c: any) => c.direction === 'equal' ? `= ${num(c.threshold)}` : `≤ ${num(c.threshold)}`
 const fileUrl = (t: string, f: string) => `/api/validation/${t}/files/${f}`
-
-// Tests in the plan that haven't been set up yet (docs/VALIDATION_PLAN.md).
-const planned = [
-  { title: 'GWAMA with every option on', claim: 'Random effects, genomic control, MAF filter, minimum datasets and the sex-differentiated test each match GWAMA run by hand.' },
-  { title: 'METAL, both schemes', claim: 'METAL on GWASHub matches METAL run by hand, in the standard-error and sample-size schemes and with its options.' },
-  { title: 'QC filters ("planted problems")', claim: 'Each QC rule removes or fixes exactly the variants it describes in a file with known faults, and nothing else.' },
-  { title: 'Replicates the HERMES 3 HPC pipeline', claim: 'The default QC gives the same cleaned file and QC metrics as the HERMES 3 pipeline on the HPC.' },
-]
+// Checks under their group headings (a check's `group` names its run or comparison), in the order they come.
+const grouped = (checks: any[]) => {
+  const out: { name: string, checks: any[] }[] = []
+  for (const c of checks) {
+    const name = c.group ?? ''
+    const last = out[out.length - 1]
+    if (last && last.name === name) last.checks.push(c)
+    else out.push({ name, checks: [c] })
+  }
+  return out
+}
+const passedCount = (t: any) => t.checks.filter((c: any) => c.passed).length
+// The site analyses a test compared: meta-analyses (one, with its re-run, or one per run), or QC runs (test 4).
+const siteRuns = (t: any) => {
+  const sr = t.site_run ?? {}
+  const ids = (r: any) => [r.meta_analysis, r.meta_analysis_rerun].filter(v => v != null).join(' and ')
+  if (sr.runs) return `meta-analyses ${Object.entries(sr.runs).map(([k, r]: [string, any]) => `${k}: ${ids(r)}`).join(' · ')}`
+  if (sr.meta_analysis != null) return `meta-analyses ${ids(sr)}`
+  if (sr.planted?.run != null) {
+    const n = Object.keys(sr.cases ?? {}).length
+    return `QC run ${sr.planted.run} (planted file)${n ? ` · ${n} whole-file uploads` : ''}`
+  }
+  return ''
+}
 </script>
 
 <template>
@@ -47,7 +63,7 @@ const planned = [
     <div v-if="tests" class="summary row">
       <span><i class="pi pi-check-circle ok" /> {{ counts.passed }} passed</span>
       <span><i class="pi pi-times-circle bad" /> {{ counts.failed }} failed</span>
-      <span><i class="pi pi-clock muted" /> {{ counts.not_run + planned.length }} not run yet</span>
+      <span><i class="pi pi-clock muted" /> {{ counts.not_run }} not run yet</span>
     </div>
 
     <div v-if="!tests" class="loading"><ProgressSpinner /></div>
@@ -63,12 +79,34 @@ const planned = [
       <template #content>
         <p class="claim">{{ t.claim }}</p>
         <div v-if="t.status === 'not_run'" class="muted">This test is set up but hasn't been run yet. Inputs: {{ t.inputs.join(', ') }}.</div>
-        <div v-else class="grid">
-          <div>
+        <template v-else>
+          <div class="overview">
+            <div>
+              <p class="outcome">
+                <i :class="passedCount(t) === t.checks.length ? 'pi pi-check-circle ok' : 'pi pi-times-circle bad'" />
+                {{ passedCount(t) }} of {{ t.checks.length }} checks passed
+              </p>
+              <dl class="kv small">
+                <template v-if="t.inputs.length"><dt>Inputs</dt><dd>{{ t.inputs.join(', ') }}</dd></template>
+                <template v-if="t.versions.gwama"><dt>GWAMA</dt><dd>{{ t.versions.gwama }}</dd></template>
+                <template v-if="t.versions.metal"><dt>METAL</dt><dd>{{ t.versions.metal }}</dd></template>
+                <template v-if="t.versions.site_pipeline_version"><dt>QC pipeline</dt><dd>version {{ t.versions.site_pipeline_version }}</dd></template>
+                <template v-if="siteRuns(t)"><dt>Site runs</dt><dd>{{ t.site_run.project }} · {{ siteRuns(t) }}</dd></template>
+                <template v-if="t.archive"><dt>Data archive</dt><dd>{{ t.archive }}</dd></template>
+              </dl>
+            </div>
+            <div v-if="plots[t.test]" class="plotbox">
+              <ValidationScatter :data="plots[t.test]" />
+              <p class="caption muted">Each point is a variant (all strong signals and a random sample). The dashed line is perfect agreement.</p>
+            </div>
+          </div>
+          <details class="details" :open="t.status === 'failed'">
+            <summary>Checks, notes and files</summary>
             <table class="checks">
               <thead><tr><th>Check</th><th>Threshold</th><th>Observed</th><th /></tr></thead>
-              <tbody>
-                <tr v-for="c in t.checks" :key="c.id" :class="{ fail: !c.passed }">
+              <tbody v-for="g in grouped(t.checks)" :key="g.name">
+                <tr v-if="g.name" class="grp"><td colspan="4">{{ g.name }}</td></tr>
+                <tr v-for="c in g.checks" :key="c.id" :class="{ fail: !c.passed }">
                   <td>{{ c.label }}</td>
                   <td class="mono">{{ threshold(c) }}</td>
                   <td class="mono">{{ num(c.observed) }}</td>
@@ -76,33 +114,21 @@ const planned = [
                 </tr>
               </tbody>
             </table>
-            <ul v-if="t.notes.length" class="notes">
-              <li v-for="(n, i) in t.notes" :key="i" class="small">{{ n }}</li>
-            </ul>
-            <dl class="kv small">
-              <template v-if="t.inputs.length"><dt>Inputs</dt><dd>{{ t.inputs.join(', ') }}</dd></template>
-              <template v-if="t.versions.gwama"><dt>GWAMA</dt><dd>{{ t.versions.gwama }}</dd></template>
-              <template v-if="t.versions.site_pipeline_version"><dt>QC pipeline</dt><dd>version {{ t.versions.site_pipeline_version }}</dd></template>
-              <template v-if="t.site_run?.meta_analysis"><dt>Site run</dt><dd>{{ t.site_run.project }} · meta-analysis {{ t.site_run.meta_analysis }}</dd></template>
-              <template v-if="t.archive"><dt>Data archive</dt><dd>{{ t.archive }}</dd></template>
-            </dl>
-          </div>
-          <div v-if="plots[t.test]" class="plotbox">
-            <ValidationScatter :data="plots[t.test]" />
-            <div class="muted small">Each point is a variant (all strong signals and a random sample). The dashed line is perfect agreement.</div>
-          </div>
-        </div>
-        <div v-if="t.files.length" class="files row small">
-          <span class="muted">Files:</span>
-          <a v-for="f in t.files" :key="f" :href="fileUrl(t.test, f)" class="mono"><i class="pi pi-download" /> {{ f }}</a>
-        </div>
+            <template v-if="t.notes.length">
+              <h4 class="sub">Notes</h4>
+              <ul class="notes">
+                <li v-for="(n, i) in t.notes" :key="i" class="small">{{ n }}</li>
+              </ul>
+            </template>
+            <div v-if="t.files.length" class="files row small">
+              <span class="muted">Files:</span>
+              <a v-for="f in t.files" :key="f" :href="fileUrl(t.test, f)" class="mono"><i class="pi pi-download" /> {{ f }}</a>
+            </div>
+          </details>
+        </template>
       </template>
     </Card>
 
-    <h2 class="h2">Planned</h2>
-    <ul class="planned">
-      <li v-for="p in planned" :key="p.title"><strong>{{ p.title }}.</strong> <span class="muted">{{ p.claim }}</span></li>
-    </ul>
   </div>
 </template>
 
@@ -114,21 +140,27 @@ const planned = [
 .test { margin-bottom: 18px; }
 .head { gap: 10px; align-items: center; font-size: 1.05rem; }
 .claim { margin: 0 0 14px; }
-.grid { display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: start; }
-@media (max-width: 1000px) { .grid { grid-template-columns: 1fr; } }
+.overview { display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: start; }
+@media (max-width: 800px) { .overview { grid-template-columns: 1fr; } }
+.outcome { margin: 0 0 10px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.details { margin-top: 16px; border-top: 1px solid var(--gh-border); padding-top: 10px; }
+.details summary { cursor: pointer; font-weight: 600; font-size: 0.9rem; color: var(--gh-accent); padding: 4px 0; }
+.details[open] summary { margin-bottom: 10px; }
+.checks tr.grp td { font-weight: 600; font-size: 0.8rem; color: var(--gh-muted); padding-top: 14px; border-bottom: 1px solid var(--gh-border); }
+.checks tbody:first-of-type tr.grp td { padding-top: 6px; }
+.sub { margin: 16px 0 4px; font-size: 0.85rem; color: var(--gh-muted); font-weight: 600; }
 .checks { border-collapse: collapse; width: 100%; font-size: 0.86rem; }
 .checks th { text-align: left; color: var(--gh-muted); font-weight: 500; border-bottom: 1px solid var(--gh-border); padding: 4px 8px; }
 .checks td { border-bottom: 1px solid var(--gh-border); padding: 5px 8px; vertical-align: top; }
 .checks tr.fail td { background: #fef2f2; }
 .mono { font-family: ui-monospace, Menlo, monospace; white-space: nowrap; }
-.notes { margin: 10px 0 0; padding-left: 18px; color: var(--gh-muted); }
-.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 14px 0 0; }
+.notes { margin: 0; padding-left: 18px; color: var(--gh-muted); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
 .kv dt { color: var(--gh-muted); }
 .kv dd { margin: 0; }
-.plotbox { max-width: 320px; }
+.plotbox { max-width: 280px; }
+.caption { font-size: 0.72rem; line-height: 1.35; margin: 4px 0 0; }
 .files { gap: 12px; flex-wrap: wrap; margin-top: 14px; }
 .files a { text-decoration: none; }
-.planned { padding-left: 18px; }
-.planned li { margin-bottom: 8px; }
 .loading { display: flex; justify-content: center; padding: 60px; }
 </style>

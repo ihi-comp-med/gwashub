@@ -172,6 +172,8 @@ def run_steps(resolved, state, run_params, resource_dir, out_dir, indexes=None, 
 
             if status != "completed" and not entry.step.always_run:
                 results.append({**base, "state": "skipped"})
+                if on_step:  # shown as skipped at once, not left "queued" until the run ends
+                    on_step(entry.index, "skipped", None)
                 continue
 
             # Stage only the resources this step declares (optional ones only if they exist).

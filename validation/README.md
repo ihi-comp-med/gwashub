@@ -1,6 +1,6 @@
 # Validation
 
-Tests that compare GWASHub with trusted references on the same inputs. The plan, the five tests and their thresholds
+Tests that compare GWASHub with trusted references on the same inputs. The plan, the four tests and their thresholds
 are in `docs/VALIDATION_PLAN.md`; this folder holds what each test needs to run and what it found. The results
 become the site's **Validation** page.
 
@@ -15,12 +15,16 @@ validation/
 │   ├── get_sources.R  download a source and check its checksum
 │   ├── subset.R       the shared size recipe (HF loci windows + a seeded random sample)
 │   ├── compare.R      join two result tables on chr:pos:alleles, align signs, measure differences
-│   └── write_result.R result.json in the format the Validation page reads
-└── 01_gwama_default/  one folder per test (more to come)
+│   ├── write_result.R result.json in the format the Validation page reads
+│   └── gwama.R        GWAMA by hand and reading meta-analysis results (tests 2 and 3)
+├── 01_gwama_default/  one folder per test: GWAMA meta-analysis vs GWAMA by hand
+├── 02_gwama_options/  GWAMA with every option on, and the sex-differentiated test
+├── 03_metal/          METAL (both schemes) vs METAL by hand, and vs GWAMA
+└── 04_qc_planted/     QC vs a known answer: planted rows and whole-file mistakes (each folder laid out as below)
     ├── README.md      claim, steps, why it matters
     ├── test.yaml      inputs, site settings, thresholds (the comparison and the page both read these)
     ├── 1_prepare.R    sources → the files to upload to the site
-    ├── 2_reference.R  the reference analysis (here: GWAMA by hand) on the site's QC'd files
+    ├── 2_reference.R  the reference: the program run by hand (tests 1-3), or the known answer (test 4)
     ├── 3_compare.R    site vs reference → result.json and plot.json
     ├── site_run.yaml  what was done on the site (ids, references, versions), filled in by hand
     ├── manifest.tsv   sha256 and size of every large file the result came from
@@ -32,7 +36,7 @@ validation/
 `local/validation/<test>/{sources,inputs,site,reference}/` (git-ignored). `manifest.tsv` records each one's sha256
 so anyone can check they have the same files. When a test is final, archive its `local/validation/<test>/` folder:
 privately to `s3://<resources bucket>/validation/<test>/<date>/`, and before the page is public to Zenodo, with the
-DOI in `result.json`. Cohort data (the HPC replication test) is never archived publicly.
+DOI in `result.json`.
 
 ## Running a test
 

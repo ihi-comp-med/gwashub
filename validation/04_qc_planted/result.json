@@ -1,0 +1,478 @@
+{
+  "test": "04_qc_planted",
+  "title": "QC catches planted problems",
+  "claim": "Each QC rule removes or fixes exactly the variants it describes and nothing else, harmonisation flips effects correctly, and each common whole-file mistake is caught and named.",
+  "status": "passed",
+  "run_date": "2026-10-10T22:21:39Z",
+  "versions": {
+    "r": "R version 4.6.1 (2026-06-24)",
+    "data.table": "1.18.4",
+    "site_pipeline_version": 2,
+    "site_image_digests": {
+      "gwashub/base-r": "sha256:bcc4829ffadfe45269e268f7bd7b6dd47d44fe0212ccdd5dd0c12745780e7126",
+      "gwashub/vcf": "sha256:ff94dfcedb4bb4c37912ac27d8917a4d8b96d34a41663722297721d1f3ea845e",
+      "gwashub/ldsc": "sha256:257045df1c3fc622f9fd0501fe5863afa3bfae6a2fa566f5cfdeaef0df2382b6",
+      "gwashub/base": "sha256:3ef93d53ed8f407cb6757bdae1e7f201b71ab19e54ad2cd6b09d13b9b52dd956"
+    }
+  },
+  "site_run": {
+    "site": "https://d3ap1iypuvmxl8.cloudfront.net",
+    "project": "validation",
+    "run_date": "2026-10-10",
+    "planted": {
+      "dataset": 9,
+      "run": 13,
+      "verdict": "warn"
+    },
+    "planted_pipeline": {
+      "name": "planted problems"
+    },
+    "cases": {
+      "control": {
+        "dataset": 10,
+        "run": 14
+      },
+      "truncated_gzip": {
+        "dataset": 11,
+        "run": 28
+      },
+      "or_as_beta": {
+        "dataset": 25,
+        "run": 29
+      },
+      "beta_as_or": {
+        "dataset": 13,
+        "run": 26
+      },
+      "neglog10p": {
+        "dataset": 14,
+        "run": 25
+      },
+      "wrong_build": {
+        "dataset": 15,
+        "run": 24
+      },
+      "maf_as_eaf": {
+        "dataset": 16,
+        "run": 23
+      },
+      "swapped_columns": {
+        "dataset": 17,
+        "run": 22
+      },
+      "strand_ambiguous": {
+        "dataset": 18,
+        "run": 21
+      },
+      "linear_scale": {
+        "dataset": 19,
+        "run": 20
+      },
+      "se_scale": {
+        "dataset": 20,
+        "run": 19
+      },
+      "rounded_se": {
+        "dataset": 21,
+        "run": 18
+      },
+      "no_chr22": {
+        "dataset": 22,
+        "run": 17
+      },
+      "n_above_total": {
+        "dataset": 23,
+        "run": 16
+      },
+      "alleles_12": {
+        "dataset": 24,
+        "run": 15
+      }
+    },
+    "references": ["validation · dataset 9 · run 13 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/9/13-20261010-210125", "validation · dataset 10 · run 14 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/10/14-20261010-211515", "validation · dataset 11 · run 28 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/11/28-20261010-213253", "validation · dataset 25 · run 29 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/25/29-20261010-221050", "validation · dataset 13 · run 26 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/13/26-20261010-213252", "validation · dataset 14 · run 25 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/14/25-20261010-213252", "validation · dataset 15 · run 24 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/15/24-20261010-213251", "validation · dataset 16 · run 23 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/16/23-20261010-213251", "validation · dataset 17 · run 22 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/17/22-20261010-213250", "validation · dataset 18 · run 21 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/18/21-20261010-213250", "validation · dataset 19 · run 20 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/19/20-20261010-213249", "validation · dataset 20 · run 19 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/20/19-20261010-213249", "validation · dataset 21 · run 18 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/21/18-20261010-213248", "validation · dataset 22 · run 17 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/22/17-20261010-213248", "validation · dataset 23 · run 16 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/23/16-20261010-213247", "validation · dataset 24 · run 15 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/qc/validation/24/15-20261010-213246"],
+    "pipeline_version": 2,
+    "image_digests": {
+      "gwashub/base-r": "sha256:bcc4829ffadfe45269e268f7bd7b6dd47d44fe0212ccdd5dd0c12745780e7126",
+      "gwashub/vcf": "sha256:ff94dfcedb4bb4c37912ac27d8917a4d8b96d34a41663722297721d1f3ea845e",
+      "gwashub/ldsc": "sha256:257045df1c3fc622f9fd0501fe5863afa3bfae6a2fa566f5cfdeaef0df2382b6",
+      "gwashub/base": "sha256:3ef93d53ed8f407cb6757bdae1e7f201b71ab19e54ad2cd6b09d13b9b52dd956"
+    }
+  },
+  "checks": [
+    {
+      "id": "planted_eaf_missing",
+      "label": "EAF missing (100 rows): not removed as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_eaf_0_1",
+      "label": "EAF exactly 0 or 1 (100 rows): not removed as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_p_out",
+      "label": "P outside 0 to 1 (100 rows): not removed as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_beta_text",
+      "label": "BETA not a number (100 rows): not removed as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_chr_mt",
+      "label": "Chromosome MT (100 rows): not removed as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_header_line",
+      "label": "Header line repeated mid-file: rows not as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_chr_y",
+      "label": "Chromosome Y (100 rows): not removed as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_beta_large",
+      "label": "|BETA| of 25 (100 rows): not removed as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_se_large",
+      "label": "SE of 12 (100 rows): not removed as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_info_low",
+      "label": "INFO of 0.5 (100 rows): not removed as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_info_missing",
+      "label": "INFO missing (100 rows): not removed as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_maf_low",
+      "label": "EAF of 0.004 (MAF below 0.01) (100 rows): not removed as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_n_low",
+      "label": "N of 50 (100 rows): not removed as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_indel",
+      "label": "Indel (a base added to the effect allele) (100 rows): not removed as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_dup_exact",
+      "label": "Exact duplicate row (200 rows): not one copy kept as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_dup_swapped",
+      "label": "Duplicate with alleles the other way round (200 rows): not one copy kept as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_wrong_pos",
+      "label": "Position beyond the chromosome's end (100 rows): not removed as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_n_missing",
+      "label": "N missing (100 rows): not kept as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_swapped",
+      "label": "EA is the reference allele (alleles swapped, BETA negated, EAF 1 - EAF) (100 rows): not kept as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "planted_minus_strand",
+      "label": "Non-palindromic SNP on the minus strand (alleles complemented) (100 rows): not removed as expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Planted problems (each in its own rows): removed by the expected step and rule, or kept with the right values"
+    },
+    {
+      "id": "unplanted_losses",
+      "label": "Unplanted rows lost other than by the rules or the liftover",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Every other row accounted for"
+    },
+    {
+      "id": "unplanted_values",
+      "label": "Unplanted rows kept with values that differ from the upload (aligned)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Every other row accounted for"
+    },
+    {
+      "id": "unaccounted",
+      "label": "Rows neither in the QC'd file nor in any step's removed rows",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Every other row accounted for"
+    },
+    {
+      "id": "liftover_losses",
+      "label": "Rows lost in the liftover: our count minus the step's own (unmapped + another chromosome + two ALT alleles)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Every other row accounted for"
+    },
+    {
+      "id": "step_count_parse",
+      "label": "Rows removed by parse: site minus expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Every other row accounted for"
+    },
+    {
+      "id": "step_count_filter",
+      "label": "Rows removed by filter: site minus expected",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Every other row accounted for"
+    },
+    {
+      "id": "case_control",
+      "label": "Unchanged file: messages naming a mistake (none expected)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Whole-file mistakes (one upload each): stopped or named by the expected step"
+    },
+    {
+      "id": "case_truncated_gzip",
+      "label": "gzip file cut in half: parse fail, saying \"cut short\" (0 = caught)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Whole-file mistakes (one upload each): stopped or named by the expected step"
+    },
+    {
+      "id": "case_or_as_beta",
+      "label": "BETA replaced by exp(BETA) (odds ratios given as BETA): parse fail, saying \"look like odds ratios\" (0 = caught)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Whole-file mistakes (one upload each): stopped or named by the expected step"
+    },
+    {
+      "id": "case_beta_as_or",
+      "label": "none; uploaded with effect type odds ratio: parse fail, saying \"looks like log-odds\" (0 = caught)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Whole-file mistakes (one upload each): stopped or named by the expected step"
+    },
+    {
+      "id": "case_neglog10p",
+      "label": "P replaced by -log10 P: parse fail, saying \"-log10\" (0 = caught)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Whole-file mistakes (one upload each): stopped or named by the expected step"
+    },
+    {
+      "id": "case_wrong_build",
+      "label": "none; uploaded as GRCh38: harmonise_liftover warn or fail, saying \"look like GRCh37\" (0 = caught)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Whole-file mistakes (one upload each): stopped or named by the expected step"
+    },
+    {
+      "id": "case_maf_as_eaf",
+      "label": "EAF replaced by MAF: eaf_check warn, saying \"minor allele frequency\" (0 = caught)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Whole-file mistakes (one upload each): stopped or named by the expected step"
+    },
+    {
+      "id": "case_swapped_columns",
+      "label": "EA and OA columns exchanged (BETA: eaf_check warn, saying \"may be swapped\" (0 = caught)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Whole-file mistakes (one upload each): stopped or named by the expected step"
+    },
+    {
+      "id": "case_strand_ambiguous",
+      "label": "A/T and C/G SNPs' alleles complemented (minus strand): eaf_check warn, saying \"Strand-ambiguous\" (0 = caught)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Whole-file mistakes (one upload each): stopped or named by the expected step"
+    },
+    {
+      "id": "case_linear_scale",
+      "label": "BETA and SE times φ(1 - φ), φ = cases / (cases + controls): stats_summary warn, saying \"linear 0/1 scale\" (0 = caught)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Whole-file mistakes (one upload each): stopped or named by the expected step"
+    },
+    {
+      "id": "case_se_scale",
+      "label": "SE times 3 (P unchanged): stats_summary warn, saying \"another scale\" (0 = caught)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Whole-file mistakes (one upload each): stopped or named by the expected step"
+    },
+    {
+      "id": "case_rounded_se",
+      "label": "SE rounded to 3 decimal places: parse warn, saying \"SE has only\" (0 = caught)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Whole-file mistakes (one upload each): stopped or named by the expected step"
+    },
+    {
+      "id": "case_no_chr22",
+      "label": "chromosome 22 deleted: parse warn, saying \"chromosome 22\" (0 = caught)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Whole-file mistakes (one upload each): stopped or named by the expected step"
+    },
+    {
+      "id": "case_n_above_total",
+      "label": "N doubled: parse warn, saying \"above the study's total\" (0 = caught)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Whole-file mistakes (one upload each): stopped or named by the expected step"
+    },
+    {
+      "id": "case_alleles_12",
+      "label": "1000 rows' alleles recoded 1/2: parse pass or warn, saying \"coded 1/2\" (0 = caught)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Whole-file mistakes (one upload each): stopped or named by the expected step"
+    }
+  ],
+  "notes": [
+    "69,164 rows in the planted file: 2,101 planted, 61,873 kept on the site, 3 lost in the liftover",
+    "3 kept rows carry another rsID from dbSNP 157 (matched on |β| and se)",
+    "Per-row outcomes: reference/rows_observed.tsv.gz; whole-file cases: reference/cases_observed.tsv"
+  ],
+  "archive": null
+}

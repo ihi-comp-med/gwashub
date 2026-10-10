@@ -9,8 +9,12 @@ narrative: >
   chromosomes present and counts indels (kept). It then fills what it can: P from BETA/SE (or -log10 P) where P is
   missing, N from each row's cases + controls, and missing N, cases or controls from the study details. Finally it
   removes the rows it can't recover: a required value (chromosome 1-22/X/Y, position, alleles, BETA, SE, P, EAF)
-  missing or out of bounds, identical alleles, or EAF of exactly 0 or 1. Writes the GWASHub format and two tables
-  (columns, chromosomes); warns or fails when too many rows go.
+  missing or out of bounds, identical alleles, EAF of exactly 0 or 1, or a header line repeated inside the data. Writes
+  the GWASHub format and two tables (columns, chromosomes); warns or fails when too many rows go.
+  It also stops on common upload mistakes: a gzip file cut short, odds ratios uploaded as BETA (all positive, centred on
+  1) or log-odds as odds ratios (negative values), and a P column holding -log10 P. It warns when BETA, SE or P look
+  rounded (few distinct values), N is above the study's total, or a genome-wide file has no variants on an autosome,
+  and names alleles coded 1/2 or I/D. PLINK's chromosome 25 / XY is read as X.
 command: [Rscript, parse.R]
 image: gwashub/base-r
 default_on_fail: block
@@ -23,6 +27,8 @@ params:
      help: "Where P is missing: compute it from BETA/SE (as the HERMES 3 pipeline), or take 10^-x from the -log10 P column when one is mapped"}
   - {key: neglog10p_fraction, label: -log10 P detection, type: number, min: 0, max: 1, default: 0.01,
      help: If more than this share of P values are above 1 the step fails and asks for the column to be mapped as -log10 P}
+  - {key: min_distinct, label: Rounding check (distinct values), type: integer, min: 0, default: 1000,
+     help: "In files of 50,000 rows or more, warns when BETA, SE or P has fewer distinct values than this (rounded to 2 or 3 decimal places); 0 turns it off"}
   - {key: min_rows, label: Minimum rows, type: integer, min: 1, default: 1000}
   - {key: warn_drop_fraction, label: Warn above removed fraction, type: number, min: 0, max: 1, default: 0.01}
   - {key: fail_drop_fraction, label: Fail above removed fraction, type: number, min: 0, max: 1, default: 0.5}

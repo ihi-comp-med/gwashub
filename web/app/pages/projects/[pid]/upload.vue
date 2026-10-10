@@ -75,6 +75,10 @@ async function copyMeta() {
 const file = ref<File | null>(null)
 const suggestion = ref<any>(null)
 const reading = ref(false)
+function onRemove() {
+  file.value = null
+  suggestion.value = null
+}
 async function onSelect(e: { files: File[] }) {
   file.value = e.files[0] ?? null
   suggestion.value = null
@@ -208,7 +212,8 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
 
               <StepPanel v-slot="{ activateCallback }" value="3" data-tour="upload-file">
                 <FileUpload mode="advanced" :auto="false" :show-upload-button="false" :show-cancel-button="false"
-                            accept=".tsv,.txt,.csv,.gz" choose-label="Choose file" @select="onSelect">
+                            accept=".tsv,.txt,.csv,.gz" choose-label="Choose file" @select="onSelect" @remove="onRemove">
+                  <template #content="{ files, removeFileCallback }"><ChosenFiles :files="files" :remove="removeFileCallback" /></template>
                   <template #empty>
                     <div class="drop">
                       <i class="pi pi-cloud-upload" />
@@ -218,8 +223,6 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
                   </template>
                 </FileUpload>
                 <div v-if="file" class="row status">
-                  <i class="pi pi-file" /><span class="mono">{{ file.name }}</span><span class="muted">{{ fmtSize(file.size) }}</span>
-                  <span class="spacer" />
                   <span v-if="reading" class="muted"><i class="pi pi-spin pi-spinner" /> Reading header…</span>
                   <span v-else-if="suggestion" class="ok"><i class="pi pi-check" /> {{ suggestion.columns.length }} columns found</span>
                 </div>
@@ -246,7 +249,10 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
                 <h3 class="h3">File preview</h3>
                 <div class="table-wrap">
                   <DataTable :value="(suggestion?.preview ?? []).map((r: any[]) => Object.fromEntries(suggestion.columns.map((c: string, i: number) => [c, r[i]])))" size="small">
-                    <Column v-for="c in suggestion?.columns ?? []" :key="c" :field="c" :header="c" />
+                    <!-- the file's own column names, as written (table headers are upper-cased elsewhere) -->
+                    <Column v-for="c in suggestion?.columns ?? []" :key="c" :field="c">
+                      <template #header><span class="nocase">{{ c }}</span></template>
+                    </Column>
                   </DataTable>
                 </div>
                 <div class="row end">
@@ -298,6 +304,7 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
 
 <style scoped>
 .ok { color: #15803d; }
+.nocase { text-transform: none; letter-spacing: 0; }
 .sim { margin-top: 6px; }
 .h2 { font-size: 1.25rem; margin: 0 0 4px; }
 .end { justify-content: flex-end; margin-top: 16px; }
@@ -316,7 +323,9 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
 .summary { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin: 0; }
 .summary dt { color: var(--gh-muted); }
 .summary dd { margin: 0; word-break: break-all; }
-.up { margin-top: 16px; height: 8px; }
+/* thicker than its percentage label, which sits inside the bar */
+.up { margin-top: 16px; height: 22px; }
+.up :deep(.p-progressbar-label) { font-size: 0.75rem; line-height: 1; }
 .copy { margin-bottom: 16px; font-size: 0.88rem; }
 .copysel { min-width: 320px; }
 </style>

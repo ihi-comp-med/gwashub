@@ -162,7 +162,11 @@ def run_qc(spec, workdir, on_step=None, group=None):
     def step_done(i, st, res):
         progress[i]["state"] = st
         if res:
-            progress[i]["messages"] = res.get("messages", [])[:2]
+            # The whole step record (verdict, every message, metrics, artifacts, rows), so the website shows a
+            # finished step in full while later steps run; its folder is published now, so its files can be opened.
+            progress[i].update({k: v for k, v in res.items() if k != "state"})
+            if res.get("dir"):
+                publish(os.path.join(local_out, res["dir"]), _join(output, res["dir"]))
         save_progress()
         if on_step:
             on_step(i, st, res)
@@ -170,7 +174,18 @@ def run_qc(spec, workdir, on_step=None, group=None):
     for g in todo:
         executor.run_steps(resolved, state, spec["params"], res_dir, local_out, indexes=set(groups[g]["steps"]), on_step=step_done)
 
-    if todo[-1] == len(groups) - 1:
+    # Which group runs next (Batch submits one job at a time; the worker reads this from the hand-over). After a block,
+    # groups with nothing that must still run (always_run, e.g. the report) are recorded as skipped here instead of
+    # each starting a job of its own; with nothing left to run, this job finishes the run.
+    nxt = todo[-1] + 1 if todo[-1] + 1 < len(groups) else None
+    if state["status"] != "completed" and nxt is not None:
+        must_run = [g for g in range(nxt, len(groups)) if any(resolved[i].step.always_run for i in groups[g]["steps"])]
+        stop = must_run[0] if must_run else len(groups)
+        for g in range(nxt, stop):
+            executor.run_steps(resolved, state, spec["params"], res_dir, local_out, indexes=set(groups[g]["steps"]), on_step=step_done)
+        nxt = must_run[0] if must_run else None
+
+    if nxt is None:
         result = executor.finish_run(state, local_out)
         if spec.get("images"):  # exactly which image builds the run used (digests on AWS)
             result["images"] = spec["images"]
@@ -184,6 +199,7 @@ def run_qc(spec, workdir, on_step=None, group=None):
                 _s3().delete_objects(Bucket=bucket, Delete={"Objects": keys, "Quiet": True})
         return result
     # Hand over to the next group's job.
+    state["next_group"] = nxt
     with open(os.path.join(local_out, "state.json"), "w") as f:
         json.dump(state, f, default=str)
     publish(local_out, output)

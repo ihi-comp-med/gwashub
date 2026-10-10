@@ -41,6 +41,12 @@ def test_storage_roundtrip(s3, tmp_path):
     with pytest.raises(ValueError):
         storage.location("uploads", "../x")
 
+    import gzip
+    rows = "".join(f"{i}\n" for i in range(1000))
+    s3.put_object(Bucket="gh-res", Key="qc/t.tsv.gz", Body=gzip.compress(rows.encode()))
+    assert storage.head_lines("s3://gh-res/qc/t.tsv.gz", 3) == "0\n1\n2\n"  # streamed, gunzipped, first lines only
+    assert storage.head_lines("s3://gh-res/qc/missing.tsv", 3) is None
+
     big = os.urandom(5 * 1024 * 1024 + 10)
     dest = storage.location("uploads", "uploads/p/2/big.bin")
     uid = storage.start_multipart(dest)
@@ -112,6 +118,10 @@ def test_qc_in_groups_matches_one_job(s3, synth_small):
         progress = json.loads(s3.get_object(Bucket="gh-res", Key="qc/21/progress.json")["Body"].read())
         done = [i for gg in split["groups"][:g + 1] for i in gg["steps"]]
         assert all(progress[i]["state"] not in ("queued", "running") for i in done), [(p["key"], p["state"]) for p in progress]
+        if g == 0:  # a finished step's whole record, with its files there to open, before the run ends
+            parse = progress[0]
+            assert len(parse["messages"]) > 2 and parse["artifacts"] and "metrics" in parse
+            assert all(f"qc/21/{parse['dir']}/{a['path']}" in keys for a in parse["artifacts"])
 
     a = json.loads(s3.get_object(Bucket="gh-res", Key="qc/20/result.json")["Body"].read())
     b = json.loads(s3.get_object(Bucket="gh-res", Key="qc/21/result.json")["Body"].read())
@@ -122,3 +132,57 @@ def test_qc_in_groups_matches_one_job(s3, synth_small):
     assert qc_a == s3.get_object(Bucket="gh-res", Key="qc/21/gwas_qc.tsv")["Body"].read()
     report = s3.get_object(Bucket="gh-res", Key=f"qc/21/{b['outputs']['qc_report']}")["Body"].read().decode()
     assert "Manhattan" in report or "manhattan" in report  # the report (last group) saw earlier groups' plots
+
+
+def test_step_files_published_as_each_step_finishes(s3, synth_small, tmp_path):
+    """A Batch job uploads each step's folder when the step finishes, not only when the job ends, so the website can
+    open a finished step's files while later steps run."""
+    from pipeline.runner import jobspec
+    from gwashub_api.services import default_template
+    entry = synth_small["manifest"][0]
+    s3.upload_file(os.path.join(synth_small["dir"], "fake_gwas", entry["file"]), "gh-up", f"uploads/p/3/{entry['file']}")
+    params = {k: entry[k] for k in ("column_mapping", "build", "ancestry", "effect_type", "n_cases", "n_controls", "cohort", "phenotype", "sex")}
+    steps = default_template()[:2]  # parse and filter: no reference files needed
+    spec = {"kind": "qc", "input": f"s3://gh-up/uploads/p/3/{entry['file']}", "params": params, "steps": steps,
+            "resources": {}, "output": "s3://gh-res/qc/30"}
+    seen = {}
+
+    def on_step(i, state, res):
+        if res:  # the moment a step finishes: its files and its full record are already published
+            keys = {o["Key"] for o in s3.list_objects_v2(Bucket="gh-res", Prefix=f"qc/30/{res['dir']}/").get("Contents", [])}
+            progress = json.loads(s3.get_object(Bucket="gh-res", Key="qc/30/progress.json")["Body"].read())
+            seen[i] = (keys, progress[i], res)
+
+    jobspec.run_spec(spec, str(tmp_path / "work"), on_step=on_step)
+    keys, rec, res = seen[0]
+    assert f"qc/30/{res['dir']}/step_log.json" in keys
+    assert all(f"qc/30/{res['dir']}/{a['path']}" in keys for a in res.get("artifacts") or [])
+    assert rec["messages"] == res["messages"] and rec.get("artifacts") == res.get("artifacts")
+
+
+def test_blocked_run_skips_to_the_report(s3, synth_small):
+    """After a block, the hand-over names the report's group, not the next one: the groups between never start a job,
+    and their steps show as skipped at once."""
+    from pipeline.runner.aws import batch_entry
+    from gwashub_api.services import default_template
+    entry = synth_small["manifest"][0]
+    s3.upload_file(os.path.join(synth_small["dir"], "fake_gwas", entry["file"]), "gh-up", f"uploads/p/4/{entry['file']}")
+    params = {k: entry[k] for k in ("build", "ancestry", "effect_type", "n_cases", "n_controls", "cohort", "phenotype", "sex")}
+    params["column_mapping"] = {k: v for k, v in entry["column_mapping"].items() if k != "se"}  # parse fails and blocks
+    steps = default_template()
+    n = len(steps)
+    groups = [{"image": "gwashub/base", "steps": [0, 1, 2]}, {"image": "gwashub/base", "steps": list(range(3, n - 1))},
+              {"image": "gwashub/base", "steps": [n - 1]}]
+    spec = {"kind": "qc", "input": f"s3://gh-up/uploads/p/4/{entry['file']}", "params": params, "steps": steps,
+            "resources": {}, "output": "s3://gh-res/qc/40", "groups": groups}
+    s3.put_object(Bucket="gh-res", Key="qc/40/spec.json", Body=json.dumps(spec).encode())
+    batch_entry.main(["s3://gh-res/qc/40/spec.json", "--group", "0"])
+    state = json.loads(s3.get_object(Bucket="gh-res", Key="qc/40/_state/state.json")["Body"].read())
+    assert state["status"] == "blocked" and state["next_group"] == 2  # group 1 is skipped, not run
+    progress = json.loads(s3.get_object(Bucket="gh-res", Key="qc/40/progress.json")["Body"].read())
+    assert progress[0]["state"] == "fail" and all(p["state"] == "skipped" for p in progress[1:n - 1])
+    batch_entry.main(["s3://gh-res/qc/40/spec.json", "--group", "2"])
+    result = json.loads(s3.get_object(Bucket="gh-res", Key="qc/40/result.json")["Body"].read())
+    assert result["status"] == "blocked" and [s["state"] for s in result["steps"]][1:n - 1] == ["skipped"] * (n - 2)
+    assert result["steps"][-1]["state"] in ("pass", "warn")  # the report ran
+

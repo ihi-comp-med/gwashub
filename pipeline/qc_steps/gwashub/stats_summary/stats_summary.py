@@ -1,4 +1,12 @@
-"""Summary statistics: genomic inflation (λGC, λ1000, λ at MAF ≥ 1%), Z vs P consistency, lead loci."""
+"""Summary statistics: genomic inflation (λGC, λ1000, λ at MAF ≥ 1%), Z vs P consistency, SE vs sample size, lead loci.
+
+SE vs sample size (the "SE-N" check of Winkler et al. 2014, Nat Protoc 9:1192): with N, cases/controls and EAF known,
+the SE a variant should have follows from them. For a case/control trait on the log-odds scale it is
+sqrt(2 / (p q Neff)), p = EAF, q = 1 - p, Neff = 4 / (1/cases + 1/controls), so the median of observed / expected
+SE (common, well-imputed variants) should be near 1. Far below: effects on the linear 0/1 scale (BOLT-LMM, linear
+regression; then the ratio is about φ(1 - φ), φ the case fraction) or N understated; far above: N overstated or the SE
+of the odds ratio rather than of log-odds. For a quantitative trait the same ratio is the trait's SD in the units of
+BETA (about 1 for an inverse-normal transformed trait): reported, not judged."""
 import os
 
 import numpy as np
@@ -8,7 +16,7 @@ from scipy import stats
 from _lib.common import artifact_dir, load_params, parse_args, read_working, step_params, write_log
 
 DEFAULTS = {"warn_lambda": 1.1, "fail_lambda": 1.5, "low_lambda": 0.9, "gws": 5e-8, "suggestive": 1e-5, "clump_kb": 500,
-            "warn_inconsistent_fraction": 0.01}
+            "warn_inconsistent_fraction": 0.01, "se_ratio_low": 0.4, "se_ratio_high": 2.5}
 
 
 def lead_loci(df, p_thresh, window):
@@ -63,6 +71,11 @@ def main():
     if frac_bad > opts["warn_inconsistent_fraction"]:
         verdict = "warn" if verdict == "pass" else verdict
         messages.append(f"{frac_bad:.1%} of variants have P inconsistent with BETA/SE: check the SE column.")
+    zr = z_ratio(z, df["p"])
+    if zr is not None and not 0.8 < zr < 1.25:
+        verdict = "warn" if verdict == "pass" else verdict
+        messages.append(f"BETA/SE is consistently {zr:.2f} times the Z implied by P: SE looks to be on another scale "
+                        "(for example the SE of the odds ratio rather than of log-odds).")
     messages.append(f"{len(leads)} genome-wide significant loci (P < {opts['gws']:g}, {opts['clump_kb']} kb windows).")
 
     metrics = {"lambda_gc": round(lam, 4), "n_variants": len(df), "n_genome_wide_sig": int((df["p"] < opts["gws"]).sum()),
@@ -71,12 +84,83 @@ def main():
                           params.get("trait_type", "binary"))
     if lam1000 is not None:
         metrics["lambda_1000"] = round(lam1000, 4)
+    if zr is not None:
+        metrics["z_ratio_median"] = round(zr, 4)
+    trait_type = params.get("trait_type", "binary")
+    ratio = se_ratio(df, params, trait_type)
+    if ratio is not None and trait_type == "quantitative":
+        metrics["implied_trait_sd"] = round(ratio, 4)
+        messages.append(f"SE, N and EAF imply a trait SD of {ratio:.3g} in the units of BETA (about 1 for an inverse-normal "
+                        "transformed trait).")
+    elif ratio is not None:
+        metrics["se_ratio_expected"] = round(ratio, 4)
+        phi = case_fraction(df, params)
+        if ratio < opts["se_ratio_low"] or ratio > opts["se_ratio_high"]:
+            verdict = "warn" if verdict == "pass" else verdict
+            hint = ("effects look like they are on the linear 0/1 scale (as from BOLT-LMM or linear regression), not log-odds: "
+                    "convert them before uploading" if ratio < opts["se_ratio_low"] and phi and 0.5 < ratio / (phi * (1 - phi)) < 2
+                    else "N, cases or controls are understated, or effects are not log-odds" if ratio < opts["se_ratio_low"]
+                    else "N, cases or controls are overstated, or SE is not that of log-odds")
+            messages.append(f"SEs are {ratio:.2g} times what log-odds ratios would have with these cases, controls and EAF: {hint}.")
+        else:
+            messages.append(f"SEs agree with the sample size (observed / expected {ratio:.2f}).")
     if "eaf" in df.columns:
         eaf = pd.to_numeric(df["eaf"], errors="coerce")
         common = (eaf.between(0.01, 0.99)).to_numpy()
         if common.sum() >= 100:
             metrics["lambda_maf01"] = round(float(np.median(chi2[common]) / stats.chi2.ppf(0.5, 1)), 4)
     write_log(args.log, "stats_summary", verdict, metrics, messages, artifacts)
+
+
+def z_ratio(z, p):
+    """Median |BETA/SE| / |Z from P| over variants with 1e-300 < P < 0.5 (where both are well away from 0); None if few."""
+    use = (p > 1e-300) & (p < 0.5) & np.isfinite(z)
+    if use.sum() < 100:
+        return None
+    return float(np.median(np.abs(z[use]) / stats.norm.isf(p[use] / 2)))
+
+
+def counts(df, params, col, key):
+    """Per-variant counts from the column when there, else the study's."""
+    if col in df.columns and df[col].notna().any():
+        return pd.to_numeric(df[col], errors="coerce")
+    try:
+        return pd.Series(float(params.get(key)), index=df.index)
+    except (TypeError, ValueError):
+        return None
+
+
+def case_fraction(df, params):
+    cases, controls = counts(df, params, "ncase", "n_cases"), counts(df, params, "ncontrol", "n_controls")
+    if cases is None or controls is None:
+        return None
+    phi = float((cases / (cases + controls)).median())
+    return phi if 0 < phi < 1 else None
+
+
+def se_ratio(df, params, trait_type, min_variants=1000):
+    """Median observed / expected SE (module docstring) over variants with MAF ≥ 5% and INFO ≥ 0.9 (where INFO is given).
+    None without EAF and sample sizes, or with fewer than min_variants such variants."""
+    if "eaf" not in df.columns:
+        return None
+    eaf = pd.to_numeric(df["eaf"], errors="coerce")
+    pq = eaf * (1 - eaf)
+    use = eaf.between(0.05, 0.95)
+    if "info" in df.columns:
+        use &= pd.to_numeric(df["info"], errors="coerce").fillna(1) >= 0.9
+    if trait_type == "quantitative":
+        n = counts(df, params, "n", "n_total")
+        if n is None:
+            return None
+        expected = 1 / np.sqrt(2 * pq * n)  # for a trait SD of 1
+    else:
+        cases, controls = counts(df, params, "ncase", "n_cases"), counts(df, params, "ncontrol", "n_controls")
+        if cases is None or controls is None:
+            return None
+        neff = 4 / (1 / cases + 1 / controls)
+        expected = np.sqrt(2 / (pq * neff))
+    r = (df["se"] / expected)[use & np.isfinite(expected) & (expected > 0)]
+    return float(r.median()) if len(r) >= min_variants else None
 
 
 def lambda_1000(lam, n_cases, n_controls, n_total=None, trait_type="binary"):

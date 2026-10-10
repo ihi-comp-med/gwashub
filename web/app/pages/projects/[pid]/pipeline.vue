@@ -504,13 +504,6 @@ function viewCode(key: string | null) { if (key) { codeKey.value = key; codeOpen
 .img { font-size: 0.8rem; padding: 0 4px; color: var(--gh-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 .contract { border-top: 1px dashed var(--gh-border); padding-top: 8px; margin-top: 4px; display: flex; flex-direction: column; gap: 6px; }
-.ct { border-collapse: collapse; width: 100%; font-size: inherit; }
-.ct td { padding: 6px 10px 6px 0; vertical-align: top; border-bottom: 1px solid var(--gh-border); }
-.ct tr:last-child td { border-bottom: 0; }
-.ct .arg { white-space: nowrap; width: 1%; color: var(--gh-accent); }
-.ct .in1 { padding-left: 14px; }
-.ct .in2 { padding-left: 28px; }
-.ct .narr { white-space: pre-line; }
 .pop { display: flex; flex-direction: column; gap: 6px; max-width: min(760px, 90vw); }
 .pop pre { background: var(--gh-bg); border: 1px solid var(--gh-border); border-radius: 6px; padding: 8px; font-size: 0.75rem; overflow-x: auto; margin: 0; }
 .pop ul { margin: 0; padding-left: 18px; }

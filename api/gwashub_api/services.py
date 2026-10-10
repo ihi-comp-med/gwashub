@@ -52,10 +52,12 @@ def step_contract() -> dict:
                            {"key": "verdict", "about": "pass, warn or fail"},
                            {"key": "metrics", "about": "numbers shown with the step and in the report (e.g. rows removed)"},
                            {"key": "messages", "about": "plain sentences saying what was found or done"},
-                           {"key": "artifacts", "about": "files to show with the step: tables, plots, text ({type, path, label})"}],
+                           {"key": "artifacts", "about": "files to show with the step: tables, plots, text ({type, path, label}, "
+                                                         "optionally rows and description); removed rows go in removed_rows.tsv.gz with a reason column"}],
             "log_example": {"step": "filter", "verdict": "pass", "metrics": {"rows_in": 68963, "rows_out": 68910},
                             "messages": ["Removed 53 of 68,963 rows (0.08%)."],
-                            "artifacts": [{"type": "table", "path": "filter_summary.tsv", "label": "Rows removed by each filter"}]}}
+                            "artifacts": [{"type": "table", "path": "filter_summary.tsv", "label": "Rows removed by each filter", "rows": 9},
+                                          {"type": "table", "path": "removed_rows.tsv.gz", "label": "Removed rows", "rows": 53}]}}
 
 
 # ---------- pipelines ----------

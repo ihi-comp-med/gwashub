@@ -7,7 +7,8 @@ narrative: >
   effect allele is the reference, and indels are normalised. GRCh37 datasets are then lifted to GRCh38 with bcftools
   +liftover and the UCSC chain (strand flips handled), dbSNP 157 rsIDs are added, and variants lifted to another
   chromosome or off the primary contigs are removed. Writes GRCh38 with the effect allele = ALT, and counts for each
-  stage; warns when fewer than the set share harmonise or lift.
+  stage; warns when fewer than the set share harmonise or lift. First it checks the declared build: up to 20,000 SNPs
+  are looked up in both reference genomes, and if the other build matches clearly better the step warns and names it.
 command: [python, harmonise_liftover.py]
 image: gwashub/vcf
 default_on_fail: block

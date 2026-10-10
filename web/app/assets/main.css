@@ -70,3 +70,12 @@ h1, h2, h3, .page-title { letter-spacing: -0.01em; }
   border: 1px solid var(--gh-border); background: var(--gh-surface); color: var(--gh-text); }
 .gh-tour .driver-popover-footer .driver-popover-next-btn { background: var(--gh-accent); border-color: var(--gh-accent); color: #fff; }
 .gh-tour-wait { margin: 8px 0 0; color: #b45309; font-size: 0.84rem; }
+
+/* The step contract as a table: argument names on the left (pipeline page step details, dataset panel step logs). */
+.ct { border-collapse: collapse; width: 100%; font-size: inherit; }
+.ct td { padding: 6px 10px 6px 0; vertical-align: top; border-bottom: 1px solid var(--gh-border); }
+.ct tr:last-child td { border-bottom: 0; }
+.ct .arg { white-space: nowrap; width: 1%; color: var(--gh-accent); }
+.ct .in1 { padding-left: 14px; }
+.ct .in2 { padding-left: 28px; }
+.ct .narr { white-space: pre-line; }

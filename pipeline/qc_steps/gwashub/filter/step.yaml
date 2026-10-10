@@ -1,10 +1,11 @@
 name: filter
 title: Filter
-description: "Removes variants by chromosome, |BETA|, SE, INFO, MAF and N, and optionally indels and duplicates."
+description: "Removes variants by chromosome, |BETA|, SE, INFO, MAF, N and minor allele count, and optionally strand-ambiguous SNPs, indels and duplicates."
 narrative: >
   Reads the dataset (GWASHub format) and applies each filter in turn to what is left, counting the variants each one
-  removes: chromosomes outside the kept set; |BETA|, SE, INFO, MAF and N outside their limits (each filter only when
-  switched on, and only the limits switched on); indels if asked; and duplicates (the
+  removes: chromosomes outside the kept set; |BETA|, SE, INFO, MAF, N and MAC (minor allele count) outside their limits (each filter only when
+  switched on, and only the limits switched on); strand-ambiguous (A/T, C/G) SNPs outside their MAF limits and indels if
+  asked; and duplicates (the
   same chr:pos:alleles, alleles in either order; the first is kept). Missing INFO is set to 1 first, or those variants
   removed. Writes the remaining variants and a table of removals; warns when more than the set share is removed.
 command: [Rscript, filter.R]
@@ -29,6 +30,14 @@ params:
        EAF (effect allele frequency) is the frequency of the effect allele itself, 0 to 1."}
   - {key: n, label: N, type: range, sides: [min, max], min: 0,
      default: {on: false, min_on: true, min: 100, max_on: false, max: 10000000}, help: Keeps variants whose sample size is within the limits}
+  - {key: mac, label: MAC, type: range, sides: [min, max], min: 0,
+     default: {on: false, min_on: true, min: 6, max_on: false, max: 10000000},
+     help: "Minor allele count, 2 x MAF x N: how many copies of the minor allele the estimate rests on. Variants with a
+       handful give unstable, often false-positive results, mostly in small cohorts; EasyQC's cut-off is 6 (Winkler et al. 2014)"}
+  - {key: palindromic, label: Strand-ambiguous SNPs (MAF), type: range, sides: [min, max], min: 0, max: 0.5,
+     default: {on: false, min_on: false, min: 0, max_on: true, max: 0.4},
+     help: "A/T and C/G SNPs look the same on either strand, so a strand error can't be seen from the alleles; near MAF 0.5
+       the frequency can't tell either. Keeps those SNPs whose MAF is within the limits (commonly: remove above 0.4)"}
   - {key: drop_indels, label: Remove indels, type: boolean, default: false, help: Variants whose effect or other allele is longer than one base}
   - {key: drop_duplicates, label: Remove duplicate variants, type: boolean, default: true,
      help: "Variants with the same ID, chr:pos:alleles with the two alleles in either order (1:1000:A:G and 1:1000:G:A are

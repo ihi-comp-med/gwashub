@@ -20,6 +20,8 @@ from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_logs as logs
+from aws_cdk import aws_route53 as route53
+from aws_cdk import aws_route53_targets as r53targets
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_deployment as s3deploy
 from aws_cdk import aws_secretsmanager as sm
@@ -43,8 +45,10 @@ function handler(event) {
 
 
 class AppStack(cdk.Stack):
-    def __init__(self, scope: Construct, id: str, *, cfg, net, data, image_tag: str, pipeline_images: dict, **kwargs):
-        """pipeline_images: {"gwashub/base": {"digest": "sha256:...", "platform": "linux/arm64"}, ...} (or just the
+    def __init__(self, scope: Construct, id: str, *, cfg, net, data, image_tag: str, pipeline_images: dict, certificate=None,
+                 **kwargs):
+        """certificate: for cfg.domain (from the Cert stack), None to serve on the CloudFront address.
+        pipeline_images: {"gwashub/base": {"digest": "sha256:...", "platform": "linux/arm64"}, ...} (or just the
         digest), the images pushed by the deploy script to ECR repositories gwashub-images/<owner>/<image>."""
         super().__init__(scope, id, **kwargs)
         vpc, n = net.vpc, cfg.name
@@ -90,10 +94,13 @@ class AppStack(cdk.Stack):
                 frame_options=cf.ResponseHeadersFrameOptions(frame_option=cf.HeadersFrameOption.DENY, override=True),
                 referrer_policy=cf.ResponseHeadersReferrerPolicy(
                     referrer_policy=cf.HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN, override=True)))
+        # With a domain: its certificate and a modern TLS policy (CloudFront's default certificate allows old versions).
+        tls = dict(domain_names=[cfg.domain], certificate=certificate,
+                   minimum_protocol_version=cf.SecurityPolicyProtocol.TLS_V1_2_2021) if certificate else {}
         spa = cf.Function(self, "SpaRewrite", code=cf.FunctionCode.from_inline(SPA_REWRITE), runtime=cf.FunctionRuntime.JS_2_0)
         dist = cf.Distribution(
             self, "Site", comment=f"GWASHub {n}", price_class=cf.PriceClass.PRICE_CLASS_100, default_root_object="index.html",
-            http_version=cf.HttpVersion.HTTP2_AND_3,  # TLS policy: needs a custom domain + certificate
+            http_version=cf.HttpVersion.HTTP2_AND_3, **tls,
             default_behavior=cf.BehaviorOptions(
                 origin=origins.S3BucketOrigin.with_origin_access_control(web_bucket),
                 viewer_protocol_policy=cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS, response_headers_policy=headers,
@@ -106,7 +113,12 @@ class AppStack(cdk.Stack):
                 cache_policy=cf.CachePolicy.CACHING_DISABLED,
                 origin_request_policy=cf.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
                 response_headers_policy=headers)})
-        site_url = f"https://{dist.distribution_domain_name}"
+        if certificate:
+            zone = route53.HostedZone.from_lookup(self, "Zone", domain_name=cfg.domain)
+            alias = route53.RecordTarget.from_alias(r53targets.CloudFrontTarget(dist))
+            route53.ARecord(self, "SiteA", zone=zone, record_name=cfg.domain, target=alias)
+            route53.AaaaRecord(self, "SiteAaaa", zone=zone, record_name=cfg.domain, target=alias)
+        site_url = f"https://{cfg.domain}" if certificate else f"https://{dist.distribution_domain_name}"
         if os.path.isdir(WEB_BUILD):
             s3deploy.BucketDeployment(self, "WebFiles", sources=[s3deploy.Source.asset(WEB_BUILD)], destination_bucket=web_bucket,
                                       distribution=dist, distribution_paths=["/*"], prune=True, memory_limit=512)

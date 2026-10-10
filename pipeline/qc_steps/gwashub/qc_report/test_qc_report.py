@@ -9,13 +9,15 @@ def test_report_rolls_up_step_logs(tmp_path):
     logs = tmp_path / "logs.jsonl"
     logs.write_text("\n".join(json.dumps(l) for l in [
         {"step": "parse", "verdict": "pass", "metrics": {"total_rows": 10}, "messages": ["ok"]},
-        {"step": "filter", "verdict": "warn", "metrics": {}, "messages": ["dropped <stuff>"]},
+        {"step": "filter", "verdict": "warn", "metrics": {"removed_fraction": 0.0512}, "messages": ["dropped <stuff>"],
+         "artifacts": [{"type": "table", "path": "removed_rows.tsv.gz", "label": "Removed rows", "rows": 1234}]},
     ]))
     log, _ = run_step("qc_report", pd.DataFrame({"a": [1]}), {"cohort": "Test"}, tmp_path,
                       env={"GWASHUB_STEP_LOGS": str(logs)})
     html = (tmp_path / "artifacts" / "qc_report.html").read_text()
     assert log["metrics"]["steps_reported"] == 2
     assert "filter" in html and "&lt;stuff&gt;" in html and "Overall verdict" in html and ">warn<" in html
+    assert "5.12%" in html and "removed_rows.tsv.gz" in html and "1,234 rows" in html  # artifacts listed, not embedded
 
 
 def test_report_shows_rows_by_step_and_columns_before_and_after(tmp_path):

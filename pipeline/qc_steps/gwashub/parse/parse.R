@@ -16,12 +16,14 @@ DEFAULTS <- list(
   neglog10p_fraction = 0.01,  # P values above 1 in more than this share of rows: the column is -log10 P
   min_rows = 1000,
   warn_drop_fraction = 0.01,
-  fail_drop_fraction = 0.5
+  fail_drop_fraction = 0.5,
+  min_distinct = 1000         # BETA, SE or P with fewer distinct values than this (in 50,000+ rows) look rounded
 )
 MAPPABLE <- c("rsid", "chr", "pos", "ea", "oa", "eaf", "beta", "se", "p", "log10p", "n", "ncase", "ncontrol", "info")
 REQUIRED <- c("chr", "pos", "ea", "oa", "beta", "se", "p", "eaf")
 OUT_ORDER <- c("chr", "pos", "ea", "oa", "beta", "se", "p", "eaf", "n", "ncase", "ncontrol", "rsid", "info")
 CHROMS <- c(as.character(1:22), "X", "Y")
+LARGE <- 50000  # rows from which a file is taken to be genome-wide (the missing-autosome check)
 
 args <- commandArgs(trailingOnly = TRUE)
 opt <- setNames(as.list(args[c(FALSE, TRUE)]), sub("^--", "", args[c(TRUE, FALSE)]))
@@ -57,6 +59,10 @@ if (length(missing)) stop_with(sprintf("Required column(s) not mapped: %s. Re-ma
 #=============================================================================
 con <- file(opt$input, "rb"); magic <- readBin(con, "raw", 2); close(con)
 gz <- length(magic) == 2 && magic[1] == as.raw(0x1f) && magic[2] == as.raw(0x8b)
+# A cut-short upload still decompresses up to the break, so it would otherwise pass as a smaller file.
+if (gz && system2("gzip", c("-t", shQuote(opt$input)), stdout = FALSE, stderr = FALSE) != 0) {
+  stop_with("The gzip file is incomplete or damaged (gzip -t fails): it was probably cut short. Upload it again.")
+}
 src <- if (gz) list(cmd = sprintf("gzip -dc '%s'", opt$input)) else list(file = opt$input)
 header <- names(do.call(fread, c(src, list(nrows = 0))))
 absent <- setdiff(unique(unlist(colmap)), header)
@@ -64,8 +70,11 @@ if (length(absent)) stop_with(sprintf("Mapped column(s) not in the file: %s.", p
 raw <- do.call(fread, c(src, list(select = unique(unlist(colmap)), colClasses = "character",
                                   na.strings = c("", "NA", "NaN", "nan", "."), showProgress = FALSE)))
 gwas <- as.data.table(lapply(colmap, function(col) raw[[col]]))
-rm(raw); invisible(gc())
 rows_in <- nrow(gwas)
+# Header lines inside the data: files joined together with their headers (removed below as invalid values).
+header_line <- !is.na(gwas$chr) & !is.na(gwas$pos) & gwas$chr == colmap$chr & gwas$pos == colmap$pos
+# Kept until the end: the removed rows are written as received (raw), with their line in the file and the reasons.
+was_missing <- lapply(gwas[, intersect(REQUIRED, names(gwas)), with = FALSE], is.na)
 cat(sprintf("Read %s rows; columns: %s\n", format(rows_in, big.mark = ","), paste(names(gwas), collapse = ", ")))
 
 # missingness as received
@@ -77,11 +86,19 @@ summary <- data.table(column = names(gwas), mapped_from = unlist(colmap)[names(g
 #=============================================================================
 messages <- character()
 metrics <- list(rows_in = rows_in, columns_mapped = length(colmap))
+warnings <- character()  # problems that make the verdict warn
+if (any(header_line)) {
+  metrics$header_lines <- sum(header_line)
+  messages <- c(messages, sprintf("%s repeated header lines (were files joined together?) are removed.", format(sum(header_line), big.mark = ",")))
+}
 
-# chromosome: drop a "chr" prefix, upper case, 23 -> X, 24 -> Y; anything else (MT, contigs) is invalid
+# chromosome: drop a "chr" prefix, upper case, 23 -> X, 24 -> Y, and PLINK's 25 / XY (the X pseudo-autosomal regions,
+# in X coordinates) -> X; anything else (MT, contigs) is invalid
 received_chr <- gwas$chr
 gwas[, chr := toupper(sub("(?i)^chr", "", trimws(chr), perl = TRUE))]
-gwas[, chr := fcase(chr %in% CHROMS, chr, chr == "23", "X", chr == "24", "Y", default = NA_character_)]
+par_rows <- sum(gwas$chr %in% c("25", "XY"))
+gwas[, chr := fcase(chr %in% CHROMS, chr, chr == "23", "X", chr == "24", "Y", chr %in% c("25", "XY"), "X", default = NA_character_)]
+if (par_rows) messages <- c(messages, sprintf("%s rows on chromosome 25 / XY (pseudo-autosomal) are read as X.", format(par_rows, big.mark = ",")))
 chroms <- data.table(as_received = received_chr, chromosome = gwas$chr)[, .(rows = .N), by = .(as_received, chromosome)]
 chroms[, chromosome := fifelse(is.na(chromosome), "(removed: not 1-22, X, Y)", chromosome)]
 setorder(chroms, chromosome, as_received)
@@ -126,8 +143,34 @@ if (isTRUE(sp$fill_counts)) {
 # numbers
 for (col in intersect(c("pos", "eaf", "beta", "se", "p", "log10p", "info"), names(gwas))) gwas[, (col) := num(get(col))]
 
+# rounded values: a few hundred distinct SEs in a million rows means 2 or 3 decimal places, which meta-analysis can't undo
+rounded <- character()
+for (col in intersect(c("beta", "se", "p"), names(gwas))) {
+  x <- gwas[[col]][is.finite(gwas[[col]])]
+  if (length(x) >= 50000 && uniqueN(x) < sp$min_distinct) {
+    rounded <- c(rounded, toupper(col))
+    warnings <- c(warnings, sprintf("%s has only %s distinct values in %s rows: it looks rounded, which loses precision (most for small values). Upload unrounded values if you can.",
+                                    toupper(col), format(uniqueN(x), big.mark = ","), format(length(x), big.mark = ",")))
+  }
+}
+if (length(rounded)) metrics$rounded_columns <- paste(rounded, collapse = ", ")
+
+# the effect type chosen vs what the column holds: odds ratios are positive and centred on 1, log-odds on 0
+effect_or <- tolower(params$effect_type %||% "beta") == "or"
+b <- gwas$beta[is.finite(gwas$beta)]
+if (length(b) >= 100) {
+  if (!effect_or && mean(b > 0) > 0.99 && median(b) > 0.5 && median(b) < 2) {
+    stop_with(sprintf("Every BETA is positive with a median of %.3f: these look like odds ratios. Set the effect type to odds ratio and re-run.", median(b)),
+              list(rows_in = rows_in, beta_median = median(b)))
+  }
+  if (effect_or && mean(b <= 0) > 0.01) {
+    stop_with(sprintf("%.1f%% of the odds ratios are 0 or negative: the column looks like log-odds (BETA). Set the effect type to BETA and re-run.", 100 * mean(b <= 0)),
+              list(rows_in = rows_in, or_not_positive_fraction = mean(b <= 0)))
+  }
+}
+
 # odds ratios -> log odds
-if (tolower(params$effect_type %||% "beta") == "or") {
+if (effect_or) {
   gwas[, beta := fifelse(is.finite(beta) & beta > 0, log(beta), NA_real_)]
   metrics$or_to_beta <- gwas[!is.na(beta), .N]
   messages <- c(messages, "Converted odds ratios to log-odds (BETA).")
@@ -147,6 +190,14 @@ p_missing <- if ("p" %in% names(gwas)) is.na(gwas$p) else rep(TRUE, nrow(gwas))
 
 # alleles: upper case A/C/G/T only
 for (col in c("ea", "oa")) gwas[, (col) := toupper(trimws(get(col)))]
+# alleles coded as numbers (PLINK 1/2) or indel letters (I/D, R/D) can't be matched to the genome: say so by name
+for (codes in list(list(c("0", "1", "2"), "1/2"), list(c("I", "D", "R"), "I/D"))) {
+  k <- sum(gwas$ea %in% codes[[1]] | gwas$oa %in% codes[[1]])
+  if (k > 0.01 * rows_in) {
+    messages <- c(messages, sprintf("%s rows have alleles coded %s rather than bases: recode them to A/C/G/T before uploading.",
+                                    format(k, big.mark = ","), codes[[2]]))
+  }
+}
 
 #=============================================================================
 # validity: invalid values become NA (as hermes3_dcm's per-column rules)
@@ -169,12 +220,14 @@ valid <- list(
 )
 summary[, out_of_bounds := sapply(column, function(col) sum(!is.na(gwas[[col]]) & !valid[[col]](gwas[[col]])))]
 for (col in names(gwas)) gwas[!valid[[col]](get(col)), (col) := NA]
-identical_alleles <- gwas[!is.na(ea) & ea == oa, .N]
-gwas[!is.na(ea) & ea == oa, c("ea", "oa") := NA_character_]
+same <- !is.na(gwas$ea) & gwas$ea == gwas$oa
+identical_alleles <- sum(same)
+gwas[same, c("ea", "oa") := NA_character_]
 
 # EAF of exactly 0 or 1 (monomorphic): no information, and harmonisation can't use them; removed
-monomorphic <- gwas[!is.na(eaf) & (eaf == 0 | eaf == 1), .N]
-gwas[!is.na(eaf) & (eaf == 0 | eaf == 1), eaf := NA_real_]
+mono <- !is.na(gwas$eaf) & (gwas$eaf == 0 | gwas$eaf == 1)
+monomorphic <- sum(mono)
+gwas[mono, eaf := NA_real_]
 if (monomorphic) messages <- c(messages, sprintf("%s rows with EAF of 0 or 1 (monomorphic) are removed.", format(monomorphic, big.mark = ",")))
 
 # P where it is missing: from -log10 P (when mapped and chosen) or BETA / SE (hermes3_dcm: 2 * pnorm(-|beta / se|))
@@ -203,6 +256,30 @@ if (zero_p) messages <- c(messages, sprintf("Recoded %s P values of 0 to %g.", f
 # drop rows without the required values; write the GWASHub format
 #=============================================================================
 keep <- stats::complete.cases(gwas[, ..REQUIRED])
+# Why each removed row goes: every required value it lacks, in the order of REQUIRED ("; "-separated).
+INVALID <- c(chr = "CHR not 1-22, X or Y", pos = "POS not a positive whole number", ea = "EA not A/C/G/T",
+             oa = "OA not A/C/G/T", beta = if (tolower(params$effect_type %||% "beta") == "or") "OR not a positive number" else "BETA not a number",
+             se = "SE not a positive number", p = "P outside 0-1", eaf = "EAF outside 0-1")
+reasons <- character(rows_in)
+add <- function(mask, label) {
+  mask <- mask & !keep
+  reasons[mask] <<- paste0(reasons[mask], ifelse(nzchar(reasons[mask]), "; ", ""), label)
+}
+for (col in REQUIRED) {
+  lost <- is.na(gwas[[col]])
+  if (col %in% c("ea", "oa")) lost <- lost & !same
+  if (col == "eaf") lost <- lost & !mono
+  miss <- was_missing[[col]] %||% rep(TRUE, rows_in)
+  add(lost & miss, if (col == "p") "P missing and not computable" else sprintf("%s missing", toupper(col)))
+  add(lost & !miss, INVALID[[col]])
+  if (col == "oa") add(same, "EA and OA identical")
+  if (col == "eaf") add(mono, "EAF 0 or 1 (monomorphic)")
+}
+reasons[header_line] <- "repeated header line"
+removed_rows <- raw[!keep]
+removed_rows[, `:=`(line = which(!keep), reason = reasons[!keep])]
+setcolorder(removed_rows, "line")
+rm(raw); invisible(gc())
 gwas <- gwas[keep]
 rows_out <- nrow(gwas)
 dropped <- rows_in - rows_out
@@ -224,6 +301,27 @@ for (col in intersect(c("n", "ncase", "ncontrol"), names(gwas))) gwas[, (col) :=
 gwas <- gwas[, intersect(OUT_ORDER, names(gwas)), with = FALSE]
 fwrite(gwas, opt$input, sep = "\t", na = "NA", quote = FALSE)
 
+# N above the study's total: N is per-variant (it can be lower), never higher
+declared <- params$n_total %||% (if (!is.null(params$n_cases) && !is.null(params$n_controls)) params$n_cases + params$n_controls else NULL)
+if (!is.null(declared) && "n" %in% names(gwas)) {
+  k <- gwas[!is.na(n) & n > 1.05 * declared, .N]
+  if (k) {
+    metrics$n_above_total <- k
+    warnings <- c(warnings, sprintf("N is above the study's total sample size (%s) for %s rows (up to %s): check the N column and the study details.",
+                                    format(declared, big.mark = ","), format(k, big.mark = ","), format(max(gwas$n, na.rm = TRUE), big.mark = ",")))
+  }
+}
+# EAF never above 0.5: fine when the effect allele is always the minor one (PLINK 1.9's A1), wrong if it is a MAF column
+if (rows_out >= sp$min_rows && max(gwas$eaf) <= 0.5) {
+  messages <- c(messages, "No EAF is above 0.5: either the effect allele is always the minor allele (as PLINK 1.9's A1), or the column is the minor allele frequency rather than the effect allele's. The EAF check tells these apart.")
+}
+# an autosome missing from a genome-wide file: usually a file cut short or a chromosome left out when joining files
+absent <- setdiff(as.character(1:22), unique(gwas$chr))
+if (rows_out >= LARGE && length(absent)) {
+  metrics$autosomes_absent <- length(absent)
+  warnings <- c(warnings, sprintf("No variants on chromosome %s: was the file cut short, or a chromosome left out when files were joined?", paste(absent, collapse = ", ")))
+}
+
 indels <- gwas[nchar(ea) > 1 | nchar(oa) > 1, .N]
 messages <- c(messages, sprintf("Indels: %s (%.2f%%); kept (gwashub/filter can remove them).", format(indels, big.mark = ","), 100 * indels / max(rows_out, 1)))
 metrics <- c(metrics, list(rows_out = rows_out, rows_removed = dropped, p_zero_recoded = zero_p,
@@ -238,9 +336,15 @@ if (rows_out < sp$min_rows) {
 } else if (frac > sp$fail_drop_fraction) {
   verdict <- "fail"
   messages <- c(messages, sprintf("More than %.0f%% of rows removed: check the column mapping.", 100 * sp$fail_drop_fraction))
-} else if (frac > sp$warn_drop_fraction) {
+} else if (frac > sp$warn_drop_fraction || length(warnings)) {
   verdict <- "warn"
 }
-write_log(verdict, metrics, messages,
-          list(list(type = "table", path = "parse_summary.tsv", label = "Columns: missing and out-of-bounds values"),
-               list(type = "table", path = "chromosomes.tsv", label = "Chromosomes present")))
+messages <- c(messages, warnings)
+artifacts <- list(list(type = "table", path = "parse_summary.tsv", label = "Columns: missing and out-of-bounds values", rows = nrow(summary)),
+                  list(type = "table", path = "chromosomes.tsv", label = "Chromosomes present", rows = nrow(chroms)))
+if (dropped) {
+  fwrite(removed_rows, file.path(art_dir, "removed_rows.tsv.gz"), sep = "\t", na = "NA", quote = FALSE)
+  artifacts[[3]] <- list(type = "table", path = "removed_rows.tsv.gz", label = "Removed rows", rows = dropped,
+                         description = "Every removed row as uploaded (the mapped columns), its line in the file (1 = first data row) and why it was removed.")
+}
+write_log(verdict, metrics, messages, artifacts)

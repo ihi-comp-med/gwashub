@@ -13,6 +13,7 @@ write_result <- function(t, checks, versions, site_run, notes = character()) {
 
 write_manifest <- function(t) {
   files <- list.files(t$work, recursive = TRUE, full.names = TRUE)
+  files <- files[!grepl("(^|/)\\.DS_Store$|/site_dryrun/", files)]  # Finder's files, and local dry runs (not the result's source)
   m <- data.table(path = sub(paste0(t$work, "/"), "", files, fixed = TRUE),
                   bytes = file.size(files), sha256 = vapply(files, sha256, character(1)))
   fwrite(m[order(path)], file.path(t$dir, "manifest.tsv"), sep = "\t")

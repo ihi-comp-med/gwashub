@@ -1,11 +1,16 @@
 name: eaf_check
 title: EAF check
-description: "Compares effect-allele frequencies with 1000 Genomes for the dataset's ancestry and warns when many differ."
+description: "Compares effect-allele frequencies with 1000 Genomes for the dataset's ancestry, warns when many differ and can remove them."
 narrative: >
   Matches each variant to 1000 Genomes (2022 high-coverage, GRCh38) by position and alleles in either order, and compares
   the dataset's effect-allele frequency with that of the dataset's ancestry. Draws a plot of the two and counts
-  variants that differ by more than the set threshold. Removes nothing; warns when that share is high, which suggests
-  swapped alleles, strand problems or the wrong ancestry.
+  variants that differ by more than the set threshold; warns when that share is high, which suggests swapped alleles,
+  strand problems or the wrong ancestry. Removes nothing unless "Remove variants with a large difference" is on: then
+  those variants are removed and listed in a table (the warning is still judged on the share before removal).
+  Variants not in 1000 Genomes are always kept. It names three common mistakes: a wrong ancestry (warns when the
+  frequencies fit another 1000 Genomes population clearly better than the declared one), an EAF column that is really the minor
+  allele frequency (it agrees with the reference only once both are folded to MAF), and strand problems in A/T and C/G
+  SNPs (warns when they disagree with the reference far more often than the other SNPs).
 command: [python, eaf_check.py]
 image: gwashub/vcf   # has gwashub/base's libraries; shares the harmonisation job (one Batch job fewer)
 default_on_fail: flag
@@ -16,3 +21,6 @@ params:
   - {key: diff_threshold, label: Large difference, type: number, min: 0, max: 1, default: 0.2,
      help: A variant whose EAF differs from the reference by more than this counts as a large difference}
   - {key: warn_diff_fraction, label: Warn above fraction with a large difference, type: number, min: 0, max: 1, default: 0.05}
+  - {key: remove_large_diff, label: Remove variants with a large difference, type: boolean, default: false,
+     help: "Removes variants whose EAF differs from 1000 Genomes by more than the Large difference. Variants not in 1000
+       Genomes are kept."}

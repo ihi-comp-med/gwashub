@@ -48,4 +48,4 @@ say <- function(...) cat(sprintf(...), "\n")
 `%||%` <- function(a, b) if (is.null(a)) b else a
 
 # Load the other shared files.
-for (f in c("get_sources.R", "subset.R", "compare.R", "write_result.R")) source(file.path(repo_root(), "validation", "_lib", f))
+for (f in c("get_sources.R", "subset.R", "compare.R", "write_result.R", "gwama.R")) source(file.path(repo_root(), "validation", "_lib", f))

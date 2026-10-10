@@ -158,6 +158,7 @@ class Gwas:
         imputed_col_num=None,
         alias=None,
         dbsnp=None,
+        rejected=None,
     ):
 
         rsid_pattern = re.compile("^rs[0-9]*$")
@@ -215,6 +216,12 @@ class Gwas:
             logging.info(f"Could not resolve temp file path via /proc: {exception_name}")
 
         p_value_handler = PvalueHandler()
+        # GWASHub added: list each dropped variant's data line and why (--rejected)
+        rejected_handle = open(rejected, "w") if rejected else None
+
+        def reject(reason):
+            if rejected_handle:
+                rejected_handle.write(f"{metadata['TotalVariants']}\t{reason}\n")
 
         for line in f_handle:
             metadata["TotalVariants"] += 1
@@ -236,6 +243,7 @@ class Gwas:
             except Exception as exception_name:
                 logging.debug(f"Skipping {columns}: {exception_name}")
                 metadata["VariantsNotRead"] += 1
+                reject("not read: chromosome")
                 continue
 
             try:
@@ -244,6 +252,7 @@ class Gwas:
             except Exception as exception_name:
                 logging.debug(f"Skipping {columns}: {exception_name}")
                 metadata["VariantsNotRead"] += 1
+                reject("not read: position")
                 continue
 
             ref = str(columns[nea_col_num]).strip().upper()
@@ -252,6 +261,7 @@ class Gwas:
             if ref == alt:
                 logging.debug(f"Skipping: ref={ref} is the same as alt={alt}")
                 metadata["VariantsNotRead"] += 1
+                reject("not read: EA and OA identical")
                 continue
 
             try:
@@ -259,6 +269,7 @@ class Gwas:
             except Exception as exception_name:
                 logging.debug(f"Skipping {columns}: {exception_name}")
                 metadata["VariantsNotRead"] += 1
+                reject("not read: BETA")
                 continue
 
             try:
@@ -266,6 +277,7 @@ class Gwas:
             except Exception as exception_name:
                 logging.debug(f"Skipping {columns}: {exception_name}")
                 metadata["VariantsNotRead"] += 1
+                reject("not read: SE")
                 continue
 
             try:
@@ -275,6 +287,7 @@ class Gwas:
             except Exception as exception_name:
                 logging.debug(f"Skipping line {columns}, {exception_name}")
                 metadata["VariantsNotRead"] += 1
+                reject("not read: P")
                 continue
 
             try:
@@ -381,6 +394,7 @@ class Gwas:
             except AssertionError as exception_name:
                 logging.debug(f"Skipping {columns}: {exception_name}")
                 metadata["VariantsNotRead"] += 1
+                reject("alleles not valid")
                 continue
 
             # harmonise alleles
@@ -394,6 +408,7 @@ class Gwas:
                 except AssertionError as exception_name:
                     logging.debug(f"Could not harmonise {columns}: {exception_name}")
                     metadata["VariantsNotHarmonised"] += 1
+                    reject("REF does not match the reference genome")
                     continue
             metadata["HarmonisedVariants"] += 1
 
@@ -404,12 +419,15 @@ class Gwas:
                 except Exception as exception_name:
                     logging.debug(f"Could not normalise {columns}: {exception_name}")
                     metadata["VariantsNotHarmonised"] += 1
+                    reject("could not be normalised")
                     continue
                 metadata["NormalisedVariants"] += 1
 
             # add or update dbSNP identifier
             if dbsnp is not None:
                 result.update_dbsnp(dbsnp)
+
+            result.line = metadata["TotalVariants"]  # GWASHub added: for --rejected in Vcf.write_to_file
 
             # keep file position sorted by chromosome position for recall later
             if result.chrom not in file_idx:
@@ -423,6 +441,8 @@ class Gwas:
                 raise exception_name
 
         f_handle.close()
+        if rejected_handle:
+            rejected_handle.close()
 
         logging.info(f'Total variants: {metadata["TotalVariants"]}')
         logging.info(f'Variants could not be read: {metadata["VariantsNotRead"]}')

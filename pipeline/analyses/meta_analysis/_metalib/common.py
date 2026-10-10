@@ -49,6 +49,9 @@ def load_study(spec, maf_min=0.0):
     n = len(df)
     df = df.dropna(subset=["beta", "se"])
     df = df[df["se"] > 0]
+    # A BETA of -0.0 (in QC'd files written before harmonise_liftover normalised it) is 0: METAL's sample-size scheme
+    # would otherwise count it as a negative effect, in the direction string and its overlap estimate.
+    df["beta"] = df["beta"] + 0.0
     info["removed_missing_beta_se"] = n - len(df)
     lam = lambda_gc(df["p"]) if "p" in df else float("nan")
     info["lambda_gc"] = round(lam, 4) if np.isfinite(lam) else None

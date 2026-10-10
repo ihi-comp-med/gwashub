@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "gwashub-dev",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "PATH=/opt/homebrew/bin:$PATH ./devtools/dev.sh"],
+      "port": 3000
+    }
+  ]
+}

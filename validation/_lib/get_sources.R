@@ -42,11 +42,21 @@ read_source <- function(t, name) {
   s <- t$sources[[name]]
   m <- s$columns
   if (!length(m)) stop("Fill in `columns` for ", name, " in validation/sources.yaml (see its header)")
-  d <- read_any(get_source(t, name), sep = s$sep %||% "auto", select = unique(unname(unlist(m))))
-  missing <- setdiff(unlist(m), names(d))
+  extra <- c(s$variant_column$column, unlist(s$eaf_from_minor))
+  d <- read_any(get_source(t, name), sep = s$sep %||% "auto", select = unique(c(unname(unlist(m)), extra)))
+  missing <- setdiff(c(unlist(m), extra), names(d))
   if (length(missing)) stop(name, ": columns not in the file: ", paste(missing, collapse = ", "))
   out <- d[, unlist(m), with = FALSE]
   setnames(out, unlist(m), names(m))
+  # chr, pos and alleles packed in one column, e.g. Neale lab's variant = chr:pos:ref:alt (parts names them in order)
+  if (!is.null(v <- s$variant_column)) {
+    out[, (unlist(v$parts)) := tstrsplit(d[[v$column]], v$sep %||% ":", fixed = TRUE)]
+    out[, pos := as.integer(pos)]
+  }
+  # EAF from a minor allele and its frequency (Neale lab: minor_allele, minor_AF)
+  if (!is.null(f <- s$eaf_from_minor)) {
+    out[, eaf := fifelse(toupper(d[[f$allele]]) == toupper(ea), d[[f$freq]], 1 - d[[f$freq]])]
+  }
   if (!"n" %in% names(out)) {
     if (is.null(s$n_fixed)) stop(name, ": no n column; set n_fixed in sources.yaml")
     out[, n := s$n_fixed]

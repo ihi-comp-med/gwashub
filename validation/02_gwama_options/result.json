@@ -1,0 +1,237 @@
+{
+  "test": "02_gwama_options",
+  "title": "GWAMA with every option on",
+  "claim": "Each GWAMA setting on GWASHub (random effects, genomic control on the datasets and on the results, the MAF filter, minimum datasets, the direction threshold and the sex-differentiated test) does what GWAMA does with that option.",
+  "status": "passed",
+  "run_date": "2026-10-10T22:05:02Z",
+  "versions": {
+    "gwama": "2.2.2",
+    "r": "R version 4.6.1 (2026-06-24)",
+    "data.table": "1.18.4",
+    "site_pipeline_version": 2,
+    "site_image_digests": {
+      "gwashub/gwama": "sha256:d3711e29f56b9fc4f425390a3ad45f72c0264647281eb8fa138830203ad93dd8",
+      "qc": {
+        "gwashub/base-r": "sha256:bcc4829ffadfe45269e268f7bd7b6dd47d44fe0212ccdd5dd0c12745780e7126",
+        "gwashub/vcf": "sha256:ff94dfcedb4bb4c37912ac27d8917a4d8b96d34a41663722297721d1f3ea845e",
+        "gwashub/ldsc": "sha256:257045df1c3fc622f9fd0501fe5863afa3bfae6a2fa566f5cfdeaef0df2382b6",
+        "gwashub/base": "sha256:3ef93d53ed8f407cb6757bdae1e7f201b71ab19e54ad2cd6b09d13b9b52dd956"
+      }
+    }
+  },
+  "site_run": {
+    "site": "https://d3ap1iypuvmxl8.cloudfront.net",
+    "project": "validation",
+    "run_date": "2026-10-10",
+    "datasets": {
+      "UKB": 2,
+      "HERMES": 3,
+      "FINNGEN": 4,
+      "UKB_F": 7,
+      "UKB_M": 8
+    },
+    "qc_runs": {
+      "UKB": 11,
+      "HERMES": 10,
+      "FINNGEN": 9,
+      "UKB_F": 7,
+      "UKB_M": 8
+    },
+    "qc_verdicts": {
+      "UKB_F": "warn",
+      "UKB_M": "warn"
+    },
+    "runs": {
+      "options": {
+        "meta_analysis": 3,
+        "meta_analysis_rerun": 4,
+        "dataset_order": ["FINNGEN", "HERMES", "UKB"]
+      },
+      "sex": {
+        "meta_analysis": 5,
+        "meta_analysis_rerun": 6,
+        "dataset_order": ["UKB_F", "UKB_M"]
+      }
+    },
+    "references": ["validation · meta-analysis 3 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/meta/validation/3-20261010-170716", "validation · meta-analysis 4 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/meta/validation/4-20261010-170801", "validation · meta-analysis 5 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/meta/validation/5-20261010-170841", "validation · meta-analysis 6 · s3://gwashub-dev-data-results25575328-jypi0calvmrn/meta/validation/6-20261010-170920"],
+    "pipeline_version": 2,
+    "image_digests": {
+      "gwashub/gwama": "sha256:d3711e29f56b9fc4f425390a3ad45f72c0264647281eb8fa138830203ad93dd8",
+      "qc": {
+        "gwashub/base-r": "sha256:bcc4829ffadfe45269e268f7bd7b6dd47d44fe0212ccdd5dd0c12745780e7126",
+        "gwashub/vcf": "sha256:ff94dfcedb4bb4c37912ac27d8917a4d8b96d34a41663722297721d1f3ea845e",
+        "gwashub/ldsc": "sha256:257045df1c3fc622f9fd0501fe5863afa3bfae6a2fa566f5cfdeaef0df2382b6",
+        "gwashub/base": "sha256:3ef93d53ed8f407cb6757bdae1e7f201b71ab19e54ad2cd6b09d13b9b52dd956"
+      }
+    }
+  },
+  "checks": [
+    {
+      "id": "options_variant_sets",
+      "label": "Same variants (variants only in one)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Options run vs GWAMA by hand (--threshold 0.05 --random --genomic_control --genomic_control_output)"
+    },
+    {
+      "id": "options_beta_se",
+      "label": "β and se: largest absolute difference",
+      "observed": 0,
+      "threshold": 1e-06,
+      "direction": "max",
+      "passed": true,
+      "group": "Options run vs GWAMA by hand (--threshold 0.05 --random --genomic_control --genomic_control_output)"
+    },
+    {
+      "id": "options_p",
+      "label": "p: largest relative difference",
+      "observed": 0,
+      "threshold": 0.0001,
+      "direction": "max",
+      "passed": true,
+      "group": "Options run vs GWAMA by hand (--threshold 0.05 --random --genomic_control --genomic_control_output)"
+    },
+    {
+      "id": "options_n_studies_direction",
+      "label": "n_studies and direction: rows that differ",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Options run vs GWAMA by hand (--threshold 0.05 --random --genomic_control --genomic_control_output)"
+    },
+    {
+      "id": "options_q_i2",
+      "label": "Q, its p and I²: largest absolute difference",
+      "observed": 0,
+      "threshold": 1e-06,
+      "direction": "max",
+      "passed": true,
+      "group": "Options run vs GWAMA by hand (--threshold 0.05 --random --genomic_control --genomic_control_output)"
+    },
+    {
+      "id": "options_n_eaf",
+      "label": "Total N and EAF: largest absolute difference",
+      "observed": 0,
+      "threshold": 1e-06,
+      "direction": "max",
+      "passed": true,
+      "group": "Options run vs GWAMA by hand (--threshold 0.05 --random --genomic_control --genomic_control_output)"
+    },
+    {
+      "id": "options_maf_removed",
+      "label": "Variants removed by the MAF filter: datasets that differ from R",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Options run vs GWAMA by hand (--threshold 0.05 --random --genomic_control --genomic_control_output)"
+    },
+    {
+      "id": "options_gc_lambda",
+      "label": "λ per dataset (genomic control): largest absolute difference",
+      "observed": 0,
+      "threshold": 1e-06,
+      "direction": "max",
+      "passed": true,
+      "group": "Options run vs GWAMA by hand (--threshold 0.05 --random --genomic_control --genomic_control_output)"
+    },
+    {
+      "id": "options_rerun",
+      "label": "Second site run byte-identical (0 = same sha256)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Options run vs GWAMA by hand (--threshold 0.05 --random --genomic_control --genomic_control_output)"
+    },
+    {
+      "id": "sex_variant_sets",
+      "label": "Same variants (variants only in one)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Sex run vs GWAMA by hand (--threshold 1 --sex)"
+    },
+    {
+      "id": "sex_beta_se",
+      "label": "β and se: largest absolute difference",
+      "observed": 0,
+      "threshold": 1e-06,
+      "direction": "max",
+      "passed": true,
+      "group": "Sex run vs GWAMA by hand (--threshold 1 --sex)"
+    },
+    {
+      "id": "sex_p",
+      "label": "p: largest relative difference",
+      "observed": 0,
+      "threshold": 0.0001,
+      "direction": "max",
+      "passed": true,
+      "group": "Sex run vs GWAMA by hand (--threshold 1 --sex)"
+    },
+    {
+      "id": "sex_n_studies_direction",
+      "label": "n_studies and direction: rows that differ",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Sex run vs GWAMA by hand (--threshold 1 --sex)"
+    },
+    {
+      "id": "sex_q_i2",
+      "label": "Q, its p and I²: largest absolute difference",
+      "observed": 0,
+      "threshold": 1e-06,
+      "direction": "max",
+      "passed": true,
+      "group": "Sex run vs GWAMA by hand (--threshold 1 --sex)"
+    },
+    {
+      "id": "sex_n_eaf",
+      "label": "Total N and EAF: largest absolute difference",
+      "observed": 0,
+      "threshold": 1e-06,
+      "direction": "max",
+      "passed": true,
+      "group": "Sex run vs GWAMA by hand (--threshold 1 --sex)"
+    },
+    {
+      "id": "sex_maf_removed",
+      "label": "Variants removed by the MAF filter: datasets that differ from R",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Sex run vs GWAMA by hand (--threshold 1 --sex)"
+    },
+    {
+      "id": "sex_sex_differentiated_p",
+      "label": "Sex-differentiated and sex-heterogeneity p: largest relative difference",
+      "observed": 0,
+      "threshold": 0.0001,
+      "direction": "max",
+      "passed": true,
+      "group": "Sex run vs GWAMA by hand (--threshold 1 --sex)"
+    },
+    {
+      "id": "sex_rerun",
+      "label": "Second site run byte-identical (0 = same sha256)",
+      "observed": 0,
+      "threshold": 0,
+      "direction": "equal",
+      "passed": true,
+      "group": "Sex run vs GWAMA by hand (--threshold 1 --sex)"
+    }
+  ],
+  "notes": [
+    "Options run: 59,645 variants compared",
+    "Sex run: 68,454 variants compared"
+  ],
+  "archive": null
+}

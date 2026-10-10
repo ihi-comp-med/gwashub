@@ -99,7 +99,9 @@ Every step (default or consortium, any language) is called as
 <command> --input working.tsv --resources DIR --params params.json --log step_log.json
 ```
 
-and writes `{"verdict": "pass|warn|fail", "metrics": {}, "messages": [], "artifacts": []}` to `--log`.
+and writes `{"verdict": "pass|warn|fail", "metrics": {}, "messages": [], "artifacts": []}` to `--log`
+(each artifact `{type, path, label}`, optionally `rows` and `description`; removed rows go in `removed_rows.tsv.gz`
+with a `reason` column).
 It may rewrite `--input` in place, keeping the GWASHub format (`chr pos ea oa beta se p eaf` + optional
 `n ncase ncontrol rsid info`); only the first step, `gwashub/parse`, reads the upload as received. Extra files go in `$GWASHUB_ARTIFACT_DIR`; other optional context:
 `GWASHUB_STEP_LOGS`, `GWASHUB_RUN_DIR`. Exit 0 = it ran; non-zero = crashed. See `CONTRIBUTING.md`.
