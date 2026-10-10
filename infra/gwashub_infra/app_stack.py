@@ -33,11 +33,23 @@ from constructs import Construct
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 WEB_BUILD = os.path.join(REPO_ROOT, "web", ".output", "public")
 
-# Rewrite site paths without a file extension to the single-page app shell (only for the website
-# behaviour; /api/* is untouched, so API 404s stay 404s).
-SPA_REWRITE = """
+# The website behaviour's viewer-request function (/api/* is untouched, so API 404s stay 404s and API calls are never
+# redirected). With a domain, a request for any other host (www.<domain>, the CloudFront address) is redirected to
+# https://<domain> with its path and query: sign-in returns only there. Then site paths without a file extension are
+# rewritten to the single-page app shell.
+SITE_FUNCTION = """
+var CANONICAL = '%s';
 function handler(event) {
   var req = event.request;
+  var host = req.headers.host ? req.headers.host.value : '';
+  if (CANONICAL && host !== CANONICAL) {
+    var qs = Object.keys(req.querystring).map(function (k) {
+      var v = req.querystring[k];
+      return (v.multiValue || [v]).map(function (m) { return k + (m.value ? '=' + m.value : ''); }).join('&');
+    }).join('&');
+    return { statusCode: 301, statusDescription: 'Moved Permanently',
+             headers: { location: { value: 'https://' + CANONICAL + req.uri + (qs ? '?' + qs : '') } } };
+  }
   var last = req.uri.split('/').pop();
   if (last.indexOf('.') === -1) { req.uri = '/200.html'; }
   return req;
@@ -100,11 +112,13 @@ class AppStack(cdk.Stack):
         tls, zone = {}, None
         if cfg.domain:
             zone = route53.HostedZone.from_lookup(self, "Zone", domain_name=cfg.domain)
+            names = [cfg.domain] + ([f"www.{cfg.domain}"] if cfg.www else [])
             certificate = acm.DnsValidatedCertificate(self, "SiteCert", domain_name=cfg.domain, hosted_zone=zone,
-                                                      region="us-east-1")
-            tls = dict(domain_names=[cfg.domain], certificate=certificate,
+                                                      subject_alternative_names=names[1:] or None, region="us-east-1")
+            tls = dict(domain_names=names, certificate=certificate,
                        minimum_protocol_version=cf.SecurityPolicyProtocol.TLS_V1_2_2021)
-        spa = cf.Function(self, "SpaRewrite", code=cf.FunctionCode.from_inline(SPA_REWRITE), runtime=cf.FunctionRuntime.JS_2_0)
+        spa = cf.Function(self, "SpaRewrite", code=cf.FunctionCode.from_inline(SITE_FUNCTION % (cfg.domain or "")),
+                          runtime=cf.FunctionRuntime.JS_2_0)
         dist = cf.Distribution(
             self, "Site", comment=f"GWASHub {n}", price_class=cf.PriceClass.PRICE_CLASS_100, default_root_object="index.html",
             http_version=cf.HttpVersion.HTTP2_AND_3, **tls,
@@ -124,6 +138,9 @@ class AppStack(cdk.Stack):
             alias = route53.RecordTarget.from_alias(r53targets.CloudFrontTarget(dist))
             route53.ARecord(self, "SiteA", zone=zone, record_name=cfg.domain, target=alias)
             route53.AaaaRecord(self, "SiteAaaa", zone=zone, record_name=cfg.domain, target=alias)
+            if cfg.www:
+                route53.ARecord(self, "WwwA", zone=zone, record_name=f"www.{cfg.domain}", target=alias)
+                route53.AaaaRecord(self, "WwwAaaa", zone=zone, record_name=f"www.{cfg.domain}", target=alias)
         site_url = f"https://{cfg.domain}" if cfg.domain else f"https://{dist.distribution_domain_name}"
         if os.path.isdir(WEB_BUILD):
             s3deploy.BucketDeployment(self, "WebFiles", sources=[s3deploy.Source.asset(WEB_BUILD)], destination_bucket=web_bucket,

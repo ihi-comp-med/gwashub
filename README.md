@@ -13,9 +13,10 @@ pick-a-user sign-in) and **on AWS** (S3, Postgres, AWS Batch, Cognito sign-in wi
 | Doc | What's in it |
 |---|---|
 | `docs/PROGRESS.md` | Where it stands: what's built, decisions, known behaviour, what's not done |
-| `docs/AWS_FULL.md` | **The AWS deployment**: why it's built that way, what runs where, deploying, admin commands, the console, before production, costs |
+| `docs/AWS_FULL.md` | **The AWS deployment**: why it's built that way, what runs where, deploying, admin commands, the console, costs |
+| `docs/PRODUCTION_ROADMAP.md` | **The road to production**: the domain plan, the tasks in order (how, effort, cost), go-live checks, running it, costs |
 | `docs/AWS_ACCOUNT_SETUP.md` | The AWS accounts: what exists, what's open, how to rebuild them |
-| `docs/VALIDATION_PLAN.md` | The five validation tests (`validation/` holds them) |
+| `docs/VALIDATION_PLAN.md` | The four validation tests and their results (`validation/` holds them; the site's Validation page shows them) |
 | `CONTRIBUTING.md` | How a consortium adds its own QC step, meta-analysis method (and image) by pull request |
 
 ## Quick start (local)

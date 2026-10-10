@@ -7,7 +7,8 @@ datasets that pass. This directory is the whole product (one monorepo).
 Read before substantial work:
 - `README.md`: how to run and test (`./devtools/dev.sh`, `.venv/bin/python -m pytest`)
 - `docs/PROGRESS.md`: where it stands: what is built, decisions, known gaps
-- `docs/AWS_FULL.md`: the AWS deployment (gwashub-dev): design reasons, deploying, admin commands, production checklist, costs
+- `docs/AWS_FULL.md`: the AWS deployment (gwashub-dev, https://gwashub.com): design reasons, deploying, admin commands, costs
+- `docs/PRODUCTION_ROADMAP.md`: the road to production: domain plan, tasks in order with how/effort/cost, go-live checks
 - `CONTRIBUTING.md`: how consortia add QC steps, meta-analysis methods and images
 - `docs/AWS_ACCOUNT_SETUP.md` (accounts), `docs/VALIDATION_PLAN.md` (validation tests)
 

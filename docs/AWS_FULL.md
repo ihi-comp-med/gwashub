@@ -127,7 +127,9 @@ The first deploy takes 25–35 minutes (database and CloudFront); later ones 5�
 is printed at the end and saved in `infra/cdk-outputs-dev.json` (git-ignored; the admin, tunnel and
 bookmarks scripts read it). `GWASHUB_IMAGE_TAG=<tag>` redeploys images already in ECR without rebuilding.
 
-**dev today:** https://gwashub.com (gwashub-dev; the CloudFront address https://d3ap1iypuvmxl8.cloudfront.net still serves the site, but sign-in only returns to gwashub.com). Projects for testing and validation, the Practice
+**dev today:** https://gwashub.com (gwashub-dev). `www.gwashub.com` and the CloudFront address
+(https://d3ap1iypuvmxl8.cloudfront.net) redirect there, since sign-in returns only to it (`config.py` `www`; the
+redirect is in the website's CloudFront function; `/api/*` is never redirected). Projects for testing and validation, the Practice
 project, no demo data, and all 37 real reference files (incl. dbSNP 157) registered as shared resources.
 
 ## Running it
@@ -244,45 +246,15 @@ The AWS Organizations pages only work from the management account.
 
 ## Before production
 
-Open items, most important first:
-
-- **WAF** on CloudFront (AWS managed rules, a rate limit per IP). Not in the lean dev setup.
-- **Domain for prod.** gwashub.com serves dev for now. It is registered in the management account; its hosted zone is
-  in the account that serves it (Route 53 → Registered domains → gwashub.com → name servers point there). For prod:
-  move the zone to the prod account (or give prod the apex and delegate `dev.gwashub.com` to dev) and set `domain`
-  in `config.py` for both.
-- **Isolating consortium steps**: they run in their own image group, but in the same compute environment with the same
-  job role as the default steps. Still to do: a locked-down environment (no internet, only that run's S3 prefix).
-  Consortium code is reviewed by pull request before it runs.
-- **Malware scanning** of uploads (GuardDuty Malware Protection for S3), S3 access logs, CloudTrail data events for
-  the buckets.
-- **Alarms**: API 5xx, failed jobs, dead-letter queue messages, budget, GuardDuty findings.
-- **CI/CD** with GitHub Actions and OIDC (no stored keys); tests and the web build on every pull request, prod deploys
-  after a manual approval. Deploys run from a laptop for now.
-- **Cognito email through SES** with our own sender before inviting a consortium (the built-in email allows ~50 a day).
-- Read-only root filesystem for the API and worker containers (needs a scratch volume owned by the app user).
-- Cognito Plus (compromised-credential checks, adaptive authentication) costs extra per user; Essentials is used.
-
-Checks before real consortium data goes in:
-
-- [ ] Root MFA on every account; admins sign in with MFA; no IAM users or access keys (see `docs/AWS_ACCOUNT_SETUP.md`)
-- [ ] Buckets private, KMS-encrypted, TLS-only, versioned (done); access logs; IAM Access Analyzer clean
-- [ ] Database private, encrypted, backed up, deletion-protected (done); credential rotation
-- [ ] The dev login (`/api/auth/login`, `/api/auth/users`) unreachable in prod; re-run the permission tests against the
-      deployed stack
-- [ ] WAF, rate limits, security headers and a Content-Security-Policy on CloudFront
-- [ ] Images scanned and pinned by digest (pinned: done); dependency scanning in CI
-- [ ] Restore test, once, on purpose: the database to a point in time, and a deleted S3 object
-- [ ] Information-governance sign-off (DPIA if needed, data region, retention and deletion policy)
-- [ ] An independent penetration test of the deployed site
+The tasks, in order, with how to do each and what it costs, are in **`docs/PRODUCTION_ROADMAP.md`**: decisions,
+changes in the code (domains, WAF, malware scanning, logging, alarms, CSP, consortium-step isolation, SES), the account
+baseline and CI/CD, deploying prod, the go-live checklist and running it.
 
 ## Costs
 
-- **dev:** about $8.50 for the first five days of October 2026, covered by credits. The fixed part is mostly the NAT
-  gateway, the database and the load balancer; Batch costs nothing when idle.
-- **prod as designed** (Multi-AZ database, two NAT gateways, two API tasks, WAF, security services): roughly $250 to
-  $450 a month at low traffic, plus S3 (~$24 per TB a month) and downloads (~$90 per TB, often waived for academic
-  accounts). A QC run on Spot costs cents.
-- ECR keeps the 5 newest images per repository; Batch instance types are limited to large to 4xlarge.
-- Cheaper options discussed, not decided: research credits; a serverless redesign (Lambda, Aurora Serverless v2
-  scaling to zero, no NAT); fck-nat instead of a NAT gateway; switching dev off out of hours; single-AZ prod database.
+- **dev, measured:** $30.33 of usage (before credits) for 1 to 10 October 2026, about seven days billed: roughly $120 a
+  month fixed (NAT gateway, database, API and worker, load balancer) plus compute. All the validation QC runs and
+  meta-analyses on Batch Spot came to under $3.
+- **prod, estimated:** about $300 to $330 a month fixed (Multi-AZ database, two NAT gateways, two API tasks, WAF,
+  security services), $350 to $450 in use, plus S3 ($0.024 per GB a month) and downloads (about $0.09 per GB).
+- The breakdown, the assumptions and the ways to spend less are in `docs/PRODUCTION_ROADMAP.md`.

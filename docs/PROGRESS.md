@@ -149,7 +149,7 @@ whatever the pipeline. A QC run is four Batch jobs (one per change of image).
 
 ## Not done
 
-- Production deployment and the AWS items in `docs/AWS_FULL.md` → "Before production" (WAF, prod domain, isolated
+- Production: the plan, in order, with costs, is `docs/PRODUCTION_ROADMAP.md` (WAF, domains, isolated
   consortium steps, malware scanning, alarms, CI/CD, SES for invitations).
 - Resource import from a URL (upload only).
 - The stack poster in `docs/images/` predates the vcf and ldsc images and GWAMA; regenerate it when convenient.
