@@ -22,6 +22,7 @@ from fastapi import HTTPException
 AGE_GROUPS = [("total", "Total cohort"), ("controls", "Controls"), ("cases_diagnosis", "Cases at diagnosis"),
               ("cases_recruitment", "Cases at recruitment")]
 YES_NO = ["Yes", "No"]
+EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 SECTIONS = [
     {"key": "study", "title": "Study", "level": "cohort", "fields": [
@@ -29,7 +30,8 @@ SECTIONS = [
         {"key": "data_collection_end", "label": "Data collection end", "type": "date", "default": True},
         {"key": "data_freeze_date", "label": "Data freeze date", "type": "date"},
         {"key": "country", "label": "Country/countries of ascertainment", "type": "text"},
-        {"key": "contact_person", "label": "Contact person", "type": "text", "placeholder": "Name and email", "default": True},
+        {"key": "contact_name", "label": "Contact name", "type": "text", "placeholder": "e.g. Jane Smith", "default": True},
+        {"key": "contact_email", "label": "Contact email", "type": "email", "placeholder": "name@institution.org", "default": True},
         {"key": "lead_collaborator", "label": "Lead collaborator", "type": "text"},
         {"key": "other_authors", "label": "Other contributors to include as authors", "type": "textarea"},
         {"key": "publication_requirements", "label": "Other publication requirements", "type": "textarea",
@@ -147,6 +149,10 @@ def validate(meta: dict | None, custom: list | None = None) -> dict:
                 v = str(v).strip()
                 if len(v) > (5000 if t == "textarea" else 300):
                     raise ValueError("too long")
+            elif t == "email":
+                v = str(v).strip()
+                if len(v) > 254 or not EMAIL.fullmatch(v):
+                    raise ValueError("must be an email address, e.g. name@institution.org")
             elif t == "select":
                 if v not in f["options"]:
                     raise ValueError(f"must be one of {', '.join(f['options'])}")

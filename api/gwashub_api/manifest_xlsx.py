@@ -127,7 +127,7 @@ def template(project, custom, cfg, cohorts: list[str]) -> bytes:
                                 errorTitle="Not in the list", error="Pick a value from the list.")
             sheet.add_data_validation(dv)
             dv.add(data)
-        fmt = {"date": "yyyy-mm-dd", "int": "0", "integer": "0"}.get(c["kind"], "@" if c["kind"] in ("text", "textarea") and not c.get("choices") else None)
+        fmt = {"date": "yyyy-mm-dd", "int": "0", "integer": "0"}.get(c["kind"], "@" if c["kind"] in ("text", "textarea", "email") and not c.get("choices") else None)
         if fmt:
             for row in sheet.iter_rows(min_row=2, max_row=ROWS + 1, min_col=i, max_col=i):
                 row[0].number_format = fmt

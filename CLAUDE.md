@@ -88,7 +88,8 @@ copyright notice for any code ported from them). Useful there: liftover worker
 
 ## Working rules
 
-- Run `.venv/bin/python -m pytest` before and after changes; add tests with new behaviour.
+- Run `.venv/bin/python -m pytest` before and after changes; add tests with new behaviour. Run it without `-q` and
+  without piping through `tail`, so the per-test progress shows; a full run takes about 10 minutes.
 - QC logic belongs in `pipeline/qc_steps/` as scripts; the API and runner stay generic.
 - Nothing deployment-specific as literals: settings come from env vars (`api/gwashub_api/config.py`).
 - No credentials in code or git. Locally: env vars. In AWS: IAM roles, Secrets Manager, GitHub OIDC.

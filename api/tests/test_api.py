@@ -643,7 +643,14 @@ def test_study_metadata_upload_edit_and_audit(client, synth_small):
     with _pt.raises(HTTPException) as e:
         validate({"male_prop_total": 1.4, "data_collection_start": "2020-01-01", "data_collection_end": "2019-01-01", "nope": 1})
     assert "Proportion male" in e.value.detail and "before the start" in e.value.detail and "unknown field" in e.value.detail
-    assert validate({"case_type": "Incident", "n_variants_for_imputation": "40000", "contact_person": " "}) == {"case_type": "Incident", "n_variants_for_imputation": 40000}
+    assert validate({"case_type": "Incident", "n_variants_for_imputation": "40000", "contact_name": " "}) == {"case_type": "Incident", "n_variants_for_imputation": 40000}
+    # The contact is two fields: a name and an email address, checked as one.
+    assert validate({"contact_name": " Jane Smith ", "contact_email": " jane.smith@bristol.ac.uk "}) == \
+        {"contact_name": "Jane Smith", "contact_email": "jane.smith@bristol.ac.uk"}
+    for bad in ("Jane Smith", "jane@", "jane smith@bristol.ac.uk", "Jane <jane@bristol.ac.uk>"):
+        with _pt.raises(HTTPException) as e:
+            validate({"contact_email": bad})
+        assert "Contact email: must be an email address" in e.value.detail
 
     as_user(client, "jonas@example.org")
     assert len(client.get("/api/metadata-schema").json()["sections"]) == 7

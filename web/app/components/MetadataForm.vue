@@ -74,7 +74,7 @@ const fmtVal = (f: any, v: any) => f.type === 'date' ? fmtDate(v) : f.type === '
               </span>
               <span v-else-if="fromCohort(s, f.key)" class="src muted">from cohort</span>
             </label>
-            <InputText v-if="f.type === 'text'" :id="`md-${f.key}`" :model-value="model[f.key] ?? ''" :placeholder="f.placeholder" @update:model-value="v => set(f.key, v)" />
+            <InputText v-if="f.type === 'text' || f.type === 'email'" :id="`md-${f.key}`" :type="f.type === 'email' ? 'email' : 'text'" :model-value="model[f.key] ?? ''" :placeholder="f.placeholder" @update:model-value="v => set(f.key, v)" />
             <Textarea v-else-if="f.type === 'textarea'" :id="`md-${f.key}`" :model-value="model[f.key] ?? ''" :placeholder="f.placeholder" rows="2" auto-resize @update:model-value="v => set(f.key, v)" />
             <Select v-else-if="f.type === 'select'" :input-id="`md-${f.key}`" :model-value="model[f.key] ?? null" :options="f.options" show-clear placeholder="Not specified" @update:model-value="v => set(f.key, v)" />
             <DatePicker v-else-if="f.type === 'date'" :input-id="`md-${f.key}`" :model-value="dateValue(f.key)" date-format="yy-mm-dd" show-button-bar placeholder="YYYY-MM-DD" @update:model-value="(v: any) => set(f.key, toIso(v))" />
