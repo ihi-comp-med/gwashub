@@ -16,6 +16,7 @@ pick-a-user sign-in) and **on AWS** (S3, Postgres, AWS Batch, Cognito sign-in wi
 | `docs/AWS_FULL.md` | **The AWS deployment**: why it's built that way, what runs where, deploying, admin commands, the console, costs |
 | `docs/PRODUCTION_ROADMAP.md` | **The road to production**: the domain plan, the tasks in order (how, effort, cost), go-live checks, running it, costs |
 | `docs/AWS_ACCOUNT_SETUP.md` | The AWS accounts: what exists, what's open, how to rebuild them |
+| `docs/AWS_CREDITS_PROPOSAL.md` | The AWS Cloud Credit for Research proposal (October 2026): USD 7,500 for production's first year |
 | `docs/VALIDATION_PLAN.md` | The four validation tests and their results (`validation/` holds them; the site's Validation page shows them) |
 | `CONTRIBUTING.md` | How a consortium adds its own QC step, meta-analysis method (and image) by pull request |
 
