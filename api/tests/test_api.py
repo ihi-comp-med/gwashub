@@ -77,6 +77,14 @@ def test_column_suggestion(client, synth_small):
     assert len(body["preview"]) == 5
 
 
+def test_column_suggestion_coded_allele_names():
+    """The coded / non-coded allele naming (A_coded, A_noncoded, AFreq_coded) maps to EA, OA and EAF; n_events (the
+    number of cases, as survival analyses name it) to cases."""
+    from gwashub_api.colmap import suggest
+    m = suggest(["SNP", "CHR", "POS", "A_coded", "A_noncoded", "AFreq_coded", "BETA", "SE", "P", "n_events"])["mapping"]
+    assert (m["ea"], m["oa"], m["eaf"], m["ncase"]) == ("A_coded", "A_noncoded", "AFreq_coded", "n_events")
+
+
 def test_upload_runs_qc_and_enforces_dataset_permissions(client, synth_small):
     as_user(client, "jonas@example.org")
     up = upload(client, synth_small, synth_small["manifest"][0])
@@ -644,6 +652,11 @@ def test_study_metadata_upload_edit_and_audit(client, synth_small):
         validate({"male_prop_total": 1.4, "data_collection_start": "2020-01-01", "data_collection_end": "2019-01-01", "nope": 1})
     assert "Proportion male" in e.value.detail and "before the start" in e.value.detail and "unknown field" in e.value.detail
     assert validate({"case_type": "Incident", "n_variants_for_imputation": "40000", "contact_name": " "}) == {"case_type": "Incident", "n_variants_for_imputation": 40000}
+    # Decimal fields take scientific notation, as text or as a number; text that isn't a number is named.
+    assert validate({"hwe_p": "1e-6", "maf": 0.01}) == {"hwe_p": 1e-6, "maf": 0.01}
+    with _pt.raises(HTTPException) as e:
+        validate({"hwe_p": "one in a million"})
+    assert "HWE P threshold: must be a number" in e.value.detail
     # The contact is two fields: a name and an email address, checked as one.
     assert validate({"contact_name": " Jane Smith ", "contact_email": " jane.smith@bristol.ac.uk "}) == \
         {"contact_name": "Jane Smith", "contact_email": "jane.smith@bristol.ac.uk"}

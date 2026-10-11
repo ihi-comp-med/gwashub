@@ -163,7 +163,10 @@ def validate(meta: dict | None, custom: list | None = None) -> dict:
             elif t in ("number", "integer"):
                 if isinstance(v, bool):
                     raise ValueError("must be a number")
-                v = int(v) if t == "integer" else float(v)
+                try:
+                    v = int(v) if t == "integer" else float(v)  # float() reads "1e-6" and "0.000001" alike
+                except (TypeError, ValueError):
+                    raise ValueError("must be a number (for example 0.01 or 1e-6)") from None
                 if t == "integer" and float(meta[k]) != int(v):
                     raise ValueError("must be a whole number")
                 if "min" in f and v < f["min"] or "max" in f and v > f["max"]:

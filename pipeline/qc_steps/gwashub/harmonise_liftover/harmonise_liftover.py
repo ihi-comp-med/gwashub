@@ -40,8 +40,9 @@ Inputs
 Outputs
   --input       GWASHub format on GRCh38 with ea = ALT and oa = REF of the GRCh38 reference, so every dataset that
                 leaves this step is aligned to the same strand and the same effect allele. beta and eaf are flipped
-                where the alleles were switched; rsid is dbSNP 157's ID where dbSNP has the same position and
-                alleles, otherwise the uploaded rsID if gwas2vcf accepted it (rs<digits>), otherwise NA. Optional columns are written only if they were in the input; n, ncase and
+                where the alleles were switched; rsid is always written and is dbSNP 157's ID where dbSNP has
+                the same position and alleles, otherwise NA: an uploaded rsID is never kept, so every dataset
+                carries the same IDs. The other optional columns only when they were in the input. n, ncase and
                 ncontrol are whole numbers, carried through unchanged (SS, NC and the GWASHub-added
                 FORMAT/NCO in the VCF).
   --log         {"step": "harmonise_liftover", "verdict", "metrics", "messages", "artifacts"}. Metrics include
@@ -73,9 +74,9 @@ Notes for whoever maintains this
   REF and ALT and negates the effect fields (INFO/SWAP), so ES stays the effect of ALT.
 - The build check samples SNPs only (indels make the check noisy). In the right build almost every SNP has one allele
   equal to the reference base; in the wrong one it is about half, the chance that one of two random bases matches.
-- bcftools annotate -c ID overwrites the ID only where dbSNP has a record with the same position and alleles, so an
-  uploaded rsID survives where dbSNP has nothing. Variants are matched across datasets by position and alleles
-  everywhere downstream, so the rsID is a label only.
+- rsIDs come only from dbSNP 157 (bcftools annotate -c ID, matching position and alleles): the uploaded rsid column
+  isn't given to gwas2vcf, so a variant dbSNP doesn't have is left without one rather than keeping the cohort's.
+  Variants are matched across datasets by position and alleles everywhere downstream, so the rsID is a label only.
 """
 import gzip
 import json
@@ -149,7 +150,9 @@ def gwas2vcf_json(header, build):
     idx = {c: i for i, c in enumerate(header)}
     j = {"chr_col": idx["chr"], "pos_col": idx["pos"], "ea_col": idx["ea"], "oa_col": idx["oa"], "beta_col": idx["beta"],
          "se_col": idx["se"], "pval_col": idx["p"], "delimiter": "\t", "header": True, "build": build}
-    for col, key in (("rsid", "snp_col"), ("eaf", "eaf_col"), ("ncase", "ncase_col"), ("ncontrol", "ncontrol_col"),
+    # The uploaded rsid is not passed on: the VCF starts with no IDs and dbSNP 157 fills them, so every dataset ends
+    # up with the same IDs (an upload's own rsIDs may be from another dbSNP build, or wrong).
+    for col, key in (("eaf", "eaf_col"), ("ncase", "ncase_col"), ("ncontrol", "ncontrol_col"),
                      ("n", "n_col"), ("info", "imp_info_col")):
         if col in idx:
             j[key] = idx[col]
@@ -352,8 +355,10 @@ def harmonise(args, params, opts, art):
     optional = {"eaf": q["af"].astype(float), "n": q["ss"].astype(float), "ncase": q["nc"].astype(float),
                 "ncontrol": q["nco"].astype(float),
                 "rsid": q["id"], "info": q["si"].astype(float)}
+    # rsid is always written: dbSNP annotates every variant, whether or not the upload had an rsID column (LDSC
+    # matches on it). The other optional columns only when the input had them.
     for col in STANDARD:
-        if col in optional and col in header:
+        if col in optional and (col in header or col == "rsid"):
             out[col] = optional[col]
     for col in ("n", "ncase", "ncontrol"):
         if col in out:
@@ -361,7 +366,7 @@ def harmonise(args, params, opts, art):
     out.to_csv(args.input, sep="\t", index=False, na_rep="NA")
 
     rows_out = len(out)
-    metrics.update(rows_out=rows_out, no_rsid=int(out["rsid"].isna().sum()) if "rsid" in out else None)
+    metrics.update(rows_out=rows_out, no_rsid=int(out["rsid"].isna().sum()))
     stages += [("same chromosome after liftover", rows_out + metrics["other_contigs"] + metrics["invalid_alleles"] + metrics["duplicates"]),
                ("chromosomes 1-22, X, Y", rows_out + metrics["invalid_alleles"] + metrics["duplicates"]),
                ("alleles A/C/G/T", rows_out + metrics["duplicates"]), ("output (duplicates removed)", rows_out)]
@@ -371,7 +376,9 @@ def harmonise(args, params, opts, art):
     harmonised_fraction = (metrics.get("harmonised") or 0) / rows_in if rows_in else 0
     metrics["harmonised_fraction"] = harmonised_fraction
     messages = [f"{metrics.get('harmonised', 0):,} of {rows_in:,} variants harmonised to the {build} reference "
-                f"({100 * harmonised_fraction:.2f}%); {metrics.get('alleles_switched', 0):,} had their alleles switched."]
+                f"({100 * harmonised_fraction:.2f}%); {metrics.get('alleles_switched', 0):,} had their alleles switched.",
+                f"{rows_out - metrics['no_rsid']:,} of {rows_out:,} variants have an rsID from dbSNP 157"
+                + (f" ({100 * (rows_out - metrics['no_rsid']) / rows_out:.2f}%)." if rows_out else ".")]
     verdict = "pass"
     if harmonised_fraction < opts["warn_harmonised_fraction"]:
         verdict = "warn"

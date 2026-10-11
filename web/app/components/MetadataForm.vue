@@ -28,6 +28,16 @@ const dateValue = (k: string) => model.value[k] ? new Date(`${model.value[k]}T00
 const toIso = (d: Date | null) => d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : null
 const has = (k: string) => model.value[k] !== undefined && model.value[k] !== null && model.value[k] !== ''
 const sectionHasData = (s: any) => s.fields ? s.fields.some((f: any) => has(f.key)) : s.grid.rows.some((r: any) => s.grid.cols.some((c: any) => has(`${r.key}_${c.key}`)))
+// Decimal fields are typed as text so scientific notation works ("1e-6" for a P threshold). While a field is being
+// typed in, its text is kept as typed; anything that isn't a number is sent as it is, and the server names the field.
+const drafts = reactive<Record<string, string>>({})
+const isNum = (s: string) => s.trim() !== '' && Number.isFinite(Number(s.trim()))
+const numText = (k: string) => drafts[k] ?? (has(k) ? String(model.value[k]) : '')
+const endDraft = (k: string) => { delete drafts[k] }
+function setNum(k: string, s: string) {
+  drafts[k] = s
+  set(k, s.trim() === '' ? null : isNum(s) ? Number(s.trim()) : s.trim())
+}
 const fmtVal = (f: any, v: any) => f.type === 'date' ? fmtDate(v) : f.type === 'number' || f.type === 'integer' ? fmtNum(v) : v
 </script>
 
@@ -78,8 +88,11 @@ const fmtVal = (f: any, v: any) => f.type === 'date' ? fmtDate(v) : f.type === '
             <Textarea v-else-if="f.type === 'textarea'" :id="`md-${f.key}`" :model-value="model[f.key] ?? ''" :placeholder="f.placeholder" rows="2" auto-resize @update:model-value="v => set(f.key, v)" />
             <Select v-else-if="f.type === 'select'" :input-id="`md-${f.key}`" :model-value="model[f.key] ?? null" :options="f.options" show-clear placeholder="Not specified" @update:model-value="v => set(f.key, v)" />
             <DatePicker v-else-if="f.type === 'date'" :input-id="`md-${f.key}`" :model-value="dateValue(f.key)" date-format="yy-mm-dd" show-button-bar placeholder="YYYY-MM-DD" @update:model-value="(v: any) => set(f.key, toIso(v))" />
-            <InputNumber v-else :input-id="`md-${f.key}`" :model-value="model[f.key] ?? null" :min="f.min" :max="f.max" :min-fraction-digits="0" :max-fraction-digits="f.type === 'integer' ? 0 : 10"
-                         :use-grouping="f.type === 'integer'" :placeholder="f.placeholder" @update:model-value="v => set(f.key, v)" />
+            <InputText v-else-if="f.type === 'number'" :id="`md-${f.key}`" inputmode="decimal" :model-value="numText(f.key)" :placeholder="f.placeholder"
+                       :invalid="drafts[f.key] !== undefined && drafts[f.key].trim() !== '' && !isNum(drafts[f.key])"
+                       @update:model-value="v => setNum(f.key, v ?? '')" @blur="endDraft(f.key)" />
+            <InputNumber v-else :input-id="`md-${f.key}`" :model-value="model[f.key] ?? null" :min="f.min" :max="f.max" :min-fraction-digits="0" :max-fraction-digits="0"
+                         use-grouping :placeholder="f.placeholder" @update:model-value="v => set(f.key, v)" />
           </div>
         </div>
         <div v-else class="table-wrap">

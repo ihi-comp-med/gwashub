@@ -69,3 +69,25 @@ def test_sample_sizes_come_back_unchanged(synth_small, tmp_path):
     log, out = run_step("harmonise_liftover", gwas, params, tmp_path, resources=synth_small["resources"])
     assert log["verdict"] in ("pass", "warn"), log
     assert len(out) and (out["ncase"] == 1000).all() and (out["ncontrol"] == 3000).all() and (out["n"] == 2900).all()
+
+
+@needs_image("gwashub/base-r", "gwashub/vcf")
+def test_rsids_come_only_from_dbsnp(synth_small, tmp_path):
+    """rsIDs come only from dbSNP 157: an upload without an rsID column still gets them (LDSC matches on them), and an
+    uploaded rsID is never kept, even where dbSNP has none."""
+    entry = next(e for e in synth_small["manifest"] if e["build"] == "GRCh37")
+    params = params_for(entry)
+    (tmp_path / "parse").mkdir()
+    _, gwas = run_step("parse", os.path.join(synth_small["dir"], "fake_gwas", entry["file"]), params, tmp_path / "parse")
+    without = gwas.drop(columns=["rsid"], errors="ignore")
+    (tmp_path / "a").mkdir()
+    log, out = run_step("harmonise_liftover", without, params, tmp_path / "a", resources=synth_small["resources"])
+    assert "rsid" in out and out["rsid"].str.startswith("rs").sum() > 0.5 * len(out), log
+    assert log["metrics"]["no_rsid"] == out["rsid"].isna().sum()
+    assert any("rsID from dbSNP 157" in m for m in log["messages"])
+    # The same file with a made-up rsID on every row: none of them survives
+    (tmp_path / "b").mkdir()
+    _, out2 = run_step("harmonise_liftover", without.assign(rsid="rs999999999"), params, tmp_path / "b",
+                       resources=synth_small["resources"])
+    assert not (out2["rsid"] == "rs999999999").any()
+    assert out2["rsid"].fillna("").tolist() == out["rsid"].fillna("").tolist()
