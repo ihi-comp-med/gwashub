@@ -58,7 +58,7 @@ min ≤ value ≤ max over the limits switched on (see `gwashub/filter`):
 
 ```yaml
   - {key: info, label: INFO, type: range, sides: [min, max], min: 0, max: 1,
-     default: {on: false, min_on: true, min: 0.8, max_on: false, max: 1}}
+     default: {"on": false, min_on: true, min: 0.8, max_on: false, max: 1}}
 ```
 
 The older form, a plain mapping such as `params: {window_kb: 500}`, still works (types come from the defaults).

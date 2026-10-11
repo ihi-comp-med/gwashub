@@ -15,27 +15,27 @@ resources: []
 compute: {vcpus: 2, memory_gb: 32}
 params:
   - {key: chromosomes, label: Chromosomes kept, type: select, options: ["1-22", "1-22, X", "1-22, X, Y"], default: "1-22, X, Y"}
-  - {key: beta, label: "|BETA|", type: range, sides: [max], min: 0, default: {on: true, max_on: true, max: 20},
-     help: "Keeps variants whose absolute effect is at most the maximum (HERMES 3: below 20)"}
+  - {key: beta, label: "|BETA|", type: range, sides: [max], min: 0, default: {"on": false, max_on: true, max: 20},
+     help: "Keeps variants whose absolute effect is at most the maximum (HERMES 3 removed 20 and above). Off by default"}
   - {key: se, label: SE, type: range, sides: [min, max], min: 0,
-     default: {on: false, min_on: false, min: 0, max_on: true, max: 10}, help: Keeps variants whose standard error is within the limits}
+     default: {"on": false, min_on: false, min: 0, max_on: true, max: 10}, help: Keeps variants whose standard error is within the limits}
   - {key: info, label: INFO, type: range, sides: [min, max], min: 0, max: 1,
-     default: {on: false, min_on: true, min: 0.8, max_on: false, max: 1}, help: Keeps variants whose imputation quality (INFO) is within the limits}
+     default: {"on": false, min_on: true, min: 0.8, max_on: false, max: 1}, help: Keeps variants whose imputation quality (INFO) is within the limits}
   - {key: missing_info, label: Missing INFO, type: select, options: [fill with 1, remove the variant], default: fill with 1,
      help: "What to do with variants that have no INFO value (when the dataset has an INFO column): treat them as perfectly
        imputed (INFO 1), or remove them"}
   - {key: maf, label: MAF, type: range, sides: [min, max], min: 0, max: 0.5,
-     default: {on: false, min_on: true, min: 0.01, max_on: false, max: 0.5},
+     default: {"on": false, min_on: true, min: 0.01, max_on: false, max: 0.5},
      help: "Minor allele frequency: the smaller of EAF and 1 - EAF, so 0 to 0.5 whichever allele is the effect allele.
        EAF (effect allele frequency) is the frequency of the effect allele itself, 0 to 1."}
   - {key: n, label: N, type: range, sides: [min, max], min: 0,
-     default: {on: false, min_on: true, min: 100, max_on: false, max: 10000000}, help: Keeps variants whose sample size is within the limits}
+     default: {"on": false, min_on: true, min: 100, max_on: false, max: 10000000}, help: Keeps variants whose sample size is within the limits}
   - {key: mac, label: MAC, type: range, sides: [min, max], min: 0,
-     default: {on: false, min_on: true, min: 6, max_on: false, max: 10000000},
+     default: {"on": false, min_on: true, min: 6, max_on: false, max: 10000000},
      help: "Minor allele count, 2 x MAF x N: how many copies of the minor allele the estimate rests on. Variants with a
        handful give unstable, often false-positive results, mostly in small cohorts; EasyQC's cut-off is 6 (Winkler et al. 2014)"}
   - {key: palindromic, label: Strand-ambiguous SNPs (MAF), type: range, sides: [min, max], min: 0, max: 0.5,
-     default: {on: false, min_on: false, min: 0, max_on: true, max: 0.4},
+     default: {"on": false, min_on: false, min: 0, max_on: true, max: 0.4},
      help: "A/T and C/G SNPs look the same on either strand, so a strand error can't be seen from the alleles; near MAF 0.5
        the frequency can't tell either. Keeps those SNPs whose MAF is within the limits (commonly: remove above 0.4)"}
   - {key: drop_indels, label: Remove indels, type: boolean, default: false, help: Variants whose effect or other allele is longer than one base}

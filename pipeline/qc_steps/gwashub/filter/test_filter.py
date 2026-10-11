@@ -26,11 +26,12 @@ def rng(on=True, min=None, max=None):
 def test_defaults(tmp_path):
     log, out = run_step("filter", frame(), {}, tmp_path)
     m = log["metrics"]
-    # |BETA| 25 and the duplicate at 3:80 (alleles swapped) go; missing INFO is filled with 1; a missing N stays.
-    assert m["removed_beta_outside_the_limits"] == 1 and m["removed_duplicate_variant"] == 1 and "removed_n_missing" not in m
+    # Only the duplicate at 3:80 (alleles swapped) goes: the |BETA| filter is off by default, so |BETA| 25 stays;
+    # missing INFO is filled with 1; a missing N stays.
+    assert m["removed_beta_outside_the_limits"] == 0 and m["removed_duplicate_variant"] == 1 and "removed_n_missing" not in m
     assert m["removed_info_missing"] == 0 and m["filled_info"] == 1
-    assert sorted(out["pos"]) == [10, 30, 40, 50, 60, 70, 80, 90]
-    assert out.loc[out["pos"] == 60, "info"].iloc[0] == 1 and log["verdict"] == "warn"  # 2 of 10 removed, above 5%
+    assert sorted(out["pos"]) == [10, 20, 30, 40, 50, 60, 70, 80, 90]
+    assert out.loc[out["pos"] == 60, "info"].iloc[0] == 1 and log["verdict"] == "warn"  # 1 of 10 removed, above 5%
 
 
 @needs_image("gwashub/base-r")

@@ -190,3 +190,21 @@ def test_a_step_stopped_by_sigterm_interrupts_the_run_without_recording_it(synth
     with pytest.raises(Interrupted, match="stopped"):
         run(synth_small, synth_small["manifest"][0], tmp_path / "run", entries=entries, catalog={**load_steps(), **extra})
     assert not (tmp_path / "run" / "result.json").exists()
+
+
+def test_range_defaults_load_as_written():
+    """An unquoted `on:` in step.yaml is YAML's boolean true, which range_value read as switched off. Range defaults
+    must arrive as written (every one in the catalog), and a boolean key must be refused."""
+    import yaml
+    from pipeline.runner.params import range_value
+    for key, step in load_steps().items():
+        with open(os.path.join(step.workdir, "step.yaml")) as f:
+            raw = {p["key"]: p for p in (yaml.safe_load(f).get("params") or []) if isinstance(p, dict)}
+        for name, p in raw.items():
+            if p.get("type") == "range":
+                assert all(isinstance(k, str) for k in p["default"]), f"{key} {name}: quote \"on\""
+                assert step.params[name]["on"] == p["default"].get("on", False), (key, name)
+    beta = load_steps()["gwashub/filter"].params["beta"]
+    assert beta["on"] is False and beta["max_on"] is True and beta["max"] == 20
+    with pytest.raises(ValueError, match='"on" in quotes'):
+        range_value({True: True, "max_on": True, "max": 20}, ["max"])

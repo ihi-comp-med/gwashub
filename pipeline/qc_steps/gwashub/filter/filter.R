@@ -1,7 +1,7 @@
 # Filter (GWASHub default step, R): removes variants by value thresholds. GWASHub format in and out.
 # Each value filter (|BETA|, SE, INFO, MAF, N, MAC) is a range parameter (pipeline/runner/params.py): its own on/off switch,
-# and a minimum and/or maximum each switched on or off; variants are kept when min <= value <= max. The |BETA| default
-# follows the HERMES 3 DCM pipeline (hermes3_dcm scripts/gwas_qc_parse.R, commit ff35109). EAF checks (missing, 0 or 1)
+# and a minimum and/or maximum each switched on or off; variants are kept when min <= value <= max. The |BETA| limit
+# of 20 is the HERMES 3 DCM pipeline's (hermes3_dcm scripts/gwas_qc_parse.R, commit ff35109); the filter is off by default. EAF checks (missing, 0 or 1)
 # are parse's. Missing INFO is filled with 1 by default (HERMES 3 removed those variants: "remove the variant").
 #
 # -----------------------------------------------------------------------------------------------------------------
@@ -54,7 +54,7 @@ suppressPackageStartupMessages({ library(data.table); library(jsonlite) })
 
 DEFAULTS <- list(
   chromosomes = "1-22, X, Y",
-  beta = list(on = TRUE, min_on = FALSE, min = NULL, max_on = TRUE, max = 20),
+  beta = list(on = FALSE, min_on = FALSE, min = NULL, max_on = TRUE, max = 20),
   se = list(on = FALSE, min_on = FALSE, min = 0, max_on = TRUE, max = 10),
   info = list(on = FALSE, min_on = TRUE, min = 0.8, max_on = FALSE, max = 1),
   missing_info = "fill with 1",

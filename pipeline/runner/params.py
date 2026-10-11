@@ -13,7 +13,9 @@ A range is a filter with its own on/off switch and a minimum and/or maximum, eac
 {on, min_on, min, max_on, max}; a switched-off limit keeps its number, so switching it on again restores it:
 
       - {key: info, label: INFO, type: range, sides: [min, max], min: 0, max: 1,
-         default: {on: false, min_on: true, min: 0.8, max_on: false, max: 1}}
+         default: {"on": false, min_on: true, min: 0.8, max_on: false, max: 1}}
+
+Quote "on" in YAML: unquoted, YAML 1.1 reads the key as the boolean true, and range_value refuses it.
 The older form, a plain mapping of key → default (`params: {warn_lambda: 1.1}`), still works: types are
 inferred from the defaults.
 """
@@ -54,6 +56,8 @@ def normalise(raw) -> list[dict]:
 def range_value(v, sides) -> dict:
     """A range value with every key present (a limit the field doesn't have is off)."""
     v = dict(v or {})
+    if any(isinstance(k, bool) for k in v):  # an unquoted `on:` in YAML is the key True, and would silently read as off
+        raise ValueError('a range default needs "on" in quotes in YAML (unquoted, on is read as true)')
     out = {"on": bool(v.get("on", False))}
     for sd in SIDES:
         out[f"{sd}_on"] = bool(v.get(f"{sd}_on", False)) and sd in sides
