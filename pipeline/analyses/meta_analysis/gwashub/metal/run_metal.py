@@ -1,6 +1,47 @@
 """METAL wrapper: write each dataset and a METAL script, run METAL, map its output to the standard results
 columns (see _metalib/common.py) and keep METAL's script, console output and .info file for download.
-Variants are matched across datasets by chr:pos and the alleles in either order (_metalib.common.marker_id)."""
+Variants are matched across datasets by chr:pos and the alleles in either order (_metalib.common.marker_id).
+
+Contract
+--------
+The parameters, their labels and help text are in analysis.yaml in this folder. The contract every method follows is
+in CONTRIBUTING.md, section 6, and at the top of _metalib/common.py.
+
+    python run_metal.py --inputs inputs.json --params params.json --out OUT_DIR --log log.json
+
+Inputs
+  --inputs   [{"id", "label", "path", "n_cases", "n_controls", "n_total", "trait_type", "ancestry", "sex"}, ...], at least
+             two. Each path is a QC'd file (GRCh38, ea = ALT): chr pos ea oa beta se p eaf [n ncase ncontrol rsid info].
+  --params   scheme (stderr | samplesize), min_studies, maf_min, genomic_control, overlap, zcutoff, min_weight,
+             minmax_freq, precision (analysis.yaml).
+
+Outputs
+  OUT_DIR/meta_results.tsv.gz   chr pos rsid ea oa p direction n_studies q het_p i2 eaf [eaf_min eaf_max], plus beta se
+                                (stderr scheme) or z n (samplesize scheme). ea is METAL's Allele1 (upper-cased); i2 is
+                                METAL's HetISq / 100; n_studies is HetDf + 1.
+  OUT_DIR/metal_script.txt, metal_console.txt, metal_info.txt   METAL's script and its own output, for download
+  --log      {"method": "gwashub/metal", "verdict": "pass", "metrics", "messages", "studies", "files"}. A failure exits
+             non-zero (SystemExit) with METAL's tail as the message.
+  _metalib/publish.py then adds the loci, plots and summary.
+
+Notes for whoever maintains this
+--------------------------------
+- SCHEME STDERR is fixed-effects inverse-variance weighting and should agree with GWAMA's fixed model to the printed
+  precision (validation/03_metal checks this). SCHEME SAMPLESIZE combines Z-scores taken from P and the sign of BETA,
+  weighted by sqrt(N): it ignores the SEs, so it is robust to datasets whose effects are on different scales, but it
+  gives no pooled effect size and relies on N being right.
+- In the samplesize scheme N is the dataset's per-variant N (or its total when it has no N column). For case/control
+  traits an effective N, 4 / (1/cases + 1/controls), is the better weight when case fractions differ a lot between
+  datasets; the total N is used here.
+- OVERLAP ON (samplesize scheme only) estimates the correlation of each pair of datasets' Z-scores from variants
+  with |Z| < ZCUTOFF and adjusts the weights for it. In the stderr scheme METAL ignores it.
+- GENOMICCONTROL ON corrects each file by the lambda METAL estimates from that file; the same over-correction caveat
+  as for GWAMA applies to large polygenic datasets.
+- METAL's default print precision (4 significant digits) rounds effects and SEs noticeably, hence precision = 8.
+- The direction string is METAL's as written: "+", "-", "0" (an effect of exactly 0) or "?" (variant missing).
+- A dataset without EAF is given 0.5 so METAL's frequency columns stay complete; the pooled eaf is then pulled
+  towards 0.5 and shouldn't be used for those variants.
+"""
 import os
 import shutil
 import subprocess
@@ -52,7 +93,7 @@ def main():
     m = pd.read_csv(tbl, sep="\t")
     chrom, pos = split_marker(m["MarkerName"])
     res = pd.DataFrame({"chr": chrom, "pos": pos, "rsid": m["MarkerName"].map(rsids), "ea": m["Allele1"].str.upper(),
-                        "oa": m["Allele2"].str.upper(), "p": m["P-value"], "direction": m["Direction"].str.replace("0", "?", regex=False),
+                        "oa": m["Allele2"].str.upper(), "p": m["P-value"], "direction": m["Direction"],
                         "n_studies": m["HetDf"] + 1, "q": m["HetChiSq"], "het_p": m["HetPVal"], "i2": m["HetISq"] / 100})
     if scheme == "stderr":
         res["beta"], res["se"] = m["Effect"], m["StdErr"]

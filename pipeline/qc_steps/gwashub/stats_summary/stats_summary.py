@@ -6,7 +6,54 @@ sqrt(2 / (p q Neff)), p = EAF, q = 1 - p, Neff = 4 / (1/cases + 1/controls), so 
 SE (common, well-imputed variants) should be near 1. Far below: effects on the linear 0/1 scale (BOLT-LMM, linear
 regression; then the ratio is about φ(1 - φ), φ the case fraction) or N understated; far above: N overstated or the SE
 of the odds ratio rather than of log-odds. For a quantitative trait the same ratio is the trait's SD in the units of
-BETA (about 1 for an inverse-normal transformed trait): reported, not judged."""
+BETA (about 1 for an inverse-normal transformed trait): reported, not judged.
+
+Contract
+--------
+The parameters, their labels, limits and help text are in step.yaml in this folder. The contract every QC step
+follows is in CONTRIBUTING.md, section 2. Some thresholds (low_lambda, gws, suggestive, warn_inconsistent_fraction)
+are in DEFAULTS only, not offered in step.yaml.
+
+    python stats_summary.py --input working.tsv --resources DIR --params params.json --log step_log.json
+
+Inputs
+  --input       GWASHub format on GRCh38 (after the earlier steps). Read only.
+  --resources   Not used.
+  --params      JSON. Read here: n_cases, n_controls, n_total, trait_type ("binary" or "quantitative"), and under
+                "step" the thresholds in DEFAULTS.
+  Environment   GWASHUB_ARTIFACT_DIR: where the artifacts go.
+
+Outputs
+  --input       Unchanged.
+  --log         {"step": "stats_summary", "verdict", "metrics", "messages", "artifacts"}. Metrics: lambda_gc,
+                lambda_1000, lambda_maf01 (EAF 0.01 to 0.99), n_variants, n_genome_wide_sig, n_suggestive, n_loci,
+                z_p_inconsistent, z_ratio_median, and se_ratio_expected (case/control) or implied_trait_sd
+                (quantitative).
+  Artifacts     lead_loci.tsv   the lead variant of each distance-defined locus (clump_kb windows), when there are any
+
+Verdict
+  fail   lambda_GC above fail_lambda, or no usable P-values
+  warn   lambda_GC above warn_lambda or below low_lambda; more than warn_inconsistent_fraction of rows with P more
+         than 10-fold off the P implied by BETA/SE; median |BETA/SE| / |Z from P| outside 0.8 to 1.25; or (case/control)
+         the SE ratio outside se_ratio_low to se_ratio_high
+  pass   otherwise
+
+Notes for whoever maintains this
+--------------------------------
+- lambda_GC is the median chi^2 (1 df) over 0.4549, the median of chi^2 with 1 df. Under polygenicity it grows with
+  N even without confounding, which is why lambda_1000 (de Bakker et al. 2008) is reported to compare cohorts of
+  different size, and why the LDSC intercept is the better measure of confounding in large cohorts. A fail at 1.5 is
+  a units or analysis problem far more often than real stratification.
+- The P vs BETA/SE checks catch an SE on the wrong scale (SE of the OR rather than of log OR), a P column from a
+  different test than the effect (for example a SAIGE SPA P next to a score-test BETA), or columns misaligned in
+  the upload. Some disagreement in the far tail is expected when the cohort's P came from a t distribution or a
+  saddlepoint approximation, which is why the Z ratio uses only P between 1e-300 and 0.5 and the summary is a median.
+- The expected SE assumes additive coding, Hardy-Weinberg proportions and, for log-odds, a small effect: the usual
+  large-sample variance of a logistic regression coefficient. Covariates and imputation uncertainty push the observed
+  SE up a little, so ratios of 1.0 to 1.2 are normal. Low-count variants are left out (MAF of at least 5%, INFO 0.9).
+- Lead loci here are by distance only (the strongest variant, then the next more than clump_kb away). They give a
+  count for the dataset's page; the LD-based loci of a meta-analysis come from _metalib/loci.py.
+"""
 import os
 
 import numpy as np

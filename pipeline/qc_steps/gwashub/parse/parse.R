@@ -5,9 +5,70 @@
 # can't recover: a required value (chr pos ea oa beta se p eaf) missing or invalid, or EAF of exactly 0 or 1.
 # Invalid optional values become NA (gwashub/filter decides what to do with those).
 #
-# Refactored from hermes3_dcm scripts/gwas_qc_parse.R (commit ff35109). The recoding and validity rules are
-# those of that script; its value thresholds (|BETA| < 20, required INFO/N) are gwashub/filter's parameters, and the
-# gwas2vcf column JSON is written by gwashub/harmonise_liftover.
+# Refactored from hermes3_dcm scripts/gwas_qc_parse.R (commit ff35109).
+#
+# -----------------------------------------------------------------------------------------------------------------
+# Contract
+# -----------------------------------------------------------------------------------------------------------------
+# The parameters, their labels, limits and help text are in step.yaml in this folder. The contract every QC step
+# follows is in CONTRIBUTING.md, section 2.
+#
+#   Rscript parse.R --input working.tsv --resources DIR --params params.json --log step_log.json
+#
+# Inputs
+#   --input       The upload byte for byte (the runner copies it to working.tsv): any delimiter fread can detect,
+#                 gzipped or not, any column names. Rewritten in place (see Outputs).
+#   --resources   Not used.
+#   --params      JSON. Dataset fields from the API (api/gwashub_api/jobs.py dataset_params):
+#                   column_mapping   {standard name: header in the upload}; standard names are MAPPABLE below.
+#                                    chr, pos, ea, oa, beta, se, eaf and one of p / log10p are required.
+#                   effect_type      "beta" (log-odds or a linear effect) or "or" (odds ratio)
+#                   n_cases, n_controls, n_total   study-level counts, or null
+#                   build, ancestry, trait_type, cohort, phenotype, sex   not used by this step
+#                 and, under "step", this step's parameters (DEFAULTS below).
+#   Environment   GWASHUB_ARTIFACT_DIR: where the artifacts go (a temporary folder when unset).
+#
+# Outputs
+#   --input       The GWASHub format: tab-separated, header, "NA" for missing, columns in OUT_ORDER (optional ones
+#                 only when mapped or filled): chr pos ea oa beta se p eaf [n ncase ncontrol rsid info].
+#                   chr      1-22, X, Y (no "chr" prefix)
+#                   pos      integer, in the uploaded build (harmonise_liftover moves it to GRCh38)
+#                   ea, oa   upper-case A/C/G/T strings; not yet checked against the reference genome
+#                   beta     log-odds for "or" uploads, otherwise as uploaded
+#                   p        in (0, 1]; filled from BETA/SE (or -log10 P) where missing
+#                   eaf      in (0, 1), frequency of ea as uploaded
+#                   n, ncase, ncontrol   whole numbers
+#   --log         {"step": "parse", "verdict", "metrics", "messages", "artifacts"}
+#   Artifacts     parse_summary.tsv     per mapped column: missing and out-of-bounds counts as received, values kept
+#                 chromosomes.tsv       each chromosome label as received, what it was read as, and its row count
+#                 removed_rows.tsv.gz   only when rows were removed: the mapped columns as uploaded (text), line (1 =
+#                                       first data row) and reason ("; "-separated when more than one applies)
+#
+# Verdict
+#   fail   a required column not mapped or not in the file; a truncated gzip; the values contradict effect_type;
+#          the P column looks like -log10 P; fewer than min_rows rows left; more than fail_drop_fraction removed
+#   warn   more than warn_drop_fraction removed; BETA, SE or P rounded; N above the declared total; an autosome
+#          absent from a genome-wide file
+#   pass   otherwise. The script always exits 0 once the log is written; the runner reports any other exit as a crash.
+#
+# -----------------------------------------------------------------------------------------------------------------
+# Notes for whoever maintains this
+# -----------------------------------------------------------------------------------------------------------------
+# - Order matters. The odds-ratio checks run on the values before conversion, and the -log10 P check runs before the
+#   validity rules, which would otherwise turn every P above 1 into NA and the row into a "P outside 0-1" removal.
+# - For odds-ratio uploads the SE is taken to be the SE of log(OR), which is what PLINK, REGENIE, SAIGE and most
+#   cohort pipelines report next to an OR. A file that gives the delta-method SE of the OR itself (about OR x SE of
+#   log OR) is not caught here: gwashub/stats_summary catches it, since BETA/SE then disagrees with P.
+# - A P filled in from BETA/SE uses the normal approximation. For small samples (t statistics) or for tests with a
+#   saddlepoint or Firth correction (SAIGE, REGENIE) it is less accurate than the P the cohort computed, which is why
+#   an uploaded P always wins and the computed one only fills gaps.
+# - P = 0 becomes the smallest positive double (about 2.2e-308) so gwas2vcf keeps the row. The true P is unknown
+#   below that; anything that works on -log10 P is capped near 307 for those rows.
+# - EAF of exactly 0 or 1 means the variant was monomorphic in the sample (or EAF was rounded to 0 or 1); its effect
+#   estimate carries no information.
+# - Out-of-bounds values become NA. Required columns then lose the row (with a reason); optional columns keep the row.
+#   A P that isn't a number at all (text) counts as missing and is computed from BETA/SE; a numeric P outside 0-1 does
+#   not, and the row is removed.
 suppressPackageStartupMessages({ library(data.table); library(jsonlite) })
 
 DEFAULTS <- list(
@@ -144,6 +205,8 @@ if (isTRUE(sp$fill_counts)) {
 for (col in intersect(c("pos", "eaf", "beta", "se", "p", "log10p", "info"), names(gwas))) gwas[, (col) := num(get(col))]
 
 # rounded values: a few hundred distinct SEs in a million rows means 2 or 3 decimal places, which meta-analysis can't undo
+# The damage is to the inverse-variance weights and to small effects: an SE of 0.01 written as "0.01" may be anything
+# from 0.005 to 0.015: the SE is out by up to 50% and its inverse-variance weight (1/SE^2) by up to a factor of 4.
 rounded <- character()
 for (col in intersect(c("beta", "se", "p"), names(gwas))) {
   x <- gwas[[col]][is.finite(gwas[[col]])]
@@ -156,6 +219,9 @@ for (col in intersect(c("beta", "se", "p"), names(gwas))) {
 if (length(rounded)) metrics$rounded_columns <- paste(rounded, collapse = ", ")
 
 # the effect type chosen vs what the column holds: odds ratios are positive and centred on 1, log-odds on 0
+# Under the null, about half of the log-odds (or linear effects) are negative whichever allele is the effect allele, so
+# 99% positive with a median between 0.5 and 2 is not something a real BETA column does. An OR column can't have
+# values of 0 or below; the 1% allowance is for the odd corrupt row, not for real ORs.
 effect_or <- tolower(params$effect_type %||% "beta") == "or"
 b <- gwas$beta[is.finite(gwas$beta)]
 if (length(b) >= 100) {
@@ -302,6 +368,8 @@ gwas <- gwas[, intersect(OUT_ORDER, names(gwas)), with = FALSE]
 fwrite(gwas, opt$input, sep = "\t", na = "NA", quote = FALSE)
 
 # N above the study's total: N is per-variant (it can be lower), never higher
+# The 5% margin allows for a declared total that was rounded or taken from a slightly older freeze. An effective N
+# (4 / (1/cases + 1/controls)) is never above the total, so a column of those doesn't trip this either.
 declared <- params$n_total %||% (if (!is.null(params$n_cases) && !is.null(params$n_controls)) params$n_cases + params$n_controls else NULL)
 if (!is.null(declared) && "n" %in% names(gwas)) {
   k <- gwas[!is.na(n) & n > 1.05 * declared, .N]

@@ -33,6 +33,7 @@ class Gwas:
         pos_build37=None,
         imputed=None,
         vcf_filter="PASS",
+        ncontrol=None,  # GWASHub added: controls, written as FORMAT/NCO
     ):
 
         self.chrom = chrom
@@ -47,6 +48,7 @@ class Gwas:
         self.n = n
         self.dbsnpid = dbsnpid
         self.ncase = ncase
+        self.ncontrol = ncontrol
         self.imp_info = imp_info
         self.imp_z = imp_z
         self.chr_build37 = chr_build37
@@ -384,6 +386,7 @@ class Gwas:
                 chr_build37=chr_build37,
                 pos_build37=pos_build37,
                 imputed=imputed,
+                ncontrol=ncontrol,  # GWASHub added
             )
 
             logging.debug(f"Extracted row: {result}")
@@ -410,7 +413,6 @@ class Gwas:
                     metadata["VariantsNotHarmonised"] += 1
                     reject("REF does not match the reference genome")
                     continue
-            metadata["HarmonisedVariants"] += 1
 
             # left align and trim variants
             if len(ref) > 1 and len(alt) > 1:
@@ -422,6 +424,9 @@ class Gwas:
                     reject("could not be normalised")
                     continue
                 metadata["NormalisedVariants"] += 1
+            # GWASHub changed: counted after normalisation (upstream counted it before, so a variant that then failed
+            # normalisation was in both HarmonisedVariants and VariantsNotHarmonised)
+            metadata["HarmonisedVariants"] += 1
 
             # add or update dbSNP identifier
             if dbsnp is not None:

@@ -19,6 +19,63 @@ half. When the other build matches clearly better, the step warns and names it.
 Every removed variant is written to removed_rows.tsv.gz with its stage and reason: gwas2vcf's drops from its
 --rejected list (a GWASHub addition to the edited copy: data line and reason), the liftover's from bcftools' --reject
 file, and the later ones from the masks below. chr_input/pos_input give each one's position in this step's input.
+
+Contract
+--------
+The parameters, their labels, limits and help text are in step.yaml in this folder; the reference files it needs are
+listed there too. The contract every QC step follows is in CONTRIBUTING.md, section 2.
+
+    python harmonise_liftover.py --input working.tsv --resources DIR --params params.json --log step_log.json
+
+Inputs
+  --input       GWASHub format in the uploaded build (after gwashub/parse and gwashub/filter): chr pos ea oa beta se p
+                eaf [n ncase ncontrol rsid info]. Rewritten in place (see Outputs).
+  --resources   human_g1k_v37.fasta(.fai), Homo_sapiens_assembly38_nochr.fasta(.fai) (both without a "chr" prefix),
+                hg19ToHg38.over.chain.gz (UCSC), dbSNP157_b38_clean.vcf.gz(.tbi); .gzi files only for bgzipped FASTAs.
+  --params      JSON. Read here: build ("GRCh37" or "GRCh38"); cohort, phenotype, ancestry, sex (only for the VCF's
+                sample name); and, under "step", warn_harmonised_fraction and warn_lifted_fraction (DEFAULTS).
+  Environment   GWAS2VCF_PYTHON: the Python 3.7 environment gwas2vcf runs in (set in the gwashub/vcf image).
+                GWASHUB_ARTIFACT_DIR: where the artifacts go. bcftools (with the +liftover plugin) on the PATH.
+
+Outputs
+  --input       GWASHub format on GRCh38 with ea = ALT and oa = REF of the GRCh38 reference, so every dataset that
+                leaves this step is aligned to the same strand and the same effect allele. beta and eaf are flipped
+                where the alleles were switched; rsid is dbSNP 157's ID where dbSNP has the same position and
+                alleles, otherwise the uploaded rsID if gwas2vcf accepted it (rs<digits>), otherwise NA. Optional columns are written only if they were in the input; n, ncase and
+                ncontrol are whole numbers, carried through unchanged (SS, NC and the GWASHub-added
+                FORMAT/NCO in the VCF).
+  --log         {"step": "harmonise_liftover", "verdict", "metrics", "messages", "artifacts"}. Metrics include
+                gwas2vcf's own counts (harmonised, alleles_switched, not_harmonised, ...), lifted, unmapped,
+                strand_flipped, ref_alt_swapped, the removals after liftover and build_match_<build>.
+  Artifacts     harmonise_liftover_summary.tsv   variants left after each stage
+                removed_rows.tsv.gz              every removed variant: stage, reason, line, position in the input
+                gwas2vcf.log, bcftools.log       the tools' own output
+
+Verdict
+  fail   unsupported build, gwas2vcf or bcftools failed, or no variants left
+  warn   fewer than warn_harmonised_fraction harmonised, fewer than warn_lifted_fraction lifted (GRCh37), or the
+         positions fit the other build clearly better
+  pass   otherwise
+
+Notes for whoever maintains this
+--------------------------------
+- What gwas2vcf calls "harmonised" means only that one of the two alleles is the reference base at that position:
+  if OA is REF the row is kept as it is, if EA is REF the alleles are swapped and BETA and EAF flipped. It doesn't
+  try the complementary strand, so a SNP reported on the minus strand (say A/G where the genome has T/C) is dropped
+  as "REF does not match", not rescued. An A/T or C/G SNP on the minus strand passes unnoticed, with its effect on
+  the wrong allele. Filter's strand-ambiguous option and eaf_check's comparison of those SNPs are the protection.
+- gwas2vcf's "harmonised" count is taken after indel normalisation (a GWASHub change to the copy; upstream counted
+  before it, so a variant that failed normalisation was in both counts). harmonised + not_harmonised + not_read
+  therefore equals gwas2vcf_total. The one later drop, a variant normalised to an empty allele when the VCF is
+  written ("null allele after normalisation" in removed_rows.tsv.gz), is still in harmonised; it is very rare.
+- bcftools +liftover handles the strand of the chain itself: where a GRCh37 block maps to the minus strand of GRCh38
+  it reverse-complements the alleles (INFO/FLIP), and where the GRCh38 reference base is the other allele it swaps
+  REF and ALT and negates the effect fields (INFO/SWAP), so ES stays the effect of ALT.
+- The build check samples SNPs only (indels make the check noisy). In the right build almost every SNP has one allele
+  equal to the reference base; in the wrong one it is about half, the chance that one of two random bases matches.
+- bcftools annotate -c ID overwrites the ID only where dbSNP has a record with the same position and alleles, so an
+  uploaded rsID survives where dbSNP has nothing. Variants are matched across datasets by position and alleles
+  everywhere downstream, so the rsID is a label only.
 """
 import gzip
 import json
@@ -38,8 +95,9 @@ FASTA = {"GRCh37": "human_g1k_v37.fasta", "GRCh38": "Homo_sapiens_assembly38_noc
 CHAIN = "hg19ToHg38.over.chain.gz"
 DBSNP = "dbSNP157_b38_clean.vcf.gz"
 DEFAULTS = {"warn_harmonised_fraction": 0.95, "warn_lifted_fraction": 0.95}
-FIELDS = ["chr", "pos", "id", "ref", "alt", "es", "se", "lp", "af", "ss", "si", "nc", "pv", "c37", "p37"]
-QUERY = "%CHROM\t%POS\t%ID\t%REF\t%ALT\t[%ES\t%SE\t%LP\t%AF\t%SS\t%SI\t%NC\t%PV\t%C37\t%P37]"
+FIELDS = ["chr", "pos", "id", "ref", "alt", "es", "se", "lp", "af", "ss", "si", "nc", "pv", "c37", "p37", "nco"]
+# NCO (controls) is a GWASHub addition to the edited gwas2vcf: GWAS-VCF itself has only SS (total) and NC (cases).
+QUERY = "%CHROM\t%POS\t%ID\t%REF\t%ALT\t[%ES\t%SE\t%LP\t%AF\t%SS\t%SI\t%NC\t%PV\t%C37\t%P37\t%NCO]"
 REMOVED = ["stage", "reason", "line", "chr_input", "pos_input", "chr", "pos", "ea", "oa", "beta", "se", "p", "eaf"]
 # gwas2vcf's closing log lines -> metric names
 COUNTERS = {"Total variants": "gwas2vcf_total", "Variants could not be read": "not_read", "Variants harmonised": "harmonised",
@@ -289,8 +347,10 @@ def harmonise(args, params, opts, art):
     out = pd.DataFrame({"chr": q["chr"], "pos": q["pos"].astype(int), "ea": q["alt"], "oa": q["ref"],
                         "beta": q["es"].astype(float) + 0.0, "se": q["se"].astype(float),
                         "p": q["pv"].astype(float).fillna(10 ** -q["lp"].astype(float))})
-    ss, nc = q["ss"].astype(float), q["nc"].astype(float)
-    optional = {"eaf": q["af"].astype(float), "n": ss, "ncase": nc, "ncontrol": ss - nc,
+    # n, ncase and ncontrol come back exactly as they went in (SS, NC and the GWASHub-added NCO), so a per-variant N
+    # that isn't cases + controls (an effective N, say) doesn't change the controls.
+    optional = {"eaf": q["af"].astype(float), "n": q["ss"].astype(float), "ncase": q["nc"].astype(float),
+                "ncontrol": q["nco"].astype(float),
                 "rsid": q["id"], "info": q["si"].astype(float)}
     for col in STANDARD:
         if col in optional and col in header:

@@ -10,6 +10,48 @@ Reference: Pan-UK Biobank LD scores in LDSC format for the dataset's ancestry (U
 UKBB.<POP>.l2.M_5_50; POP = AFR, AMR, CSA, EAS, EUR, MID, with GWASHub's SAS as CSA) and the HapMap 3 SNP list
 w_hm3.snplist. When it can't run (reference not uploaded, an ancestry with no reference, no rsIDs) the step passes
 and says why, so it never holds a dataset up; a high intercept gives a warning.
+
+Contract
+--------
+The parameters, their labels, limits and help text are in step.yaml in this folder; the LD-score files are listed
+there as optional resources. The contract every QC step follows is in CONTRIBUTING.md, section 2.
+
+    python ldsc.py --input working.tsv --resources DIR --params params.json --log step_log.json
+
+Inputs
+  --input       GWASHub format on GRCh38 (after gwashub/harmonise_liftover). Read only. Needs rsid (to match
+                HapMap 3 and the LD scores) and n.
+  --resources   w_hm3.snplist and UKBB.<POP>.l2.ldscore.gz / .l2.M_5_50 for the dataset's ancestry (all optional).
+  --params      JSON. Read here: ancestry and, under "step", warn_intercept, info_min, maf_min, n_blocks (DEFAULTS).
+  Environment   LDSC_PYTHON, LDSC_DIR: LDSC's Python 2.7 and its checkout (set in the gwashub/ldsc image).
+                GWASHUB_ARTIFACT_DIR: where the artifacts go.
+
+Outputs
+  --input       Unchanged.
+  --log         {"step": "ldsc", "verdict", "metrics", "messages", "artifacts"}. Metrics, as ldsc.py prints them:
+                h2, h2_se (observed scale), lambda_gc, mean_chisq, intercept, intercept_se, ratio, ratio_se, n_snps.
+  Artifacts     munge.log, ldsc.log   the two programs' own logs
+
+Verdict
+  warn   intercept above warn_intercept; LDSC missing from the image; munge or ldsc.py stopped or gave no intercept
+  pass   otherwise, including when it can't run (no reference for the ancestry, no rsIDs, no N). Never fails.
+
+Notes for whoever maintains this
+--------------------------------
+- The intercept estimates the inflation not due to polygenicity: about 1 + N a, where a measures confounding
+  (population stratification, cryptic relatedness). The ratio, (intercept - 1) / (mean chi^2 - 1), is the share of the
+  inflation it attributes to that. With mean chi^2 close to 1 (small or underpowered cohorts) both are poorly
+  estimated: look at intercept_se before reading anything into a value of 1.1.
+- An intercept well below 1 usually means the cohort already applied genomic control to its P-values, which
+  deflates the statistics. stats_summary's low lambda_GC warning catches the same thing.
+- h2 is on the observed scale. For a case/control trait it depends on the case fraction of the sample and is not
+  comparable between cohorts; converting to the liability scale needs the sample and population prevalence, which
+  this step isn't given.
+- munge_sumstats.py applies its own filters on top of info_min and maf_min, notably removing SNPs whose N is below
+  the 90th percentile divided by 1.5, so n_snps can be well below the HapMap 3 count in files where N varies a lot.
+- The LD scores are Pan-UK Biobank's, estimated in UK Biobank participants of each ancestry. They suit large
+  European cohorts best; for the other groups they are an approximation of the cohort's own LD.
+- A1 is the effect allele (ea) and BETA its effect, so the signed statistic matches LDSC's convention.
 """
 import gzip
 import os

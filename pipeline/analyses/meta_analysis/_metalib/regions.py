@@ -7,6 +7,9 @@
                            inside it) and genes_in_locus (protein-coding genes overlapping the locus), as the HERMES 3 locus
                            tables (define_loci_plink.R)
 Without the panel the plots have no r² (grey points); without the genes file, no gene track or gene columns.
+
+The nearest gene is a positional label, measured from the lead to the gene body (start to end); it is often not the
+causal gene, and nothing here weighs eQTLs, coding variants or fine-mapping.
 """
 import json
 import os

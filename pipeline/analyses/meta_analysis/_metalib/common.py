@@ -9,6 +9,14 @@ inputs.json: [{"id", "label", "path" (QC'd TSV in the GWASHub format: chr pos ea
 A method must write OUT_DIR/meta_results.tsv.gz with at least  chr pos ea oa p n_studies  and either
 beta + se or z; optional: rsid eaf n q het_p i2 direction. GWASHub's post-processing
 (publish.py) then adds lead loci, forest-plot data, Manhattan/QQ plots and summary.json for every method.
+Each method's own parameters, labels and help text are in its analysis.yaml.
+
+Notes for whoever maintains this
+- Every input has been through the same QC, so all datasets are on GRCh38 with ea = ALT of the same reference: the
+  effect alleles already agree, and marker_id's sorted alleles are only a safeguard for methods' own orientation.
+  An A/T or C/G SNP that a cohort reported on the other strand is not caught here (see harmonise_liftover's notes).
+- load_study's sample size fallback, used only when a file has no N at all, is the study total (n_total, or cases +
+  controls). It is not an effective N; methods that weight by N should know that.
 """
 import argparse
 import json
@@ -68,7 +76,8 @@ def load_study(spec, maf_min=0.0):
 
 def marker_id(df):
     """A study-independent marker name: chr:pos:allele1:allele2 with the alleles sorted, so the same
-    variant matches across studies whichever allele each reports as effect allele."""
+    variant matches across studies whichever allele each reports as effect allele. Indels match only when every
+    dataset wrote them the same way; harmonise_liftover left-aligns and trims them, so they normally do."""
     a1 = np.where(df["ea"] < df["oa"], df["ea"], df["oa"])
     a2 = np.where(df["ea"] < df["oa"], df["oa"], df["ea"])
     return df["chr"].astype(str) + ":" + df["pos"].astype(int).astype(str) + ":" + pd.Series(a1, index=df.index) + ":" + pd.Series(a2, index=df.index)

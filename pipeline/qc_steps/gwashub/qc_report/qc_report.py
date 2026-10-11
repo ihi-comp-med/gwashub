@@ -5,6 +5,32 @@ Originally qc-pipeline's qc_report.py. It reads the other steps' logs from GWASH
 flags still work. It also shows the rows each step removed (from the runner's counts) and every
 numeric column before QC (the runner's profile of the upload, GWASHUB_RUN_DIR/profile_input.json) and
 after (its own --input, which is the cleaned file by the time the report runs).
+
+Contract
+--------
+The step's description is in step.yaml in this folder (always_run: true, so it runs even after a blocking failure).
+The contract every QC step follows is in CONTRIBUTING.md, section 2.
+
+    python qc_report.py --input working.tsv --resources DIR --params params.json --log step_log.json
+
+Inputs
+  --input       The working file as the earlier steps left it. Read only, for the "after QC" profile.
+  --resources   Not used.
+  --params      JSON. Read here: cohort, phenotype, ancestry, sex (the report's subtitle).
+  Environment   GWASHUB_STEP_LOGS: the step logs so far, one JSON object per line, each with the runner's _dir (the
+                step's folder in the run) and _rows ([rows before, rows after]). GWASHUB_RUN_DIR: the run folder
+                (profile_input.json and each step's images). GWASHUB_ARTIFACT_DIR: where the report goes.
+
+Outputs
+  --input       Unchanged.
+  --log         {"step": "qc_report", "verdict": "pass", "metrics": {"steps_reported"}, ...}. Always passes, so it
+                never changes the run's overall verdict (the runner takes the worst verdict of the steps).
+  Artifacts     qc_report.html   one self-contained file (images embedded as base64)
+
+Notes
+- Only steps that wrote a valid log are in GWASHUB_STEP_LOGS. A step that crashed (non-zero exit or no log) is
+  recorded by the runner in result.json but isn't in the report.
+- When parse fails, the working file is still the upload, so there is no "after QC" profile (read_profiles).
 """
 import argparse
 import base64

@@ -3,6 +3,53 @@
 # and a minimum and/or maximum each switched on or off; variants are kept when min <= value <= max. The |BETA| default
 # follows the HERMES 3 DCM pipeline (hermes3_dcm scripts/gwas_qc_parse.R, commit ff35109). EAF checks (missing, 0 or 1)
 # are parse's. Missing INFO is filled with 1 by default (HERMES 3 removed those variants: "remove the variant").
+#
+# -----------------------------------------------------------------------------------------------------------------
+# Contract
+# -----------------------------------------------------------------------------------------------------------------
+# The parameters, their labels, limits and help text are in step.yaml in this folder. The contract every QC step
+# follows is in CONTRIBUTING.md, section 2.
+#
+#   Rscript filter.R --input working.tsv --resources DIR --params params.json --log step_log.json
+#
+# Inputs
+#   --input       GWASHub format from gwashub/parse (positions still in the uploaded build): chr pos ea oa beta se p eaf
+#                 [n ncase ncontrol rsid info]. Rewritten in place with the surviving rows, same columns.
+#   --resources   Not used.
+#   --params      JSON. Only "step" is read: this step's parameters (DEFAULTS below). A range parameter is
+#                 {on, min_on, min, max_on, max}; a variant is kept when min <= value <= max for each limit switched on.
+#   Environment   GWASHUB_ARTIFACT_DIR: where the artifacts go (a temporary folder when unset).
+#
+# Outputs
+#   --input       The rows no rule removed, columns unchanged; missing INFO set to 1 when missing_info = "fill with 1".
+#   --log         {"step": "filter", "verdict", "metrics", "messages", "artifacts"}; one metric per rule,
+#                 removed_<rule label>, plus rows_in, rows_out, rows_removed and filled_info.
+#   Artifacts     filter_summary.tsv    every rule and how many rows it removed
+#                 removed_rows.tsv.gz   only when rows were removed: each removed row as received, plus reason
+#
+# Verdict
+#   fail   a filter is switched on for a column the dataset doesn't have (it would remove everything), or no rows left
+#   warn   more than warn_removed_fraction of the rows removed
+#   pass   otherwise
+#
+# -----------------------------------------------------------------------------------------------------------------
+# Notes for whoever maintains this
+# -----------------------------------------------------------------------------------------------------------------
+# - The rules run in order, each on what the earlier ones left, so a row is counted once, under the first rule that
+#   removes it. The per-rule counts depend on that order; the total doesn't.
+# - MAF here is min(EAF, 1 - EAF) of the dataset's own EAF, before any comparison with a reference panel. MAC uses
+#   2 x MAF x N with the per-variant N, so for case/control data it counts copies across cases and controls together.
+#   In a very unbalanced design the minor allele count among the cases can be far smaller, and logistic regression is
+#   unstable when that count is small, so a stricter limit may be wanted there.
+# - Strand-ambiguous SNPs: parse hasn't compared the alleles with the genome yet, and harmonise_liftover can't tell a
+#   strand flip from a correct A/T or C/G SNP (both alleles match the reference either way). Near MAF 0.5 the
+#   frequency can't tell either, so removing them above a MAF limit (commonly 0.4) is the usual safeguard. eaf_check
+#   later reports whether those SNPs disagree with 1000 Genomes more than the rest.
+# - Duplicates are judged on chr:pos and the unordered pair of alleles, so A/G and G/A at the same position are the same
+#   variant. The first row in the file is kept, which is arbitrary; harmonise_liftover removes any duplicates the
+#   liftover creates later.
+# - Variants with a missing value in a filtered column are kept by that range rule (outside() only judges values that
+#   are there); only INFO has its own rule for missing values.
 suppressPackageStartupMessages({ library(data.table); library(jsonlite) })
 
 DEFAULTS <- list(

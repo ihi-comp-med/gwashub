@@ -17,7 +17,7 @@ read_metal <- function(path, min_studies) {
   m <- fread(path)
   parts <- tstrsplit(m$MarkerName, ":", fixed = TRUE)
   out <- data.table(chr = parts[[1]], pos = as.integer(parts[[2]]), ea = toupper(m$Allele1), oa = toupper(m$Allele2),
-                    p = m$`P-value`, direction = gsub("0", "?", m$Direction), n_studies = m$HetDf + 1, q = m$HetChiSq,
+                    p = m$`P-value`, direction = m$Direction, n_studies = m$HetDf + 1, q = m$HetChiSq,
                     het_p = m$HetPVal, i2 = m$HetISq / 100)
   if ("Effect" %in% names(m)) out[, `:=`(beta = m$Effect, se = m$StdErr)] else out[, `:=`(z = m$Zscore, n = m$Weight)]
   if ("Freq1" %in% names(m)) out[, eaf := m$Freq1]

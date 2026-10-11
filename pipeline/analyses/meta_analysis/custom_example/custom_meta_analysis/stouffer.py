@@ -2,7 +2,14 @@
 
 Follows the method contract (CONTRIBUTING.md): reads --inputs and --params, writes
 <out>/meta_results.tsv.gz with chr pos ea oa z p n_studies (here: no BETA/SE), and a log. GWASHub then adds
-the lead loci, plots and summary itself.
+the lead loci, plots and summary itself. Its parameters, labels and help text are in analysis.yaml.
+
+    python stouffer.py --inputs inputs.json --params params.json --out OUT_DIR --log log.json
+
+Z = sum(w_i z_i) / sqrt(sum(w_i^2)), with w_i = sqrt(N_i) (or 1). With sqrt(N) weights and equal per-person
+information this matches inverse-variance weighting in power; for case/control traits an effective N would be the
+better weight. It is an example: unlike the GWAMA and METAL wrappers it doesn't drop duplicate markers within a
+dataset, so a duplicated variant counts twice.
 """
 import numpy as np
 import pandas as pd

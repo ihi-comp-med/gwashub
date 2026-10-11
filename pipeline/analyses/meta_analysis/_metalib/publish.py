@@ -3,6 +3,34 @@ data, Manhattan and QQ plots, and summary.json, all from the method's meta_resul
 
     python publish.py --inputs inputs.json --params common.json --out OUT_DIR --log method_log.json --method KEY \
                       [--resources DIR]   # the 1000 Genomes LD panels (1kg_b38_<POP>.*), when uploaded
+
+Run by the runner (pipeline/runner/jobspec.py) after the method, in the method's image, on the method's OUT_DIR.
+
+Inputs
+  --inputs     the method's inputs.json (the datasets, in the order of the direction string)
+  --params     common.json: the settings shared by every method (loci.DEFAULTS and het_p_threshold, COMMON below)
+  --log        the method's log, read and then rewritten with the combined verdict, messages and metrics
+  --method     the method's key (e.g. gwashub/gwama); --title its display name
+  OUT_DIR      must already hold the method's meta_results.tsv.gz (chr pos ea oa p n_studies, and beta se or z)
+
+Outputs (in OUT_DIR)
+  lead_loci.tsv, signals.tsv   loci and their independent signals (_metalib/loci.py), with nearest genes (regions.py)
+  region_<locus_id>.json       locus-plot data (regions.py)
+  forest.json                  each dataset's effect at each locus lead, on the meta-analysis effect allele
+  manhattan.png, qq.png, plot_data.json   (_lib/plotting.py)
+  datasets.tsv, README.txt     the datasets in direction-string order with their counts; a description of the files
+  summary.json                 counts, lambda_GC, per-dataset rows, loci settings and the dataset-overlap pairs
+  The log's verdict becomes warn when a lead locus is heterogeneous (het_p < het_p_threshold), two datasets look
+  overlapping, or the method itself warned.
+
+Notes for whoever maintains this
+- The overlap check correlates Z-scores of variants that look null in both datasets (|Z| < 2). For two datasets
+  sharing n0 people the expected correlation is about n0 / sqrt(n1 n2) times the phenotypic correlation (1 for the
+  same trait in the same people), and somewhat different for shared controls in a case/control design. Truncating
+  at |Z| < 2 pulls the observed r towards 0, so the 0.1 threshold is conservative.
+- The outlier count at the lead loci compares a dataset's beta with the pooled beta in units of the dataset's own SE.
+  The pooled estimate includes that dataset, so for a dataset carrying most of the weight this undercounts.
+- Lead loci are chosen on the meta-analysis P alone; a heterogeneous locus (Q P-value small) is reported, not removed.
 """
 import argparse
 import json
@@ -145,7 +173,7 @@ RESULT_HELP = {
     "q": "Cochran's Q", "het_p": "Heterogeneity P-value (Cochran's Q)", "i2": "I² (0 to 1)",
     "eaf_min": "Smallest effect-allele frequency across datasets", "eaf_max": "Largest effect-allele frequency across datasets",
     "gender_differentiated_p": "Sex-differentiated P-value (GWAMA --sex)", "gender_heterogeneity_p": "Sex heterogeneity P-value (GWAMA --sex)",
-    "direction": "One symbol per dataset, in the order of datasets.tsv: + effect allele raises the trait or risk, - lowers it, ? variant missing",
+    "direction": "One symbol per dataset, in the order of datasets.tsv: + effect allele raises the trait or risk, - lowers it, 0 effect of exactly 0, ? variant missing (GWAMA: or the dataset's P above the direction threshold)",
 }
 
 
@@ -216,14 +244,15 @@ def main():
             df = pd.read_csv(s["path"], sep="\t", usecols=lambda c: c == "p")
             lam_s = lambda_gc(df["p"]) if len(df) else float("nan")
             studies.append({"id": s["id"], "label": s["label"], "variants_in": len(df), "lambda_gc": round(lam_s, 4) if np.isfinite(lam_s) else None})
-    # Variants each dataset contributed to the results: its symbol in the direction string isn't "?".
     for st, s in zip(studies, specs):
         st.setdefault("qc_run_id", s.get("qc_run_id"))
     lead_locus_agreement(forest, studies)
+    # Variants each dataset contributed to the results, unless the method counted them itself (GWAMA does, since its
+    # "?" also marks a dataset above its direction threshold): its symbol in the direction string isn't "?".
     dirs = res["direction"].fillna("").astype(str)
     if dirs.str.len().eq(len(specs)).all() and len(dirs):
         for i, st in enumerate(studies):
-            st["in_results"] = int((dirs.str[i] != "?").sum())
+            st.setdefault("in_results", int((dirs.str[i] != "?").sum()))
     write_datasets(specs, studies, a.out)
     how = (f"LD clumping against the 1000 Genomes {opts['ld_panel']} panel (r² < {opts['iss_r2']}, then < {opts['lead_r2']}; "
            f"loci bounded by each lead's LD cloud and merged within {opts['merge_kb']} kb)"

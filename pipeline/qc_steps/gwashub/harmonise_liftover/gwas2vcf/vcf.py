@@ -96,6 +96,9 @@ class Vcf:
         header.add_line(
             '##FORMAT=<ID=NC,Number=A,Type=Integer,Description="Number of cases used to estimate genetic effect">'
         )
+        header.add_line(  # GWASHub added: GWAS-VCF has no field for controls
+            '##FORMAT=<ID=NCO,Number=A,Type=Integer,Description="Number of controls used to estimate genetic effect">'
+        )
         header.add_line(
             '##FORMAT=<ID=ID,Number=1,Type=String,Description="Study variant identifier">'
         )
@@ -251,6 +254,8 @@ class Vcf:
                     record.samples[trait_id]["SI"] = result.imp_info
                 if result.ncase is not None:
                     record.samples[trait_id]["NC"] = round(result.ncase)
+                if getattr(result, "ncontrol", None) is not None:  # GWASHub added
+                    record.samples[trait_id]["NCO"] = round(result.ncontrol)
                 if result.dbsnpid is not None:
                     record.samples[trait_id]["ID"] = record.id
                 if result.pval is not None:

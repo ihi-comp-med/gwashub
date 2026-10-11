@@ -13,6 +13,20 @@ see resources/build/kg1000_b38.sh). Genome-wide significant variants not in the 
 as in the HERMES 3 analyses; their number is reported.
 Without a panel (not uploaded yet), lead loci fall back to a distance window: the strongest variant, then the next
 strongest more than boundary_kb away, and so on.
+
+Inputs: the method's results (meta_results.tsv.gz as a DataFrame), the settings (DEFAULTS, overridable from the
+project's common settings), the resources folder with 1kg_b38_<POP>.pgen/.pvar.zst/.psam, and a scratch folder.
+Outputs: see define_loci.
+
+Notes for whoever maintains this
+- Only autosomes are candidates, as in the HERMES 3 analyses: a genome-wide significant signal on X is in
+  meta_results.tsv.gz and the Manhattan plot but never becomes a lead locus.
+- r^2 comes from the 1000 Genomes super-population panel (500 to 900 people). Low r^2 values are noisy at that size,
+  so the 0.1 thresholds (lead_r2, boundary_r2) are approximate: two leads at r^2 0.1 in the panel may be somewhat more
+  or less correlated in the cohorts. A multi-ancestry meta-analysis is clumped against one panel (ld_panel).
+- Clumping uses --clump-p1 = --clump-p2 = gws, so only genome-wide significant variants can join a clump; the
+  locus bounds then come from the wider LD cloud at P < locus_p.
+- A lead can be removed by step 1 when it is in fewer than min_studies datasets, even if its P is the smallest.
 """
 import os
 import subprocess

@@ -17,6 +17,48 @@ harmonisation can't see from the alleles: those SNPs then disagree with the refe
 
 Reference: all_afreq_b38.tsv.gz, tab-separated with id, chr, pos_b38, ref, alt and <pop>_afreq (ALT allele
 frequency) for afr, amr, eas, eur, sas (resources/build/kg1000_b38.sh).
+
+Contract
+--------
+The parameters, their labels, limits and help text are in step.yaml in this folder. The contract every QC step
+follows is in CONTRIBUTING.md, section 2.
+
+    python eaf_check.py --input working.tsv --resources DIR --params params.json --log step_log.json
+
+Inputs
+  --input       GWASHub format on GRCh38 with ea = ALT (after gwashub/harmonise_liftover). Read only, unless
+                remove_large_diff is on.
+  --resources   all_afreq_b38.tsv.gz (optional: without it the step passes and says it didn't run).
+  --params      JSON. Read here: ancestry (EUR, AFR, AMR, EAS or SAS; anything else and the step doesn't run) and,
+                under "step", diff_threshold, warn_diff_fraction, remove_large_diff (DEFAULTS).
+  Environment   GWASHUB_ARTIFACT_DIR: where the artifacts go.
+
+Outputs
+  --input       Unchanged, or without the variants with a large difference when remove_large_diff is on.
+  --log         {"step": "eaf_check", "verdict", "metrics", "messages", "artifacts"}. Metrics: ran, population,
+                matched, matched_fraction, eaf_correlation, large_diff_fraction, mean_abs_diff, the A/T-C/G and
+                as-MAF fractions, ancestry_best_fit and mean_abs_diff_<pop> for every population.
+  Artifacts     eaf_vs_reference.png   hexbin of dataset EAF against the reference frequency of the same allele
+                removed_rows.tsv.gz    only with remove_large_diff: the removed variants, ref_eaf, eaf_diff, reason
+
+Verdict
+  warn   more than warn_diff_fraction of matched variants differ by more than diff_threshold; A/T and C/G SNPs
+         differ far more often than the others; or another population fits clearly better
+  pass   otherwise, and whenever the check can't run (no population, no reference, no EAF, under 100 matches).
+         The step never fails.
+
+Notes for whoever maintains this
+--------------------------------
+- 1000 Genomes has about 500 to 900 people per super-population, so a reference frequency carries sampling noise
+  of sqrt(f(1-f) / 2n), about 0.015 at f = 0.5 with 600 people. Differences of 0.2 are far outside that; small, consistent
+  differences are not. A cohort from a sub-population (Finns, Ashkenazi, an admixed sample declared as one
+  ancestry) will have more large differences than a mixed European cohort without anything being wrong.
+- The super-populations are coarse. AMR in particular is an admixed group, and an admixed cohort can sit between two
+  populations, so the ancestry warning only fires when another population fits at least 40% better (0.6 x).
+- The swapped-allele and MAF-not-EAF diagnoses are judged on the SNPs that aren't A/T or C/G, because for those a
+  strand flip and an allele swap both turn f into 1 - f and can't be told apart from a frequency.
+- Variants are matched on chr, pos and both alleles, so a multi-allelic site in 1000 Genomes matches only the record
+  with the same pair of alleles.
 """
 import os
 

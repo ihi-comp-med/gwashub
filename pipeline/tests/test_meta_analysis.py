@@ -94,6 +94,20 @@ def test_min_studies_and_direction_placeholders(tmp_path):
     assert res.set_index("pos").loc[200, "direction"] in ("?++", "?--")
 
 
+@needs_image("gwashub/gwama")
+def test_direction_threshold_keeps_datasets_present(tmp_path):
+    """Above --threshold GWAMA writes "?" for a dataset, as for a missing one; the dataset still counts as
+    contributing in datasets.tsv. An effect of exactly 0 stays "0" (present), not "?"."""
+    strong, weak = study([0.5, 0.5], [0.05, 0.05]), study([0.01, 0.01], [0.1, 0.1])
+    res, _, out, _ = run_meta(tmp_path, [strong, weak], {"direction_threshold": 0.05})
+    assert set(res["direction"]) <= {"+?", "-?"}
+    ds = pd.read_csv(out / "datasets.tsv", sep="\t")
+    assert ds["in_results"].tolist() == [2, 2]
+    zero = study([0.0, 0.2], [0.1, 0.1])
+    res, _, _, _ = run_meta(tmp_path / "zero", [zero, strong])
+    assert res.set_index("pos").loc[100, "direction"] in ("0+", "0-")
+
+
 @needs_image("gwashub/metal")
 def test_metal_matches_hand_calculation_and_keeps_its_files(tmp_path):
     a, b = study([0.2, 0.05], [0.1, 0.1]), study([-0.1, 0.03], [0.05, 0.1], ea="G", oa="A", eaf=0.7)

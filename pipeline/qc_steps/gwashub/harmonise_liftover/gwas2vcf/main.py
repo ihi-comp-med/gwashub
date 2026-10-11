@@ -1,3 +1,11 @@
+# gwas2vcf 1.4.3 (MRCIEU/gwas2vcf, MIT licence: see License), the copy edited for the HERMES 3 DCM pipeline, run by
+# ../harmonise_liftover.py in its own Python 3.7 environment. Lines GWASHub added are marked "GWASHub added"; keep
+# other changes to a minimum so the copy stays comparable with upstream.
+#
+# What it does with each row (gwas.py Gwas.read_from_file): reads the columns named in the --json file, rejects
+# alleles that aren't A/C/G/T, keeps the row if OA is the reference base at that position, otherwise swaps EA/OA
+# (negating BETA and taking 1 - EAF) and keeps it if the swapped OA is the reference, and otherwise drops it. The
+# reverse strand is not tried. Indels whose alleles are both longer than one base are left-aligned and trimmed.
 import argparse
 import json
 import logging

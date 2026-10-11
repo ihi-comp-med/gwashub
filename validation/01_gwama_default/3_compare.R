@@ -10,7 +10,7 @@ site <- fread(t$path("site", "meta_results.tsv.gz"), colClasses = list(character
 g <- fread(t$path("reference", "gwama.out"))[n_studies >= t$cfg$reference$min_studies]
 g[, c("chr", "pos") := tstrsplit(rs_number, ":", keep = 1:2)][, pos := as.integer(pos)]
 gwama <- g[, .(chr, pos, ea = reference_allele, oa = other_allele, beta, se, p = `p-value`, n_studies,
-               direction = gsub("0", "?", effects), q = q_statistic, het_p = `q_p-value`, i2, n = n_samples,
+               direction = effects, q = q_statistic, het_p = `q_p-value`, i2, n = n_samples,
                eaf = fifelse(eaf >= 0, eaf, NA_real_))]
 
 # The direction string has one symbol per dataset in input order; GWAMA by hand used test.yaml's order, the site its own

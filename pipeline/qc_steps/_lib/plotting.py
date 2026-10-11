@@ -1,4 +1,21 @@
-"""Manhattan + QQ plots shared by the plots step and the meta-analysis."""
+"""Manhattan + QQ plots shared by the plots step and the meta-analysis.
+
+Used by gwashub/plots (on a QC'd working file) and _metalib/publish.py (on meta_results.tsv.gz). make_plots writes:
+
+  manhattan.png    autosomes then X (Y and anything else left out), -log10 P against position, gws as a dashed line
+  qq.png           observed against expected -log10 P, with lambda_GC
+  plot_data.json   for the website's interactive plots:
+                     manhattan  {x, y (-log10 P), chr (1-23, 23 = X), pos, rsid?, ticks [{chr, x}], x_max}: every
+                                variant with P < 1e-3 plus a random sample of the rest up to max_points
+                     qq         {expected, observed, lambda}: the 500 strongest points and 500 spread over the rest
+                     gws
+
+Notes
+- The QQ plot's expected quantiles are (i - 0.5) / n, so the line through the null points has slope 1. No
+  confidence band is drawn; with millions of variants the band is very narrow except in the far tail.
+- -log10 P is capped at 300 (P clipped at 1e-300) so a P of 0 or an underflow still plots.
+- lambda_gc ignores P of 0 or below and non-finite values, and gives NaN when nothing is left.
+"""
 import json
 import os
 

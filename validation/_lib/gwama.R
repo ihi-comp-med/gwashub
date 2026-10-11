@@ -42,7 +42,7 @@ read_gwama <- function(path, min_studies) {
   g <- fread(path)[n_studies >= min_studies]
   g[, c("chr", "pos") := tstrsplit(rs_number, ":", keep = 1:2)][, pos := as.integer(pos)]
   out <- g[, .(chr, pos, ea = reference_allele, oa = other_allele, beta, se, p = `p-value`, n_studies,
-               direction = gsub("0", "?", effects), q = q_statistic, het_p = `q_p-value`, i2, n = n_samples,
+               direction = effects, q = q_statistic, het_p = `q_p-value`, i2, n = n_samples,
                eaf = fifelse(eaf >= 0, eaf, NA_real_))]
   if ("gender_differentiated_p-value" %in% names(g))
     out[, `:=`(sex_diff_p = g$`gender_differentiated_p-value`, sex_het_p = g$`gender_heterogeneity_p-value`)]

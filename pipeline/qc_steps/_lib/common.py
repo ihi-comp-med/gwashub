@@ -1,8 +1,22 @@
 """Shared helpers for GWASHub default steps.
 
-Default steps run with PYTHONPATH including the steps/ folder, so they can
+Default steps run with PYTHONPATH including the pipeline/qc_steps/ folder, so they can
 `from _lib.common import ...`. Custom steps in other repos can't rely on this;
-they only need to honour the contract (see steps/README.md).
+they only need to honour the contract (CONTRIBUTING.md).
+
+The step contract these helpers implement (CONTRIBUTING.md, section 2; each step's own options are in its step.yaml):
+
+    <command> --input working.tsv --resources DIR --params params.json --log step_log.json
+
+  --input      the working file, GWASHub format (STANDARD below). A step that removes or changes rows rewrites it in
+               place, in the same format.
+  --resources  a folder holding only the reference files the step's step.yaml declares (symlinks).
+  --params     JSON: the dataset's fields (column_mapping, build, ancestry, effect_type, n_cases, n_controls, n_total,
+               trait_type, cohort, phenotype, sex) and, under "step", the step's own parameters (step_params merges
+               them over the step's DEFAULTS).
+  --log        JSON written with write_log: {"step", "verdict" (pass | warn | fail), "metrics", "messages", "artifacts"}.
+               Exit 0 whatever the verdict; a non-zero exit is a crash.
+  Optional environment: GWASHUB_ARTIFACT_DIR (artifact_dir), GWASHUB_STEP_LOGS, GWASHUB_RUN_DIR.
 """
 import argparse
 import csv
