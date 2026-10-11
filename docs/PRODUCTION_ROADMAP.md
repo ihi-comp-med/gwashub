@@ -118,6 +118,27 @@ All the validation work so far (about 30 QC runs and 12 meta-analyses on the val
 
 ### prod, estimated
 
+**AWS Pricing Calculator estimate (11 October 2026):**
+https://calculator.aws/#/estimate?id=839531ca98d8b7c4c2ce0371716ae55a8fa7c9de. It comes to **$456.95 a month,
+$5,483.40 for 12 months**, Europe (London), on-demand prices before credits. It assumes a busy month during a data
+freeze: 100 full-size QC runs, 10 meta-analyses and about 500 datasets (2.1 TB) stored. This is the estimate submitted
+with the AWS Cloud Credit for Research application.
+
+| Group | Services in the estimate | Per month |
+|---|---|---|
+| Core platform | VPC (two NAT gateways as one Regional NAT gateway across 2 AZs, 4 public IPv4), RDS PostgreSQL db.t4g.medium Multi-AZ, Fargate ARM (API 2 × 0.5 vCPU / 1 GB, worker 0.25 vCPU / 0.5 GB), Application Load Balancer | $263 |
+| Security and audit | WAF (1 web ACL, 1 rule, 3 managed groups), GuardDuty (with S3 malware scanning, 100 GB), Config, Security Hub, CloudTrail S3 data events | $72 |
+| Storage and delivery | S3 Standard 2,100 GB, CloudFront (within the free tier), data transfer out 200 GB | $60 |
+| QC and meta-analysis compute | EC2 Spot on Batch: r7i.2xlarge 100 h, r7g.2xlarge 55 h, m7i.xlarge 25 h, m7g.large 25 h, each with its share of the 500 GB job disk; the t4g.nano jump host | $52 |
+| Operations | CloudWatch, Secrets Manager, KMS, Route 53, ECR | $9 |
+
+The public calculator can't express Spot for part of a month: each Batch row is entered as 1 instance running all
+month, with the Spot discount raised so the cost equals the real hours at AWS's historical Spot discount (discount
+entered = 100 - (100 - historical) × hours / 730), and its disk scaled to 500 GB × hours / 730. The calculator
+subtracts no free tier itself for CloudFront and data transfer: their free allowances were taken off by hand.
+
+The figures below are the earlier, rougher estimate, kept for the item-by-item reasoning.
+
 Fixed, per month, before credits:
 
 | Item | Per month |
@@ -136,12 +157,12 @@ Variable:
 | Item | Price | Example |
 |---|---|---|
 | Storage (S3) | $0.024 per GB a month | 500 datasets at about 4 GB each (upload, QC outputs, kept versions): 2 TB, $50 a month |
-| A QC run | $0.30 to $1 for a full-size file (10 to 20 million variants; mostly the harmonisation machine) | 500 runs: $150 to $500, once |
+| A QC run | $0.25 to $0.40 for a full-size file at historical Spot prices (10 to 20 million variants; mostly the harmonisation machine and its disk) | 500 runs: $125 to $200, once |
 | A meta-analysis | $0.10 to $0.50 | |
 | Downloads | about $0.09 per GB after the first 100 GB a month (often waived for academic accounts) | 1 TB downloaded: $80 |
 | Website traffic (CloudFront) | free up to 1 TB a month | |
 
-**Expect about $350 to $450 a month** once a consortium is using it, plus one-off QC compute as cohorts upload. With
+**Expect about $350 to $460 a month** once a consortium is using it (the calculator estimate above is $457 in a busy month), plus one-off QC compute as cohorts upload. With
 dev kept running, add about $120.
 
 One-off costs: the penetration test, the domain (about $14 a year), staff time for phases 1 to 5.

@@ -255,6 +255,8 @@ baseline and CI/CD, deploying prod, the go-live checklist and running it.
 - **dev, measured:** $30.33 of usage (before credits) for 1 to 10 October 2026, about seven days billed: roughly $120 a
   month fixed (NAT gateway, database, API and worker, load balancer) plus compute. All the validation QC runs and
   meta-analyses on Batch Spot came to under $3.
-- **prod, estimated:** about $300 to $330 a month fixed (Multi-AZ database, two NAT gateways, two API tasks, WAF,
-  security services), $350 to $450 in use, plus S3 ($0.024 per GB a month) and downloads (about $0.09 per GB).
+- **prod, estimated:** $456.95 a month in a busy month (100 QC runs, 10 meta-analyses, 2.1 TB stored), $5,483 a year:
+  the AWS Pricing Calculator estimate https://calculator.aws/#/estimate?id=839531ca98d8b7c4c2ce0371716ae55a8fa7c9de.
+  About $345 of it is fixed (Multi-AZ database, two NAT gateways, two API tasks, WAF, security services); the rest
+  scales with S3 storage ($0.024 per GB a month), downloads (about $0.09 per GB) and Batch compute.
 - The breakdown, the assumptions and the ways to spend less are in `docs/PRODUCTION_ROADMAP.md`.

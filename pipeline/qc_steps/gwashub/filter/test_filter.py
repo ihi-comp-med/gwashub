@@ -61,7 +61,7 @@ def test_filter_on_a_missing_column_fails_clearly(tmp_path):
 
 @needs_image("gwashub/base-r")
 def test_removed_rows_have_one_reason_each(tmp_path):
-    log, out = run_step("filter", frame(), {}, tmp_path)
+    log, out = run_step("filter", frame(), {"step": {"beta": rng(max=20)}}, tmp_path)  # |BETA| is off by default
     removed = pd.read_csv(tmp_path / "artifacts" / "removed_rows.tsv.gz", sep="\t", dtype={"chr": str})
     assert sorted(removed["pos"]) == [20, 80] and len(removed) + len(out) == len(frame())
     assert removed.set_index("pos").loc[20, "reason"].startswith("|BETA| outside the limits")
