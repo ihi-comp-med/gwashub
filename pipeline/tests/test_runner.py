@@ -35,6 +35,13 @@ def test_default_pipeline_end_to_end(synth_small, tmp_path):
     rsid = out["rsid"].dropna()
     assert len(out) > 0.9 * entry["rows"] and rsid.str.startswith("rs").all() and len(rsid) > 0.9 * len(out)
     assert (tmp_path / res["outputs"]["qc_report"]).exists()
+    # Steps print where they are on their console (the website shows a running step's last lines): the EAF check its
+    # stages, LDSC its programs' output as it comes.
+    by_key = {st["key"]: st for st in res["steps"]}
+    eaf_out = tmp_path / by_key["gwashub/eaf_check"]["dir"] / "output.txt"
+    assert "Matched" in eaf_out.read_text() and "Done:" in eaf_out.read_text()
+    if by_key["gwashub/ldsc"]["metrics"].get("ran"):
+        assert "== munge_sumstats.py" in (tmp_path / by_key["gwashub/ldsc"]["dir"] / "output.txt").read_text()
     steps = {s["key"]: s for s in res["steps"]}
     assert (tmp_path / steps["gwashub/plots"]["dir"] / "manhattan.png").exists()
     lift = steps["gwashub/harmonise_liftover"]["metrics"]
@@ -150,6 +157,37 @@ def test_steps_record_the_parameters_they_ran_with(synth_small, tmp_path):
     assert params["maf"]["changed"] and params["maf"]["value"] == maf and params["maf"]["label"] == "MAF"
     assert not params["beta"]["changed"] and params["beta"]["value"]["on"] is False and params["beta"]["value"]["max"] == 20
     assert by_step["gwashub/plots"]["params"] == []
+
+
+def test_running_step_tail_is_cleaned_and_published(tmp_path):
+    """The running step's last output lines: colour codes stripped, a progress line rewritten with \\r kept as it
+    last read, long lines cut, at most 5; published into progress only when they change, and never for other steps."""
+    import threading
+    from types import SimpleNamespace
+    from pipeline.runner.jobspec import TailPublisher, tail_lines
+    step_dir = tmp_path / "steps" / "02_harmonise_liftover"
+    step_dir.mkdir(parents=True)
+    out = step_dir / "output.txt"
+    out.write_text("start\n\x1b[32mgreen\x1b[0m\n10%\r50%\r90%\n" + "x" * 400 + "\n\nline a\nline b\n")
+    lines = tail_lines(str(out))
+    assert len(lines) == 5 and lines[0] == "green" and lines[1] == "90%" and len(lines[2]) == 300 and lines[-1] == "line b"
+    assert tail_lines(str(tmp_path / "missing.txt")) == []
+    progress = [{"state": "pass"}, {"state": "running"}]
+    resolved = [SimpleNamespace(index=0, name="parse"), SimpleNamespace(index=1, name="harmonise_liftover")]
+    saves = []
+    pub = TailPublisher(progress, str(tmp_path), resolved, lambda: saves.append(1), threading.Lock())
+    pub.publish_once()
+    assert progress[1]["tail"]["lines"] == lines and "tail" not in progress[0] and len(saves) == 1
+    pub.publish_once()  # nothing new: not saved again
+    assert len(saves) == 1
+    # A step's own log written after its console is the one shown (harmonise_liftover's gwas2vcf.log); never a table.
+    import os, time
+    (step_dir / "removed_rows.tsv").write_text("chr\tpos\n1\t100\n")
+    (step_dir / "gwas2vcf.log").write_text("Processed 1,000,000 variants...\n")
+    later = time.time() + 5
+    os.utime(step_dir / "gwas2vcf.log", (later, later))
+    pub.publish_once()
+    assert progress[1]["tail"]["lines"] == ["Processed 1,000,000 variants..."] and len(saves) == 2
 
 
 def test_exit_codes_are_explained():

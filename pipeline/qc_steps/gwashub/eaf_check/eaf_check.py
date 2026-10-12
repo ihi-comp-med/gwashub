@@ -75,18 +75,25 @@ POPULATION = {"EUR": "eur", "AFR": "afr", "AMR": "amr", "EAS": "eas", "SAS": "sa
 CHUNK = 2_000_000
 
 
+def say(msg):
+    """A progress line on the step's console (the website shows a running step's last lines): counts only."""
+    print(msg, flush=True)
+
+
 def reference_frequencies(path, gwas, col):
     """The reference rows at the dataset's positions, read in chunks so the whole file is never in memory: afreq for
     the dataset's population (col), and every population's <pop>_afreq (for the ancestry fit)."""
     keys = gwas[["chr", "pos"]].drop_duplicates()
     header = pd.read_csv(path, sep="\t", comment="#", nrows=0).columns
     pops = [f"{p}_afreq" for p in POPULATION.values() if f"{p}_afreq" in header]
-    found = []
+    found, rows, n_found = [], 0, 0
     for chunk in pd.read_csv(path, sep="\t", comment="#", usecols=["chr", "pos_b38", "ref", "alt", *pops], chunksize=CHUNK,
                              dtype={"chr": str, "ref": str, "alt": str}):
         chunk = chunk.rename(columns={"pos_b38": "pos"}).assign(afreq=chunk[col]).dropna(subset=["afreq"])
         chunk["chr"] = chunk["chr"].str.replace(r"^chr", "", regex=True)
         found.append(chunk.merge(keys, on=["chr", "pos"]))
+        rows, n_found = rows + len(chunk), n_found + len(found[-1])
+        say(f"  1000 Genomes rows read: {rows:,}; at the dataset's positions so far: {n_found:,}")
     return pd.concat(found, ignore_index=True) if found else pd.DataFrame(columns=["chr", "pos", "ref", "alt", "afreq", *pops])
 
 
@@ -120,12 +127,15 @@ def main():
     if not os.path.exists(ref_path):
         write_log(args.log, "eaf_check", "pass", {"ran": False}, [f"{REFERENCE} not uploaded yet; EAF check not run."])
         return
+    say(f"Reading the dataset (ancestry {pop.upper()})")
     gwas = read_working(args.input)
+    say(f"  {len(gwas):,} variants")
     if "eaf" not in gwas or gwas["eaf"].notna().sum() == 0:
         write_log(args.log, "eaf_check", "pass", {"ran": False}, ["The dataset has no EAF; EAF check not run."])
         return
 
     g = gwas.loc[gwas["eaf"].notna(), ["chr", "pos", "ea", "oa", "eaf"]]
+    say(f"Reading 1000 Genomes frequencies ({REFERENCE}) in chunks of {CHUNK:,} rows")
     ref = reference_frequencies(ref_path, g, f"{pop}_afreq")
     same = g.merge(ref, left_on=["chr", "pos", "oa", "ea"], right_on=["chr", "pos", "ref", "alt"])
     same["ref_eaf"] = same["afreq"]
@@ -136,6 +146,7 @@ def main():
     m = pd.concat([same, flipped], ignore_index=True).drop_duplicates(["chr", "pos", "ea", "oa"])
 
     n = len(m)
+    say(f"Matched {n:,} of {len(g):,} variants to 1000 Genomes by position and alleles")
     metrics = {"ran": True, "population": pop.upper(), "variants_with_eaf": len(g), "matched": n,
                "matched_fraction": n / len(g) if len(g) else 0}
     if n < 100:
@@ -157,6 +168,7 @@ def main():
                         f"{opts['diff_threshold']}: check the plot.")
     if r < 0:
         messages.append("Frequencies are negatively correlated with the reference: effect and other allele may be swapped.")
+    say("Checking strand-ambiguous SNPs, MAF-for-EAF and ancestry fit")
     # Strand problems hide in A/T and C/G SNPs: they then disagree with the reference far more often than the rest.
     ambiguous = np.array([(a, b) in AMBIGUOUS for a, b in zip(m["ea"], m["oa"])], dtype=bool)
     if ambiguous.sum() >= 100 and (~ambiguous).sum() >= 100:
@@ -207,8 +219,10 @@ def main():
                               "description": "Variants whose EAF differs from 1000 Genomes by more than the threshold, "
                                              "with the reference EAF and the difference."})
     if art:
+        say("Drawing the EAF plot")
         plot(m, pop, os.path.join(art, "eaf_vs_reference.png"))
         artifacts.append({"type": "image", "path": "eaf_vs_reference.png", "label": "EAF vs 1000 Genomes"})
+    say(f"Done: {verdict}")
     write_log(args.log, "eaf_check", verdict, metrics, messages, artifacts)
 
 

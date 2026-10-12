@@ -468,8 +468,9 @@ def handle_batch_event(db, event: dict) -> str:
 
 
 def live_progress(run: QCRun) -> list | None:
-    """While a Batch QC job runs, its step states are in progress.json next to its outputs."""
-    if settings().jobs != "batch" or run.status not in ("queued", "running") or not run.run_dir:
+    """While a QC run runs (on Batch or locally), its step states are in progress.json next to its outputs, with the
+    running step's last output lines ("tail", pipeline/runner/jobspec.py TailPublisher)."""
+    if run.status not in ("queued", "running") or not run.run_dir:
         return None
     try:
         return json.loads(storage.read_bytes(storage.join(run.run_dir, "progress.json")))

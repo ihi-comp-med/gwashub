@@ -95,25 +95,9 @@ async function onSelect(e: { files: File[] }) {
   finally { reading.value = false }
 }
 
-const standardFields = [
-  { key: 'rsid', label: 'Variant ID (rsID)', required: false },
-  { key: 'chr', label: 'Chromosome', required: true },
-  { key: 'pos', label: 'Position', required: true },
-  { key: 'ea', label: 'Effect allele', required: true },
-  { key: 'oa', label: 'Other allele', required: true },
-  { key: 'eaf', label: 'Effect allele frequency', required: true },
-  { key: 'beta', label: 'Effect (BETA or OR)', required: true },
-  { key: 'se', label: 'Standard error', required: true },
-  { key: 'p', label: 'P-value', required: true },
-  { key: 'log10p', label: '-log10 P (if there is no P-value)', required: false },
-  { key: 'n', label: 'Sample size', required: false },
-  { key: 'ncase', label: 'Number of cases', required: false },
-  { key: 'ncontrol', label: 'Number of controls', required: false },
-  { key: 'info', label: 'Imputation INFO', required: false },
-]
+const standardFields = STANDARD_FIELDS
 const mapping = reactive<Record<string, string | null>>({})
-// A P-value column or a -log10 P column will do.
-const unmappedRequired = computed(() => standardFields.filter(f => f.required && !mapping[f.key] && !(f.key === 'p' && mapping.log10p)).map(f => f.label))
+const missingColumns = computed(() => unmappedRequired(mapping))
 const unmappedColumns = computed(() => (suggestion.value?.columns ?? []).filter((c: string) => !Object.values(mapping).includes(c)))
 
 // Step 4: upload in parts (straight to S3 on AWS), then QC starts and we go to the dataset.
@@ -257,9 +241,9 @@ const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === 
                 </div>
                 <div class="row end">
                   <Button label="Back" severity="secondary" text @click="activateCallback('3')" />
-                  <Button label="Next" icon="pi pi-arrow-right" icon-pos="right" :disabled="unmappedRequired.length > 0" @click="activateCallback('5')" />
+                  <Button label="Next" icon="pi pi-arrow-right" icon-pos="right" :disabled="missingColumns.length > 0" @click="activateCallback('5')" />
                 </div>
-                <small v-if="unmappedRequired.length" class="err">Map: {{ unmappedRequired.join(', ') }}</small>
+                <small v-if="missingColumns.length" class="err">Map: {{ missingColumns.join(', ') }}</small>
               </StepPanel>
 
               <StepPanel v-slot="{ activateCallback }" value="5">

@@ -102,8 +102,14 @@ stop_with <- function(msg, metrics = list()) {
   quit(save = "no", status = 0)
 }
 num <- function(x) suppressWarnings(as.numeric(x))
-count <- function(x) {  # "<=40", "1,234", " 500 " -> number (hermes3_dcm stripped the non-numeric characters)
-  suppressWarnings(as.numeric(gsub("^[^0-9.]+|[^0-9.]+$", "", gsub(",", "", trimws(x)))))
+# A count given as a bound, "<=40", "<20", ">1000": censored (All of Us and other biobanks hide small counts), so the
+# real value is unknown. Read as missing, so the study details fill it, rather than as the bound (hermes3_dcm stripped
+# the "<=" and used 40).
+censored <- function(x) grepl("^\\s*[<>]=?\\s*[0-9]", x)
+count <- function(x) {  # "1,234", " 500 " -> number; censored ("<=40") -> NA
+  v <- suppressWarnings(as.numeric(gsub("^[^0-9.]+|[^0-9.]+$", "", gsub(",", "", trimws(x)))))
+  v[censored(x)] <- NA
+  v
 }
 
 #=============================================================================
@@ -125,7 +131,7 @@ if (gz && system2("gzip", c("-t", shQuote(opt$input)), stdout = FALSE, stderr = 
   stop_with("The gzip file is incomplete or damaged (gzip -t fails): it was probably cut short. Upload it again.")
 }
 src <- if (gz) list(cmd = sprintf("gzip -dc '%s'", opt$input)) else list(file = opt$input)
-header <- names(do.call(fread, c(src, list(nrows = 0))))
+header <- names(do.call(fread, c(src, list(nrows = 0, colClasses = "character"))))  # names only: no type guessing
 absent <- setdiff(unique(unlist(colmap)), header)
 if (length(absent)) stop_with(sprintf("Mapped column(s) not in the file: %s.", paste(absent, collapse = ", ")))
 raw <- do.call(fread, c(src, list(select = unique(unlist(colmap)), colClasses = "character",
@@ -172,8 +178,18 @@ if (other) messages <- c(messages, sprintf("%s rows on other chromosomes or cont
                                           paste(head(unique(received_chr[is.na(gwas$chr) & !is.na(received_chr)]), 5), collapse = ", ")))
 metrics$chromosomes_present <- length(present)
 
-# sample sizes: strip non-numeric characters ("<=40" -> 40); fill from the study details
-for (col in intersect(c("n", "ncase", "ncontrol"), names(gwas))) gwas[, (col) := count(get(col))]
+# sample sizes: strip non-numeric characters ("1,234" -> 1234); censored values ("<=40") become missing; then filled
+# from the study details
+for (col in intersect(c("n", "ncase", "ncontrol"), names(gwas))) {
+  k <- sum(censored(gwas[[col]]), na.rm = TRUE)
+  if (k) {
+    metrics[[paste0("censored_", col)]] <- k
+    shown <- head(unique(trimws(gwas[[col]][censored(gwas[[col]])])), 3)
+    messages <- c(messages, sprintf("%s: %s values given as a bound (%s), read as missing%s.", toupper(col), format(k, big.mark = ","),
+                                    paste(shown, collapse = ", "), if (isTRUE(sp$fill_counts)) " and filled from the study details" else ""))
+  }
+  gwas[, (col) := count(get(col))]
+}
 # N from the row's own cases + controls where N is missing
 if (all(c("ncase", "ncontrol") %in% names(gwas))) {
   if (!"n" %in% names(gwas)) gwas[, n := NA_real_]

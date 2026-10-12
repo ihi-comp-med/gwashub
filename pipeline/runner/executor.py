@@ -104,7 +104,8 @@ def docker_command(image, command, workdir, args, env, name, writable=(), readab
             real = os.path.realpath(p)
             mounts += [f"{real}:{target}{mode}" for target in dict.fromkeys([real, os.path.abspath(p)])]
     passed = {k: v for k, v in env.items() if k.startswith("GWASHUB_")}
-    passed.update(PYTHONPATH=":".join(["/app", *(f"{CONTAINER_PIPELINE}/{p}" for p in pythonpath)]), MPLCONFIGDIR="/tmp/mpl", HOME="/tmp")
+    passed.update(PYTHONPATH=":".join(["/app", *(f"{CONTAINER_PIPELINE}/{p}" for p in pythonpath)]), MPLCONFIGDIR="/tmp/mpl", HOME="/tmp",
+                  PYTHONUNBUFFERED="1")  # output reaches output.txt as it is printed (the running step's tail)
     cmd = ["docker", "run", "--rm", "--name", name, "--network", "none", "-w", container_workdir]
     platform = _image_platforms().get(image)
     if platform:
@@ -238,6 +239,7 @@ def run_steps(resolved, state, run_params, resource_dir, out_dir, indexes=None, 
                 "GWASHUB_RUN_DIR": out_dir,
                 "PYTHONPATH": os.pathsep.join([*entry.step.pythonpath, env.get("PYTHONPATH", "")]),
                 "MPLCONFIGDIR": os.environ.get("MPLCONFIGDIR") or os.path.join(tempfile.gettempdir(), "gwashub-mpl"),
+                "PYTHONUNBUFFERED": "1",  # output reaches output.txt as it is printed (the running step's tail)
             })
             if on_step:
                 on_step(entry.index, "running", None)

@@ -116,6 +116,66 @@ def test_stop_qc(client, synth_small):
         assert client.delete(f"/api/datasets/{i}").status_code in (200, 204)
 
 
+def test_running_step_shows_its_output_tail(client, synth_small):
+    """While a run runs, the panel's steps come from its progress.json, including the running step's last output lines."""
+    from gwashub_api.db import SessionLocal
+    from gwashub_api.models import Dataset
+    from gwashub_api.routers.datasets import start_run
+    as_user(client, "jonas@example.org")
+    up = upload(client, synth_small, synth_small["manifest"][0], start=False)
+    with SessionLocal() as db:
+        ds = db.get(Dataset, up["id"])
+        ds.status = "processing"
+        run = start_run(db, ds)
+        run.status, run.run_dir = "running", os.path.join(os.environ["GWASHUB_DATA_DIR"], "tail-test-run")
+        os.makedirs(run.run_dir, exist_ok=True)
+        with open(os.path.join(run.run_dir, "progress.json"), "w") as f:
+            json.dump([{"key": "gwashub/parse", "title": "Parse", "state": "running",
+                        "tail": {"lines": ["Read 40,000 rows"], "at": "2026-10-12T09:00:00+00:00"}}], f)
+        db.commit()
+    step = client.get(f"/api/datasets/{up['id']}").json()["run"]["steps"][0]
+    assert step["state"] == "running" and step["tail"]["lines"] == ["Read 40,000 rows"]
+    assert client.post(f"/api/datasets/{up['id']}/stop").status_code == 200
+    assert client.delete(f"/api/datasets/{up['id']}").status_code in (200, 204)
+
+
+def test_remap_columns_and_effect_type(client, synth_small):
+    """The column mapping and effect type can be changed without uploading again: only to the file's own columns and
+    with the columns QC needs; logged one field at a time; QC is advised to re-run, and refused while it runs."""
+    from gwashub_api.db import SessionLocal
+    from gwashub_api.models import Dataset
+    entry = synth_small["manifest"][0]
+    as_user(client, "jonas@example.org")
+    up = upload(client, synth_small, entry, start=False)
+    cols = client.get(f"/api/datasets/{up['id']}/columns").json()["columns"]
+    mapping = dict(entry["column_mapping"])
+    assert set(mapping.values()) <= set(cols)
+    extra = [k for k in ("n", "info", "rsid") if k in mapping][0]
+    r = client.patch(f"/api/datasets/{up['id']}", json={"column_mapping": {**mapping, extra: None}})
+    assert r.status_code == 200 and r.json()["changed"] == [f"column {extra}"]
+    d = client.get(f"/api/datasets/{up['id']}").json()
+    assert extra not in d["column_mapping"] and d["edits"][-1]["changes"][f"column {extra}"] == [mapping[extra], None]
+    bad = client.patch(f"/api/datasets/{up['id']}", json={"column_mapping": {**mapping, "se": "no_such_column"}})
+    assert bad.status_code == 422 and "no column named no_such_column" in bad.json()["detail"]
+    bad = client.patch(f"/api/datasets/{up['id']}", json={"column_mapping": {k: v for k, v in mapping.items() if k != "eaf"}})
+    assert bad.status_code == 422 and "eaf" in bad.json()["detail"]
+    other = "beta" if d["effect_type"] == "or" else "or"
+    r = client.patch(f"/api/datasets/{up['id']}", json={"effect_type": other})
+    assert r.status_code == 200 and r.json()["changed"] == ["effect_type"]
+    assert client.patch(f"/api/datasets/{up['id']}", json={"effect_type": "log-odds"}).status_code == 422
+    as_user(client, "mei@example.org")  # another uploader
+    assert client.get(f"/api/datasets/{up['id']}/columns").status_code in (403, 404)
+    as_user(client, "jonas@example.org")
+    with SessionLocal() as db:
+        db.get(Dataset, up["id"]).status = "processing"
+        db.commit()
+    assert client.patch(f"/api/datasets/{up['id']}", json={"column_mapping": mapping}).status_code == 409
+    with SessionLocal() as db:
+        db.get(Dataset, up["id"]).status = "pending"
+        db.commit()
+    assert client.delete(f"/api/datasets/{up['id']}").status_code in (200, 204)
+
+
 def test_stop_meta_analysis(client):
     """Reviewers stop a queued or running meta-analysis: it's recorded as stopped (by whom), a late Batch event doesn't
     change that, and it can then be deleted. Uploaders can't stop one; a finished one can't be stopped."""
@@ -1488,7 +1548,8 @@ def test_batch_states_show_waiting_and_requeued_steps(client, synth_small):
     up = upload(client, synth_small, synth_small["manifest"][0])
     db = SessionLocal()
     done = db.get(QCRun, client.get(f"/api/datasets/{up['id']}").json()["run"]["id"])
-    run = QCRun(dataset_id=done.dataset_id, pipeline_version_id=done.pipeline_version_id, status="queued", run_dir=done.run_dir,
+    # Its own (empty) folder, as every run has: the finished run's progress.json would be read as this run's live steps.
+    run = QCRun(dataset_id=done.dataset_id, pipeline_version_id=done.pipeline_version_id, status="queued", run_dir=done.run_dir + "-requeued",
                 progress=[{"key": s["step"], "title": s["step"], "state": "queued"} for s in done.pipeline_version.steps])
     db.add(run)
     db.commit()

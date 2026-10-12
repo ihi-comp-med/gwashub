@@ -18,7 +18,7 @@ OUT = os.path.join(ROOT, "docs", "QC_STEPS.xlsx")
 NOTES = {
     "parse": [
         "The only step that reads the upload as received; every later step reads and writes the GWASHub format (chr pos ea oa beta se p eaf [n ncase ncontrol rsid info]).",
-        "Recoding as the HERMES 3 DCM pipeline: no 'chr' prefix, 23 = X, 24 = Y, 25/XY read as X; alleles upper-case A/C/G/T; counts such as '<=40' read as 40; odds ratios converted to log-odds.",
+        "Recoding as the HERMES 3 DCM pipeline: no 'chr' prefix, 23 = X, 24 = Y, 25/XY read as X; alleles upper-case A/C/G/T; counts such as '1,234' read as numbers, censored counts such as '<=40' (as All of Us hides small counts) read as missing and filled from the study details; odds ratios converted to log-odds.",
         "For odds-ratio uploads the SE is assumed to be the SE of log(OR). A delta-method SE of the OR itself is not caught here (stats_summary catches it).",
         "Missing P is computed from BETA/SE with the normal approximation; an uploaded P always wins (it may come from a t test, SPA or Firth correction).",
         "P = 0 becomes the smallest positive double (about 2.2e-308), so -log10 P caps near 307 for those rows.",

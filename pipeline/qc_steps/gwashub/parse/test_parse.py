@@ -191,3 +191,21 @@ def test_one_allele_missing(tmp_path):
     assert len(out) == len(df) - 2 and log["metrics"]["identical_alleles"] == 0
     removed = pd.read_csv(tmp_path / "artifacts" / "removed_rows.tsv.gz", sep="\t")
     assert sorted(removed["reason"]) == ["EA missing", "OA missing"]
+
+
+@needs_image("gwashub/base-r")
+def test_censored_counts_are_missing_not_their_bound(tmp_path):
+    """A count given as a bound ("<=40", as All of Us hides small counts) is unknown: read as missing and filled from
+    the study details, not as 40; "1,020" is still read as 1020. Parse says how many there were."""
+    df = upload()
+    df["N"] = "1,020"
+    df.loc[:9, "N"] = "<=40"
+    df.loc[10:14, "N"] = "< 20"
+    src = tmp_path / "upload.csv"
+    df.to_csv(src, index=False)
+    log, out = run_step("parse", str(src), {"column_mapping": {**MAP, "n": "N"}, "n_cases": 100, "n_controls": 900}, tmp_path)
+    assert log["verdict"] == "pass", log
+    by_rsid = out.set_index("rsid")["n"]
+    assert by_rsid["rs0"] == 1000 and by_rsid["rs12"] == 1000 and by_rsid["rs20"] == 1020  # filled from the study (100 + 900)
+    assert log["metrics"]["censored_n"] == 15
+    assert any("15 values given as a bound (<=40, < 20)" in m for m in log["messages"])

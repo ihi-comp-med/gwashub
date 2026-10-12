@@ -89,6 +89,11 @@ function fmtParam(p: any): string {
   if (typeof v === 'boolean') return v ? 'yes' : 'no'
   return v === null || v === undefined || v === '' ? '–' : String(v)
 }
+// How long ago the running step's output tail was published (it refreshes about every 15 seconds).
+function ago(iso: string) {
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000))
+  return s < 60 ? `${s} s ago` : `${Math.round(s / 60)} min ago`
+}
 const ranStep = (s: any) => !['queued', 'running', 'skipped'].includes(s.state)
 const ART_ICON: Record<string, string> = { image: 'pi pi-image', table: 'pi pi-table', text: 'pi pi-align-left', report: 'pi pi-file', html: 'pi pi-file' }
 const artUrl = (s: any, a: any, download = false) => `/api/datasets/${d.value?.id}/files/artifact?path=${encodeURIComponent(`${s.dir}/${a.path}`)}${d.value?.run?.id ? `&run_id=${d.value.run.id}` : ''}${download ? '&download=1' : ''}`
@@ -242,11 +247,18 @@ const metaLabels = computed<Record<string, string>>(() => {
 const openEdits = ref(new Set<number>())
 function toggleEdit(i: number) { const n = new Set(openEdits.value); n.has(i) ? n.delete(i) : n.add(i); openEdits.value = n }
 const changesOf = (e: any, i: number) => { const all = Object.entries(e.changes); return openEdits.value.has(i) ? all : all.slice(0, 3) }
-function startEdit() {
+// Remapping columns: the file's own column names (its header line), read when editing starts.
+const fileColumns = ref<string[]>([])
+const columnOptions = computed(() => [{ label: 'Not mapped', value: null }, ...fileColumns.value.map(c => ({ label: c, value: c }))])
+const mappingGaps = computed(() => form.column_mapping ? unmappedRequired(form.column_mapping) : [])
+async function startEdit() {
   Object.assign(form, { cohort: d.value.cohort, phenotype: d.value.phenotype, ancestry: d.value.ancestry, sex: d.value.sex,
-    n_cases: d.value.n_cases, n_controls: d.value.n_controls, n_total: d.value.n_total, build: d.value.build })
+    n_cases: d.value.n_cases, n_controls: d.value.n_controls, n_total: d.value.n_total, build: d.value.build,
+    effect_type: d.value.effect_type, column_mapping: Object.fromEntries(STANDARD_FIELDS.map(f => [f.key, d.value.column_mapping?.[f.key] ?? null])) })
   metaForm.value = { ...d.value.study_meta }
   editing.value = true
+  try { fileColumns.value = (await api<{ columns: string[] }>(`/datasets/${d.value.id}/columns`)).columns }
+  catch { fileColumns.value = Object.values(d.value.column_mapping ?? {}) as string[] }  // the mapped ones at least
 }
 const saving = ref(false)
 async function saveEdit() {
@@ -261,7 +273,7 @@ async function saveEdit() {
       clearInterval(timer)
       timer = setInterval(() => d.value?.status === 'processing' && load(), 2000)
     }
-    if (r.rerun_advised) toast.add({ severity: 'warn', summary: 'Re-run QC?', detail: 'Ancestry or sample sizes changed; QC used the old values.', life: 6000 })
+    if (r.rerun_advised) toast.add({ severity: 'warn', summary: 'Re-run QC?', detail: 'Details QC uses changed (ancestry, sample sizes, column mapping or effect type); the last run used the old values.', life: 6000 })
     await load()
     emit('changed')
   }
@@ -372,6 +384,10 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
                         <i :class="['pi pi-angle-down chev', { rot: openSteps.has(i) }]" />
                       </button>
                       <div v-if="s.note" class="small batch-note"><i class="pi pi-info-circle" /> {{ s.note }}</div>
+                      <div v-if="s.state === 'running' && s.tail?.lines?.length" class="tail" aria-live="polite">
+                        <pre>{{ s.tail.lines.join('\n') }}</pre>
+                        <span class="muted small">The step's last {{ s.tail.lines.length }} output lines · updated {{ ago(s.tail.at) }}</span>
+                      </div>
                       <table v-if="openSteps.has(i)" class="ct slog">
                         <tbody>
                           <tr>
@@ -513,7 +529,7 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
                 <h3 class="m0">Dataset</h3><span class="spacer" />
                 <template v-if="editing">
                   <Button label="Cancel" text severity="secondary" size="small" :disabled="saving" @click="editing = false" />
-                  <Button label="Save changes" icon="pi pi-check" size="small" :loading="saving" @click="saveEdit" />
+                  <Button label="Save changes" icon="pi pi-check" size="small" :loading="saving" :disabled="mappingGaps.length > 0" @click="saveEdit" />
                 </template>
                 <Button v-else-if="d.can_edit" label="Edit" icon="pi pi-pencil" size="small" outlined @click="startEdit" />
               </div>
@@ -560,8 +576,23 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
               <div class="cols2">
                 <div>
                   <h3>Column mapping</h3>
-                  <dl class="kv mono small">
+                  <template v-if="editing && form.column_mapping">
+                    <p class="muted small m0">Which column of the uploaded file holds each value. Changing it doesn't touch the file; re-run QC afterwards.</p>
+                    <div class="remap">
+                      <template v-for="f in STANDARD_FIELDS" :key="f.key">
+                        <label :for="`map-${f.key}`" class="small">{{ f.label }}<span v-if="f.required" class="req" title="Required"> *</span></label>
+                        <Select v-model="form.column_mapping[f.key]" :input-id="`map-${f.key}`" :options="columnOptions" option-label="label" option-value="value"
+                                size="small" filter placeholder="Not mapped" />
+                      </template>
+                      <label class="small">Effect type</label>
+                      <SelectButton v-model="form.effect_type" :options="[{ l: 'BETA (log-odds or linear)', v: 'beta' }, { l: 'Odds ratio', v: 'or' }]" option-label="l" option-value="v"
+                                    :allow-empty="false" size="small" />
+                    </div>
+                    <small v-if="mappingGaps.length" class="err">Map: {{ mappingGaps.join(', ') }}</small>
+                  </template>
+                  <dl v-else class="kv mono small">
                     <template v-for="(col, std) in d.column_mapping" :key="std"><dt>{{ std }}</dt><dd>{{ col }}</dd></template>
+                    <dt>effect type</dt><dd>{{ d.effect_type === 'or' ? 'odds ratio' : 'BETA' }}</dd>
                   </dl>
                 </div>
                 <div>
@@ -645,6 +676,10 @@ h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: .05em; color:
 .replace-bar { height: 22px; }
 .replace-bar :deep(.p-progressbar-label) { font-size: 0.75rem; line-height: 1; }
 .ident { display: inline-flex; align-items: center; gap: 6px; }
+.tail { margin: 6px 0 2px; }
+.tail pre { margin: 0 0 2px; padding: 6px 8px; font-size: 0.72rem; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere;
+  background: var(--p-content-hover-background); border: 1px solid var(--p-content-border-color); border-radius: 4px; }
+.remap { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; align-items: center; margin-top: 6px; }
 .params { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: max-content max-content minmax(0, 1fr);
   gap: 1px 16px; font-size: 0.8rem; }
 .params li { display: contents; }

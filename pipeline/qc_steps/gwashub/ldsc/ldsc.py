@@ -70,6 +70,17 @@ def ld_files(pop):
     return [f"UKBB.{pop}.l2.ldscore.gz", f"UKBB.{pop}.l2.M_5_50"]
 
 
+def run_streamed(cmd, cwd):
+    """Run an LDSC program, echoing its output to this step's console line by line as it comes (the website shows a
+    running step's last lines), and return (exit code, all of its output)."""
+    proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    seen = []
+    for line in proc.stdout:
+        seen.append(line)
+        print(line, end="", flush=True)
+    return proc.wait(), "".join(seen)
+
+
 def number(pattern, text, group=1):
     m = re.search(pattern, text)
     return float(m.group(group)) if m else None
@@ -135,13 +146,14 @@ def main():
               "--n-blocks", str(int(opts["n_blocks"])), "--out", h2]
     artifacts = []
     for name, cmd, log_file in (("munge", munge_cmd, munged + ".log"), ("ldsc", h2_cmd, h2 + ".log")):
-        proc = subprocess.run(cmd, cwd=ldsc_dir, capture_output=True, text=True)
-        text = open(log_file).read() if os.path.exists(log_file) else proc.stdout + proc.stderr
+        print(f"== {'munge_sumstats.py' if name == 'munge' else 'ldsc.py --h2'}", flush=True)
+        code, output = run_streamed(cmd, ldsc_dir)
+        text = open(log_file).read() if os.path.exists(log_file) else output
         with open(os.path.join(art, f"{name}.log"), "w") as f:
-            f.write(text + (proc.stderr if proc.returncode else ""))
+            f.write(text + (output if code and output not in text else ""))
         artifacts.append({"type": "text", "path": f"{name}.log", "label": f"{'munge_sumstats.py' if name == 'munge' else 'ldsc.py --h2'} log"})
-        if proc.returncode != 0:
-            last = (proc.stderr or text).strip().splitlines()[-3:]
+        if code != 0:
+            last = output.strip().splitlines()[-3:]
             write_log(args.log, "ldsc", "warn", {"ran": False, "population": pop},
                       [f"{name} did not finish: " + " ".join(last)], artifacts)
             return

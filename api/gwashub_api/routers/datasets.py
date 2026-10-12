@@ -138,19 +138,10 @@ def check_upload(db, project, d: dict) -> tuple[dict, Cohort | None, dict]:
         raise HTTPException(422, f"Sex stratum '{d['sex']}' isn't expected in this project")
     if d["build"] not in BUILDS:
         raise HTTPException(422, "build must be GRCh37 or GRCh38")
-    # The columns QC needs (parse refuses a dataset without them): a P value or -log10 P will do; EAF is required.
-    mapped = {k for k, v in (d["column_mapping"] or {}).items() if v}
-    unmapped = [c_ for c_ in ("chr", "pos", "ea", "oa", "beta", "se", "eaf") if c_ not in mapped]
-    if not mapped & {"p", "log10p"}:
-        unmapped.append("p (or -log10 P)")
-    if unmapped:
-        raise HTTPException(422, f"Map these columns: {', '.join(unmapped)}")
+    check_mapping(d["column_mapping"])
     ttype = services.trait_type(project, d["phenotype"])
     effect_type = d.get("effect_type") or "beta"
-    if effect_type not in ("beta", "or"):
-        raise HTTPException(422, "effect_type must be beta or or")
-    if effect_type == "or" and ttype == "quantitative":
-        raise HTTPException(422, f"'{d['phenotype']}' is a quantitative trait: effects must be betas, not odds ratios")
+    check_effect_type(effect_type, ttype, d["phenotype"])
     try:
         counts = services.sample_sizes(ttype, d.get("n_cases"), d.get("n_controls"), d.get("n_total"))
     except ValueError as e:
@@ -171,6 +162,37 @@ def check_upload(db, project, d: dict) -> tuple[dict, Cohort | None, dict]:
         raise HTTPException(422, f"This project requires: {', '.join(missing)}")
     return ({"cohort": c.name if c else name, "phenotype": d["phenotype"], "ancestry": d["ancestry"], "sex": d["sex"],
              "build": d["build"], "effect_type": effect_type, **counts, "column_mapping": d["column_mapping"]}, c, meta)
+
+
+# The standard columns a mapping may name (gwashub/parse MAPPABLE).
+MAPPABLE = ("rsid", "chr", "pos", "ea", "oa", "eaf", "beta", "se", "p", "log10p", "n", "ncase", "ncontrol", "info")
+
+
+def check_mapping(mapping: dict | None, file_columns: list[str] | None = None) -> dict:
+    """A column mapping QC can use, without its empty entries; 422 otherwise. The columns parse needs (it refuses a
+    dataset without them): a P value or -log10 P will do; EAF is required. With file_columns, every mapped column must
+    be one of the file's."""
+    mapping = {k: v for k, v in (mapping or {}).items() if v}
+    unknown = sorted(set(mapping) - set(MAPPABLE))
+    if unknown:
+        raise HTTPException(422, f"Unknown column field(s): {', '.join(unknown)}")
+    unmapped = [c_ for c_ in ("chr", "pos", "ea", "oa", "beta", "se", "eaf") if c_ not in mapping]
+    if not set(mapping) & {"p", "log10p"}:
+        unmapped.append("p (or -log10 P)")
+    if unmapped:
+        raise HTTPException(422, f"Map these columns: {', '.join(unmapped)}")
+    if file_columns is not None:
+        absent = sorted({v for v in mapping.values() if v not in file_columns})
+        if absent:
+            raise HTTPException(422, f"The file has no column named {', '.join(absent)}")
+    return mapping
+
+
+def check_effect_type(effect_type: str, ttype: str, phenotype: str):
+    if effect_type not in ("beta", "or"):
+        raise HTTPException(422, "effect_type must be beta or or")
+    if effect_type == "or" and ttype == "quantitative":
+        raise HTTPException(422, f"'{phenotype}' is a quantitative trait: effects must be betas, not odds ratios")
 
 
 def validate_upload(db, project, d: dict, user: User) -> dict:
@@ -574,6 +596,8 @@ class DatasetEdit(BaseModel):
     build: str | None = None
     study_meta: dict | None = None  # full replacement of the study metadata
     pipeline_id: int | None = None  # reviewers: the QC pipeline it runs against; 0 = follow the project default
+    column_mapping: dict | None = None  # the whole mapping: {standard field: the file's column}
+    effect_type: str | None = None  # beta or or
 
 
 def set_pipeline(db, ds: Dataset, pipeline_id: int) -> tuple | None:
@@ -594,6 +618,15 @@ def set_pipeline(db, ds: Dataset, pipeline_id: int) -> tuple | None:
 
 CORE_EDITABLE = ("cohort", "phenotype", "ancestry", "sex", "build")
 COUNTS = ("n_cases", "n_controls", "n_total")
+
+
+@router.get("/datasets/{dataset_id}/columns")
+def file_columns(dataset_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """The uploaded file's column names (its header line only), for remapping the columns."""
+    ds, m = require_dataset(db, user, dataset_id)
+    if not (m.role == "reviewer" or ds.uploaded_by == user.id):
+        raise HTTPException(403, "Only the uploader or a reviewer can edit this dataset")
+    return {"columns": header_columns(ds.storage_path)}
 
 
 @router.patch("/datasets/{dataset_id}")
@@ -641,6 +674,22 @@ def edit_dataset(dataset_id: int, body: DatasetEdit, user: User = Depends(curren
         counts = services.sample_sizes(ttype, given["n_cases"], given["n_controls"], given["n_total"])
     except ValueError as e:
         raise HTTPException(422, str(e))
+    # Column mapping and effect type: how QC reads the file (needs a re-run). Logged one standard field at a time.
+    if body.effect_type is not None and body.effect_type != ds.effect_type:
+        if ds.status in ("processing", "uploading"):
+            raise HTTPException(409, "QC is running; change the effect type when it has finished")
+        check_effect_type(body.effect_type, ttype, ds.phenotype)
+        changes["effect_type"] = [ds.effect_type, body.effect_type]
+        ds.effect_type = body.effect_type
+    if body.column_mapping is not None:
+        new_map = check_mapping(body.column_mapping, header_columns(ds.storage_path))
+        old_map = {k: v for k, v in (ds.column_mapping or {}).items() if v}
+        if new_map != old_map:
+            if ds.status in ("processing", "uploading"):
+                raise HTTPException(409, "QC is running; change the column mapping when it has finished")
+            for k in [f for f in MAPPABLE if old_map.get(f) != new_map.get(f)]:
+                changes[f"column {k}"] = [old_map.get(k), new_map.get(k)]
+            ds.column_mapping = new_map
     if ttype == "quantitative" and ds.effect_type == "or":
         raise HTTPException(422, f"'{ds.phenotype}' is a quantitative trait, but this dataset's effects are odds ratios")
     for f, v in counts.items():
@@ -672,7 +721,8 @@ def edit_dataset(dataset_id: int, body: DatasetEdit, user: User = Depends(curren
     db.commit()
     if run:
         jobs.start_qc(run.id)
-    rerun_advised = not run and ds.status != "pending" and any(k in changes for k in ("ancestry", "pipeline", *COUNTS))
+    rerun_advised = not run and ds.status != "pending" and any(k in ("ancestry", "pipeline", "effect_type", *COUNTS)
+                                                                or k.startswith("column ") for k in changes)
     return {"changed": sorted(changes), "rerun_advised": rerun_advised, "rerun_started": bool(run)}
 
 

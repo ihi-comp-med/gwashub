@@ -16,12 +16,15 @@ and chained with Batch job dependencies. A group picks up where the previous one
 file and the run state are passed through <output>/_state/, and earlier steps' outputs are fetched
 so that later steps (e.g. the report) can read them. Locally all groups run in one go.
 """
+import datetime
 import json
 import os
 import posixpath
+import re
 import shutil
 import subprocess
 import sys
+import threading
 import uuid
 
 from pipeline.runner import executor
@@ -126,6 +129,77 @@ def _fetch_outputs(output, local_out):
             _s3().download_file(bucket, o["Key"], dest)
 
 
+# ---------- the running step's last output lines ----------
+
+TAIL_LINES, TAIL_WIDTH = 5, 300
+TAIL_SECONDS = float(os.environ.get("GWASHUB_TAIL_SECONDS", "15"))  # how often the running step's tail is published
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def tail_lines(path, n=TAIL_LINES, width=TAIL_WIDTH) -> list[str]:
+    """The last n lines a step printed, made safe to show: colour codes removed, a line rewritten with \\r reduced to
+    what it last said (progress bars), each line cut to width characters. [] when there's nothing yet."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 16384))
+            text = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    lines = [_ANSI.sub("", ln.split("\r")[-1]).rstrip() for ln in text.split("\n")]
+    lines = [ln if len(ln) <= width else ln[:width - 1] + "…" for ln in lines if ln.strip()]
+    return lines[-n:]
+
+
+def latest_log(step_dir):
+    """The step's console (output.txt) or one of its own *.log files, whichever changed last: harmonise_liftover's
+    progress, for one, goes to gwas2vcf.log and bcftools.log. Never a table or other output."""
+    try:
+        names = [n for n in os.listdir(step_dir) if n == "output.txt" or n.endswith(".log")]
+    except OSError:
+        return None
+    paths = [os.path.join(step_dir, n) for n in names if os.path.getsize(os.path.join(step_dir, n)) > 0]
+    return max(paths, key=os.path.getmtime) if paths else None
+
+
+class TailPublisher:
+    """While a job runs, every TAIL_SECONDS puts the running step's last output lines into progress.json (as "tail":
+    {lines, at}), so the website can show what the step is doing. Never touches the step itself: any error here is
+    ignored. Shares a lock with the code that records finished steps."""
+
+    def __init__(self, progress, local_out, resolved, save, lock):
+        self.progress, self.local_out, self.resolved, self.save, self.lock = progress, local_out, resolved, save, lock
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop.set()
+        self.thread.join(timeout=5)
+
+    def _loop(self):
+        while not self.stop.wait(TAIL_SECONDS):
+            try:
+                self.publish_once()
+            except Exception:
+                pass  # the tail is a convenience: never let it affect the run
+
+    def publish_once(self):
+        with self.lock:
+            for i, p in enumerate(self.progress):
+                if p.get("state") != "running":
+                    continue
+                e = self.resolved[i]
+                source = latest_log(os.path.join(self.local_out, "steps", f"{e.index + 1:02d}_{e.name}"))
+                lines = tail_lines(source) if source else []
+                if lines and lines != (p.get("tail") or {}).get("lines"):
+                    p["tail"] = {"lines": lines, "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+                    self.save()
+
+
 def run_qc(spec, workdir, on_step=None, group=None):
     """Run a QC spec: every group (group=None, local) or just one group (a Batch job).
     Returns the result dict once the last group has run, else the hand-over state."""
@@ -157,6 +231,8 @@ def run_qc(spec, workdir, on_step=None, group=None):
             state = json.load(f)
         with open(os.path.join(local_out, "progress.json")) as f:
             progress = json.load(f)
+    lock = threading.Lock()  # progress is also written by the TailPublisher thread
+
     def save_progress():
         # The website reads the published copy while the job runs; the local copy is published with the job's outputs
         # at the end, so it must be current too (a stale one would set this group's finished steps back to queued).
@@ -167,7 +243,13 @@ def run_qc(spec, workdir, on_step=None, group=None):
     save_progress()
 
     def step_done(i, st, res):
+        with lock:
+            _step_done(i, st, res)
+
+    def _step_done(i, st, res):
         progress[i]["state"] = st
+        if st != "running":
+            progress[i].pop("tail", None)  # the whole console is in the step's output.txt once it has finished
         if res:
             # The whole step record (verdict, every message, metrics, artifacts, rows), so the website shows a
             # finished step in full while later steps run; its folder is published now, so its files can be opened.
@@ -178,8 +260,9 @@ def run_qc(spec, workdir, on_step=None, group=None):
         if on_step:
             on_step(i, st, res)
 
-    for g in todo:
-        executor.run_steps(resolved, state, spec["params"], res_dir, local_out, indexes=set(groups[g]["steps"]), on_step=step_done)
+    with TailPublisher(progress, local_out, resolved, save_progress, lock):
+        for g in todo:
+            executor.run_steps(resolved, state, spec["params"], res_dir, local_out, indexes=set(groups[g]["steps"]), on_step=step_done)
 
     # Which group runs next (Batch submits one job at a time; the worker reads this from the hand-over). After a block,
     # groups with nothing that must still run (always_run, e.g. the report) are recorded as skipped here instead of

@@ -4,7 +4,7 @@ description: "Reads the upload through the column mapping, reports on it, wrangl
 narrative: >
   Reads only the mapped columns of the upload (any delimiter, gzipped or not) and recodes them as the HERMES 3 DCM
   pipeline did: chromosomes without a "chr" prefix (23 = X, 24 = Y), upper-case A/C/G/T alleles, sample sizes as
-  numbers ("<=40" becomes 40), odds ratios as log-odds. It counts, for every column, the values missing and out of
+  numbers ("1,234" becomes 1234; a censored count such as "<=40" is unknown, so it becomes missing and is filled from the study details), odds ratios as log-odds. It counts, for every column, the values missing and out of
   bounds (for example P outside 0 to 1, EAF outside 0 to 1, SE of 0 or below, non-numeric values), lists the
   chromosomes present and counts indels (kept). It then fills what it can: P from BETA/SE (or -log10 P) where P is
   missing, N from each row's cases + controls, and missing N, cases or controls from the study details. Finally it
