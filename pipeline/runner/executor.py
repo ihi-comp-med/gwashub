@@ -129,6 +129,38 @@ def _count_rows(path):
         return max(sum(1 for _ in f) - 1, 0)
 
 
+def describe_exit(code, what="step") -> str:
+    """Why a step or method process ended, in words: an out-of-memory kill (signal 9; 137 from `docker run`) says
+    what to change, since it leaves no error message of its own."""
+    if code == "timeout":
+        return "ran past the time limit"
+    if not isinstance(code, int):
+        return str(code)
+    if code in (-signal.SIGKILL, 128 + signal.SIGKILL):
+        yaml_file = "step.yaml" if what == "step" else "analysis.yaml"
+        return (f"was killed (signal 9), most likely because it ran out of memory: give the {what} more with "
+                f"compute: memory_gb in its {yaml_file}")
+    if code < 0:
+        return f"was stopped by signal {-code}"
+    return f"exited with {code}"
+
+
+def used_params(entry) -> list:
+    """The parameters a step runs with: every field of its step.yaml, the pipeline's value where it set one, else the
+    default; recorded with the step so a run keeps what it used even if a default changes later.
+    [{key, label, help, type, value, default, changed}]"""
+    given = entry.params or {}
+    out = []
+    for f in entry.step.param_schema:
+        default = f.get("default")
+        value = given.get(f["key"], default)
+        if f.get("type") == "range" and isinstance(value, dict) and isinstance(default, dict):
+            value = {**default, **value}
+        out.append({"key": f["key"], "label": f.get("label", f["key"]), "help": f.get("help", ""), "type": f.get("type"), "value": value,
+                    "default": default, "changed": f["key"] in given and value != default})
+    return out
+
+
 def _valid_log(log):
     return isinstance(log, dict) and log.get("verdict") in ORDER
 
@@ -168,6 +200,7 @@ def run_steps(resolved, state, run_params, resource_dir, out_dir, indexes=None, 
             os.makedirs(step_dir, exist_ok=True)
             os.makedirs(res_dir, exist_ok=True)
             base = {"index": entry.index, "key": entry.step.key, "title": entry.step.title, "image": entry.image,
+                    "params": used_params(entry),
                     "on_fail": entry.on_fail, "source": entry.step.source, "dir": f"steps/{tag}"}
 
             if status != "completed" and not entry.step.always_run:
@@ -243,7 +276,7 @@ def run_steps(resolved, state, run_params, resource_dir, out_dir, indexes=None, 
             if os.path.exists(console) and os.path.getsize(console) == 0:
                 os.remove(console)  # the step printed nothing
             if code != 0 or not _valid_log(log):
-                reason = (f"exited with {code}" if code != 0 else "did not write a valid step log")
+                reason = describe_exit(code) if code != 0 else "did not write a valid step log"
                 if status == "completed":
                     status, stop_reason = "failed", f"{entry.step.title} crashed ({reason})"
                 res = {**base, "state": "error", "verdict": "fail", "exit_code": code, "duration": duration,

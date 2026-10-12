@@ -50,6 +50,7 @@ const startable = (d: any) => d.status === 'pending' && (isReviewer.value || d.u
 // Uploaders also re-run their own datasets a reviewer sent back (changes requested).
 const rerunnable = (d: any) => isReviewer.value ? !['processing', 'uploading'].includes(d.status)
   : startable(d) || (d.status === 'changes_requested' && d.uploaded_by === me.value?.id)
+const stoppable = (d: any) => d.status === 'processing' && (isReviewer.value || d.uploaded_by === me.value?.id)
 const deletable = (d: any) => d.status !== 'processing' && (isReviewer.value || d.uploaded_by === me.value?.id)
 const waiting = computed(() => (datasets.value ?? []).filter(startable))
 const runLabel = computed(() => {
@@ -104,6 +105,21 @@ async function rerunPicked() {
   }
   catch (e: any) { toast.add({ severity: 'error', summary: 'Could not start QC', detail: e.message, life: 5000 }) }
   finally { rerunning.value = false }
+}
+const stopping = ref(false)
+async function stopPicked() {
+  const ids = picked.value.filter(stoppable).map(d => d.id)
+  if (!ids.length || !window.confirm(`Stop QC on ${ids.length} dataset${ids.length === 1 ? '' : 's'}? Each run is recorded as stopped and the dataset goes back to pending.`)) return
+  stopping.value = true
+  try {
+    const r = await api<{ stopped: number, skipped: any[] }>(`/projects/${pid.value}/datasets/stop`, { method: 'POST', body: { ids } })
+    toast.add({ severity: 'info', summary: `QC stopped for ${r.stopped} dataset${r.stopped === 1 ? '' : 's'}`,
+      detail: r.skipped.length ? `${r.skipped.length} skipped (no longer running).` : undefined, life: 4000 })
+    picked.value = []
+    changed()
+  }
+  catch (e: any) { toast.add({ severity: 'error', summary: 'Could not stop QC', detail: e.message, life: 5000 }) }
+  finally { stopping.value = false }
 }
 const num = (v: any, digits = 3) => v == null ? '–' : typeof v === 'number' && !Number.isInteger(v) ? v.toFixed(digits) : Number(v).toLocaleString()
 
@@ -160,7 +176,7 @@ function changed() { refresh(); refreshProject() }
             </div>
           </Message>
           <div class="bulk row" data-tour="datasets-bulk">
-            <span class="muted small">{{ picked.length ? `${picked.length} selected` : isReviewer ? 'Select datasets to start or re-run QC, change their pipeline or delete them' : 'Select your datasets to start QC on pending ones or delete them' }}</span>
+            <span class="muted small">{{ picked.length ? `${picked.length} selected` : isReviewer ? 'Select datasets to start, stop or re-run QC, change their pipeline or delete them' : 'Select your datasets to start or stop QC, or delete them' }}</span>
             <Button v-if="isReviewer && outOfDate.length" label="Select the out-of-date ones" text size="small" @click="pickOutdated" />
             <Button v-if="picked.length" label="Clear selection" text size="small" severity="secondary" @click="picked = []" />
             <span class="spacer" />
@@ -170,6 +186,8 @@ function changed() { refresh(); refreshProject() }
               <Select v-model="pinTo" :options="pipelineOptions" option-label="label" option-value="id" placeholder="Set pipeline…" size="small" />
               <Button label="Apply" size="small" text :disabled="pinTo == null" @click="pinPicked" />
             </template>
+            <Button v-if="picked.some(stoppable)" :label="`Stop QC (${picked.filter(stoppable).length})`" icon="pi pi-stop-circle" size="small" text severity="danger"
+                    :loading="stopping" @click="stopPicked" />
             <Button :label="runLabel" icon="pi pi-play" size="small" outlined
                     :disabled="!picked.some(rerunnable)" :loading="rerunning" @click="rerunPicked" />
           </div>

@@ -30,6 +30,10 @@ ensure_repo() {
 
 echo "== website"
 (cd web && npx nuxi generate >/dev/null)
+# The site's files replace the bucket's (prune): never deploy an empty or half-written build.
+for f in index.html 200.html; do
+  [ -f "web/.output/public/$f" ] || { echo "The website build has no $f: not deploying (rebuild with: cd web && npx nuxi generate)" >&2; exit 1; }
+done
 
 echo "== image"
 if [ -z "${GWASHUB_IMAGE_TAG:-}" ]; then

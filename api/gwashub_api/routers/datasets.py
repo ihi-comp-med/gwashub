@@ -541,6 +541,28 @@ def rerun(dataset_id: int, user: User = Depends(current_user), db: Session = Dep
     return {"run_id": run.id}
 
 
+def stop_reason(m, user: User, ds: Dataset) -> str | None:
+    """Why this member can't stop QC on this dataset, or None if they can (reviewers: any dataset; uploaders: their own)."""
+    run = latest_run(ds)
+    if ds.status != "processing" or not run or run.status not in jobs.STOPPABLE:
+        return "QC isn't running"
+    if not (m.role == "reviewer" or ds.uploaded_by == user.id):
+        return "only the uploader or a reviewer can stop QC"
+    return None
+
+
+@router.post("/datasets/{dataset_id}/stop")
+def stop(dataset_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Stop the dataset's running QC; the dataset goes back to pending."""
+    ds, m = require_dataset(db, user, dataset_id)
+    reason = stop_reason(m, user, ds)
+    if reason:
+        raise HTTPException(409 if reason == "QC isn't running" else 403, reason[0].upper() + reason[1:])
+    jobs.stop_qc(db, latest_run(ds), user.name)
+    db.commit()
+    return {"status": ds.status}
+
+
 class DatasetEdit(BaseModel):
     cohort: str | None = None
     phenotype: str | None = None
@@ -760,6 +782,25 @@ def bulk_set_pipeline(project_id: str, body: BulkPipeline, user: User = Depends(
 
 class BulkRerun(BaseModel):
     ids: list[int]
+
+
+@router.post("/projects/{project_id}/datasets/stop")
+def bulk_stop(project_id: str, body: BulkRerun, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Stop running QC on several datasets. Reviewers: any dataset; uploaders: their own."""
+    m = require_member(db, user, project_id)
+    if not body.ids or len(body.ids) > 500:
+        raise HTTPException(422, "Choose between 1 and 500 datasets")
+    stopped, skipped = 0, []
+    for i in dict.fromkeys(body.ids):
+        ds = db.get(Dataset, i)
+        reason = "not in this project" if not ds or ds.project_id != project_id else stop_reason(m, user, ds)
+        if reason:
+            skipped.append({"id": i, "reason": reason})
+        else:
+            jobs.stop_qc(db, latest_run(ds), user.name)
+            stopped += 1
+    db.commit()
+    return {"stopped": stopped, "skipped": skipped}
 
 
 @router.post("/projects/{project_id}/datasets/rerun")

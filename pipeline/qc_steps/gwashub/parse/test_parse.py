@@ -175,3 +175,19 @@ def test_parse_warns_on_rounding_n_and_missing_autosomes(tmp_path):
     assert log["verdict"] == "warn"
     assert m["rounded_columns"] == "SE" and "SE has only" in msgs
     assert m["n_above_total"] == 10 and m["autosomes_absent"] == 1 and "chromosome 22" in msgs
+
+
+@needs_image("gwashub/base-r")
+def test_one_allele_missing(tmp_path):
+    """A row with an effect allele but no other allele (or the reverse) is removed with its reason; it used to crash
+    the removal reasons (EA == OA compared against a missing value)."""
+    df = upload()
+    df.loc[0, "A2"] = None
+    df.loc[1, "A1"] = None
+    src = tmp_path / "upload.csv"
+    df.to_csv(src, index=False)
+    log, out = run_step("parse", str(src), {"column_mapping": MAP}, tmp_path)
+    assert log["verdict"] == "pass", log
+    assert len(out) == len(df) - 2 and log["metrics"]["identical_alleles"] == 0
+    removed = pd.read_csv(tmp_path / "artifacts" / "removed_rows.tsv.gz", sep="\t")
+    assert sorted(removed["reason"]) == ["EA missing", "OA missing"]

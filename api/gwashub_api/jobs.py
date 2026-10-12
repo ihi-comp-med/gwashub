@@ -107,6 +107,13 @@ def meta_image(method_key: str) -> str:
     return md.image if md else "gwashub/base"
 
 
+def meta_compute(method_key: str) -> dict:
+    """The Batch job size for a method: its analysis.yaml compute: over the defaults."""
+    from pipeline.runner.catalog import DEFAULT_COMPUTE, load_analyses
+    md = load_analyses().get(method_key)
+    return {**DEFAULT_COMPUTE, **(md.compute if md else {})}
+
+
 # ---------- starting jobs ----------
 
 def start_qc(run_id: int):
@@ -140,7 +147,7 @@ def start_meta(meta_id: int):
         spec = meta_spec(db, ma)
         db.commit()
         if settings().jobs == "batch":
-            ma.batch_job_id = _submit_batch(spec, f"gwashub-meta-{ma.id}", meta_image(spec["method"]))
+            ma.batch_job_id = _submit_batch(spec, f"gwashub-meta-{ma.id}", meta_image(spec["method"]), compute=meta_compute(spec["method"]))
             db.commit()
         else:
             _in_background(_run_meta_locally, ma.id, spec)
@@ -202,6 +209,40 @@ def next_qc_group(db, run: QCRun) -> str:
     return f"qc run {run.id}: submitted group {nxt}"
 
 
+# ---------- stopping ----------
+
+class Stopped(Exception):
+    """Raised in a local run when someone stops it."""
+
+
+STOPPABLE = ("queued", "running")
+
+
+def stop_qc(db, run: QCRun, by: str):
+    """Stop a QC run that is queued or running: its Batch job is terminated (on AWS) or it ends at the next step
+    (locally), it is recorded as stopped, and later events for it are ignored. The dataset goes back to pending, so QC
+    can be started again. The caller commits."""
+    run.status, run.finished_at, run.error = "stopped", now(), f"Stopped by {by}."
+    run.progress = [{**p, "state": "skipped"} if p.get("state") in ("queued", "running") else p for p in (run.progress or [])]
+    run.dataset.status = "pending"
+    if settings().jobs == "batch" and run.batch_job_id:
+        try:  # cancels a job still waiting for a machine, stops a running one; a job that already ended is left alone
+            _batch().terminate_job(jobId=run.batch_job_id, reason=f"Stopped by {by}"[:200])
+        except Exception as e:
+            log.warning("Could not terminate Batch job %s of run %s: %s", run.batch_job_id, run.id, e)
+
+
+def stop_meta(ma: MetaAnalysis, by: str):
+    """Stop a queued or running meta-analysis: its Batch job is terminated (on AWS), it is recorded as stopped, and later
+    events for it are ignored. Locally the method runs to the end, but its result isn't recorded. The caller commits."""
+    ma.status, ma.finished_at, ma.error = "stopped", now(), f"Stopped by {by}."
+    if settings().jobs == "batch" and ma.batch_job_id:
+        try:
+            _batch().terminate_job(jobId=ma.batch_job_id, reason=f"Stopped by {by}"[:200])
+        except Exception as e:
+            log.warning("Could not terminate Batch job %s of meta-analysis %s: %s", ma.batch_job_id, ma.id, e)
+
+
 # ---------- local execution ----------
 
 def _run_qc_locally(run_id: int, spec: dict):
@@ -213,6 +254,9 @@ def _run_qc_locally(run_id: int, spec: dict):
         db.commit()
 
         def on_step(i, state, res):
+            db.refresh(run)
+            if run.status == "stopped":  # someone pressed Stop: end at this step boundary (the step that ran isn't undone)
+                raise Stopped()
             prog = [dict(p) for p in run.progress]
             if i < len(prog):
                 prog[i]["state"] = state
@@ -222,7 +266,11 @@ def _run_qc_locally(run_id: int, spec: dict):
             db.commit()
 
         result = run_spec(spec, os.path.join(run.run_dir, "_work"), on_step=on_step)
-        apply_qc_result(db, run, result)
+        db.refresh(run)
+        if run.status != "stopped":
+            apply_qc_result(db, run, result)
+    except Stopped:
+        db.rollback()
     except Exception as e:  # infrastructure error, not a QC verdict
         db.rollback()
         _fail_qc(db, run_id, f"{e}\n{traceback.format_exc()[-1500:]}")
@@ -238,7 +286,9 @@ def _run_meta_locally(meta_id: int, spec: dict):
         ma.status = "running"
         db.commit()
         result = run_spec(spec, tempfile.mkdtemp(prefix="gwashub-meta-"))
-        apply_meta_result(db, ma, result)
+        db.refresh(ma)
+        if ma.status != "stopped":
+            apply_meta_result(db, ma, result)
     except Exception as e:
         db.rollback()
         _fail_meta(db, meta_id, str(e)[-3000:])
@@ -274,7 +324,7 @@ def apply_meta_result(db, ma: MetaAnalysis, result: dict):
 
 def _fail_qc(db, run_id: int, error: str):
     run = db.get(QCRun, run_id)
-    if not run:
+    if not run or run.status == "stopped":  # a stopped run stays stopped
         return
     run.status, run.error, run.finished_at = "failed", error, now()
     if is_latest(db, run):
@@ -284,7 +334,7 @@ def _fail_qc(db, run_id: int, error: str):
 
 def _fail_meta(db, meta_id: int, error: str):
     ma = db.get(MetaAnalysis, meta_id)
-    if ma:
+    if ma and ma.status != "stopped":
         ma.status, ma.error, ma.finished_at = "failed", error, now()
         db.commit()
 
@@ -370,7 +420,7 @@ def handle_batch_event(db, event: dict) -> str:
     if not run and not ma:
         return f"ignored {job_id}: no matching run"
     target = run or ma
-    if target.status in ("completed", "blocked", "failed") and target.finished_at:
+    if target.status in ("completed", "blocked", "failed", "stopped") and target.finished_at:
         return f"ignored {job_id}: already recorded"
     if status in WAITING:
         group = int(m.group(3)) if m and m.group(3) is not None else None

@@ -79,6 +79,17 @@ const rowsLine = (s: any) => {
   const gone = s.rows_before - s.rows_after
   return `${s.rows_before.toLocaleString()} → ${s.rows_after.toLocaleString()}` + (gone > 0 ? ` (−${gone.toLocaleString()}, ${(100 * gone / Math.max(s.rows_before, 1)).toFixed(2)}%)` : gone < 0 ? ` (+${(-gone).toLocaleString()})` : ' (none removed)')
 }
+// A step's parameters as the run recorded them (pipeline/runner/executor.py used_params): one "label: value" each.
+function fmtParam(p: any): string {
+  const v = p.value
+  if (p.type === 'range' && v && typeof v === 'object') {
+    const lim = [v.min_on ? `min ${v.min}` : '', v.max_on ? `max ${v.max}` : ''].filter(Boolean).join(', ')
+    return v.on ? (lim || 'on') : `off${lim ? ` (when on: ${lim})` : ''}`
+  }
+  if (typeof v === 'boolean') return v ? 'yes' : 'no'
+  return v === null || v === undefined || v === '' ? '–' : String(v)
+}
+const ranStep = (s: any) => !['queued', 'running', 'skipped'].includes(s.state)
 const ART_ICON: Record<string, string> = { image: 'pi pi-image', table: 'pi pi-table', text: 'pi pi-align-left', report: 'pi pi-file', html: 'pi pi-file' }
 const artUrl = (s: any, a: any, download = false) => `/api/datasets/${d.value?.id}/files/artifact?path=${encodeURIComponent(`${s.dir}/${a.path}`)}${d.value?.run?.id ? `&run_id=${d.value.run.id}` : ''}${download ? '&download=1' : ''}`
 
@@ -152,6 +163,17 @@ async function setPipeline(id: number) {
   catch (e: any) { toast.add({ severity: 'error', summary: 'Could not change the pipeline', detail: e.message, life: 4000 }) }
 }
 
+async function stopQc() {
+  if (!window.confirm('Stop QC on this dataset? The run is recorded as stopped and the dataset goes back to pending; start QC again when you are ready.')) return
+  try {
+    await api(`/datasets/${d.value.id}/stop`, { method: 'POST' })
+    toast.add({ severity: 'info', summary: 'QC stopped', life: 2500 })
+    clearInterval(timer)
+    await load()
+    emit('changed')
+  }
+  catch (e: any) { toast.add({ severity: 'error', summary: 'Could not stop QC', detail: e.message, life: 4000 }) }
+}
 async function remove() {
   if (!window.confirm(`Delete ${d.value.cohort} · ${d.value.phenotype} · ${d.value.ancestry} · ${d.value.sex}? The uploaded file and all QC results are removed. This cannot be undone.`)) return
   try {
@@ -272,6 +294,7 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
         <span class="spacer" />
         <Button v-if="isReviewer && !['processing', 'review'].includes(d.status) && !overriding" label="Override QC outcome" size="small" text severity="secondary" @click="overriding = true; tab = 'qc'" />
         <Button v-if="isReviewer && !['processing', 'pending'].includes(d.status)" label="Re-run QC" icon="pi pi-refresh" size="small" text @click="rerun" />
+        <Button v-if="d.can_edit && d.status === 'processing'" label="Stop QC" icon="pi pi-stop-circle" size="small" text severity="danger" @click="stopQc" />
         <Button v-if="d.can_edit" v-tooltip.top="d.status === 'processing' ? 'Wait for QC to finish' : undefined" label="Delete" icon="pi pi-trash" size="small" text severity="danger" :disabled="d.status === 'processing'" @click="remove" />
       </div>
 
@@ -306,7 +329,7 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
           <TabPanel value="qc">
             <div class="stack">
               <Message v-if="d.run?.stop_reason" severity="error" :closable="false" icon="pi pi-ban">{{ d.run.stop_reason }}</Message>
-              <Message v-if="d.run?.error" severity="error" :closable="false"><pre class="err">{{ d.run.error }}</pre></Message>
+              <Message v-if="d.run?.error" :severity="d.run.status === 'stopped' ? 'info' : 'error'" :closable="false"><pre class="err">{{ d.run.error }}</pre></Message>
               <Message v-if="d.review" :severity="d.review.decision === 'approve' ? 'success' : 'warn'" :closable="false" icon="pi pi-user">
                 {{ { approve: 'Approved', reject: 'Rejected', request_changes: 'Changes requested' }[d.review.decision as string] }} by {{ d.review.by }}<span v-if="d.review.note">: “{{ d.review.note }}”</span>
               </Message>
@@ -368,6 +391,21 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
                             <td class="mono arg">image</td>
                             <td><span v-tooltip.top="'The Docker image (software environment) the step ran in'" class="ident"><i class="pi pi-box" /><span class="mono">{{ s.image }}</span></span>
                               <span class="muted small"> Docker image</span></td>
+                          </tr>
+                          <tr v-if="ranStep(s)">
+                            <td class="mono arg">parameters</td>
+                            <td>
+                              <span v-if="!s.params" class="muted small">Not recorded for this run (runs record their parameters from 12 October 2026)</span>
+                              <span v-else-if="!s.params.length" class="muted small">None</span>
+                              <ul v-else class="params">
+                                <li v-for="p in s.params" :key="p.key" :class="{ changed: p.changed }">
+                                  <span class="pk mono">{{ p.key }}</span>
+                                  <span v-tooltip.top="p.help || undefined" class="pd muted">{{ p.label }}</span>
+                                  <span v-tooltip.top="p.changed ? `Set by the pipeline; the default is ${fmtParam({ ...p, value: p.default })}` : 'The default'"
+                                        class="pv">{{ fmtParam(p) }}</span>
+                                </li>
+                              </ul>
+                            </td>
                           </tr>
                           <tr>
                             <td class="mono arg">verdict</td>
@@ -607,6 +645,13 @@ h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: .05em; color:
 .replace-bar { height: 22px; }
 .replace-bar :deep(.p-progressbar-label) { font-size: 0.75rem; line-height: 1; }
 .ident { display: inline-flex; align-items: center; gap: 6px; }
+.params { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: max-content max-content minmax(0, 1fr);
+  gap: 1px 16px; font-size: 0.8rem; }
+.params li { display: contents; }
+.params .pk, .params .pd, .params .pv { padding: 1px 0; border-bottom: 1px dotted var(--p-content-border-color); }
+.params .pk { color: var(--gh-muted); }
+.params .pv { font-variant-numeric: tabular-nums; }
+.params .changed .pk, .params .changed .pd, .params .changed .pv { font-weight: 600; }
 .ident .pi { color: var(--gh-muted); font-size: 0.85rem; }
 .msg { margin: 0 0 2px; }
 .mgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0 18px; }

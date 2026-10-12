@@ -31,7 +31,9 @@ def test_default_pipeline_end_to_end(synth_small, tmp_path):
     assert [s["state"] for s in res["steps"]].count("skipped") == 0
     out = pd.read_csv(tmp_path / "gwas_qc.tsv", sep="\t", dtype={"chr": str})
     assert list(out.columns) == ["chr", "pos", "ea", "oa", "beta", "se", "p", "eaf", "n", "ncase", "ncontrol", "rsid", "info"]
-    assert len(out) > 0.9 * entry["rows"] and out["rsid"].str.startswith("rs").all()
+    # rsIDs come only from dbSNP: most variants have one, the rest (e.g. indels dbSNP lists differently) have none
+    rsid = out["rsid"].dropna()
+    assert len(out) > 0.9 * entry["rows"] and rsid.str.startswith("rs").all() and len(rsid) > 0.9 * len(out)
     assert (tmp_path / res["outputs"]["qc_report"]).exists()
     steps = {s["key"]: s for s in res["steps"]}
     assert (tmp_path / steps["gwashub/plots"]["dir"] / "manhattan.png").exists()
@@ -133,6 +135,38 @@ def test_crashing_step_is_reported(synth_small, tmp_path):
     assert res["status"] == "failed" and "crashed" in res["stop_reason"]
     assert "kaboom" in res["steps"][0]["messages"][1]
     assert [s["state"] for s in res["steps"]] == ["error", "skipped", "pass"]
+
+
+def test_steps_record_the_parameters_they_ran_with(synth_small, tmp_path):
+    """Each step's record carries every parameter it ran with: the pipeline's value where it set one (marked changed),
+    the default otherwise; a step without parameters records an empty list."""
+    maf = {"on": True, "min_on": True, "min": 0.01, "max_on": False, "max": 0.5}
+    entries = entries_from_dicts([{"step": "gwashub/parse"}, {"step": "gwashub/filter", "params": {"maf": maf}},
+                                  {"step": "gwashub/plots"}, {"step": "gwashub/qc_report"}])
+    res = run(synth_small, synth_small["manifest"][0], tmp_path, entries=entries)
+    by_step = {s["key"]: s for s in res["steps"]}
+    params = {p["key"]: p for p in by_step["gwashub/filter"]["params"]}
+    assert set(params) == {f["key"] for f in load_steps()["gwashub/filter"].param_schema}
+    assert params["maf"]["changed"] and params["maf"]["value"] == maf and params["maf"]["label"] == "MAF"
+    assert not params["beta"]["changed"] and params["beta"]["value"]["on"] is False and params["beta"]["value"]["max"] == 20
+    assert by_step["gwashub/plots"]["params"] == []
+
+
+def test_exit_codes_are_explained():
+    """A killed process leaves no error message: the out-of-memory kill is named, with what to change."""
+    from pipeline.runner.executor import describe_exit
+    for code in (-9, 137):
+        assert "ran out of memory" in describe_exit(code) and "step.yaml" in describe_exit(code)
+    assert "analysis.yaml" in describe_exit(-9, "method")
+    assert describe_exit(1) == "exited with 1" and describe_exit("timeout") == "ran past the time limit"
+
+
+def test_meta_methods_ask_for_their_job_size():
+    """analysis.yaml compute: sizes a method's Batch job, as step.yaml does for QC steps."""
+    from pipeline.runner.catalog import load_analyses
+    m = load_analyses()
+    assert m["gwashub/gwama"].compute["memory_gb"] >= 60 and m["gwashub/metal"].compute["memory_gb"] >= 60
+    assert m["custom_example/custom_meta_analysis"].compute == {}
 
 
 def test_default_pipeline_groups_by_image():

@@ -188,7 +188,12 @@ The method is called once per meta-analysis, in the method's folder, as
 - Write `--log` as JSON: `{"verdict": "pass", "metrics": {}, "messages": [], "studies": [], "files": []}`. `files` lists
   files the method wrote in `OUT_DIR` for download with the results, such as the program's own log:
   `[{"path": "gwama_log.txt", "label": "GWAMA log"}]` (file names only, no folders).
-- Exit 0 when it ran. No network calls, no database.
+- Put scratch files (inputs rewritten for your program, its raw output) in a folder of `OUT_DIR` whose name ends in
+  `_work`, such as `OUT_DIR/mymethod_work/`. GWASHub never uploads those folders and deletes them when the method ends,
+  failed or not; everything else in `OUT_DIR` is kept with the results.
+- Exit 0 when it ran. No network calls, no database. GWASHub keeps the method's console (stdout and stderr) as
+  `method_output.txt`, which reviewers can download, and explains a crash in the error (an out-of-memory kill names
+  `compute:`). Ask for a bigger machine with `compute: {vcpus, memory_gb}` in `analysis.yaml` (default 2 vCPUs, 8 GB).
 
 GWASHub then does the rest for every method: lead loci (LD clumping against the 1000 Genomes panels, `_metalib/loci.py`) with
 their independent signals, nearest genes and locus plots (`_metalib/regions.py`),

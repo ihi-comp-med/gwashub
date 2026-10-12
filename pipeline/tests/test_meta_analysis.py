@@ -301,3 +301,26 @@ def test_dataset_overlap_is_named():
     assert r[("A", "B")] > 0.98 and 0.3 < r[("A", "C")] < 0.7 and abs(r[("A", "D")]) < 0.1
     text = " ".join(messages)
     assert "A and B look like the same data" in text and "A and C may share samples" in text and "A and D" not in text
+
+
+def test_a_failing_method_keeps_its_output_and_says_why(tmp_path, monkeypatch):
+    """A method that fails leaves its whole console in method_output.txt and an error that says how it ended."""
+    from pipeline.runner.catalog import AnalysisDef
+    from pipeline.runner.jobspec import METHOD_OUTPUT, run_method
+    monkeypatch.setenv("GWASHUB_STEP_RUNNER", "host")
+    (tmp_path / "m").mkdir()
+    (tmp_path / "m" / "boom.py").write_text(
+        "import os, sys\nout = sys.argv[sys.argv.index('--out') + 1]\nos.makedirs(os.path.join(out, 'boom_work'))\n"
+        "open(os.path.join(out, 'boom_work', 'study_1.txt'), 'w').write('a copy of an input')\n"
+        "print('reading inputs')\nsys.stderr.write('MemoryError: out of room\\n')\nsys.exit(3)\n")
+    method = AnalysisDef(key="testco/boom", title="Boom", description="", workdir=str(tmp_path / "m"),
+                         command=["python", "boom.py"], image="gwashub/base")
+    out = tmp_path / "out"
+    res = run_method(method, [], {}, {}, str(out))
+    assert res["status"] == "failed" and res["error"].startswith("The method exited with 3.")
+    assert "MemoryError: out of room" in res["error"] and METHOD_OUTPUT in res["error"]
+    console = (out / METHOD_OUTPUT).read_text()
+    assert "exit code: 3" in console and "reading inputs" in console and "MemoryError" in console
+    assert not (out / "boom_work").exists()  # its scratch folder (a copy of the inputs) is removed, failed or not
+    from pipeline.runner.jobspec import _scratch
+    assert _scratch("gwama_work/study_1.txt") and _scratch("_loci_work/x") and not _scratch("lead_loci.tsv")

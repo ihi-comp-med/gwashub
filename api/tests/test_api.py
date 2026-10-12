@@ -77,6 +77,73 @@ def test_column_suggestion(client, synth_small):
     assert len(body["preview"]) == 5
 
 
+def test_stop_qc(client, synth_small):
+    """Stopping QC: the run is recorded as stopped (by whom), its unfinished steps as skipped, the dataset goes back to
+    pending, and a late event from its Batch job doesn't overwrite any of that. Reviewers stop any dataset, uploaders
+    their own; in bulk, the rest are skipped with a reason."""
+    from gwashub_api import jobs
+    from gwashub_api.db import SessionLocal
+    from gwashub_api.models import Dataset
+    from gwashub_api.routers.datasets import start_run
+    entry = synth_small["manifest"][0]
+    as_user(client, "jonas@example.org")
+    a, b = (upload(client, synth_small, entry, start=False) for _ in range(2))
+    with SessionLocal() as db:  # two runs waiting for a machine (tests run QC inline, so make them by hand)
+        for i in (a["id"], b["id"]):
+            ds = db.get(Dataset, i)
+            ds.status = "processing"
+            run = start_run(db, ds)
+            run.progress, run.batch_job_id = [{"key": "gwashub/parse", "state": "running"}, {"key": "gwashub/filter", "state": "queued"}], f"job-{i}"
+        db.commit()
+    as_user(client, "mei@example.org")  # another uploader can't stop it
+    assert client.post(f"/api/datasets/{a['id']}/stop").status_code == 403
+    as_user(client, "jonas@example.org")
+    assert client.post(f"/api/datasets/{a['id']}/stop").json()["status"] == "pending"
+    d = client.get(f"/api/datasets/{a['id']}").json()
+    assert d["status"] == "pending" and d["run"]["status"] == "stopped" and "Stopped by" in d["run"]["error"]
+    assert client.post(f"/api/datasets/{a['id']}/stop").status_code == 409  # nothing left to stop
+    with SessionLocal() as db:
+        run = db.get(Dataset, a["id"]).runs[-1]
+        assert [p["state"] for p in run.progress] == ["skipped", "skipped"]
+        event = {"detail": {"jobId": "job-%d" % a["id"], "jobName": f"gwashub-qc-{run.id}-g0", "status": "FAILED", "statusReason": "terminated"}}
+        assert "ignored" in jobs.handle_batch_event(db, event)
+        assert db.get(Dataset, a["id"]).status == "pending"
+    as_user(client, "ama@example.org")  # a reviewer, in bulk: b stops, a is no longer running
+    r = client.post("/api/projects/hermes3/datasets/stop", json={"ids": [a["id"], b["id"]]}).json()
+    assert r["stopped"] == 1 and r["skipped"] == [{"id": a["id"], "reason": "QC isn't running"}]
+    assert client.get(f"/api/datasets/{b['id']}").json()["status"] == "pending"
+    for i in (a["id"], b["id"]):
+        assert client.delete(f"/api/datasets/{i}").status_code in (200, 204)
+
+
+def test_stop_meta_analysis(client):
+    """Reviewers stop a queued or running meta-analysis: it's recorded as stopped (by whom), a late Batch event doesn't
+    change that, and it can then be deleted. Uploaders can't stop one; a finished one can't be stopped."""
+    from sqlalchemy import select
+    from gwashub_api import jobs
+    from gwashub_api.db import SessionLocal
+    from gwashub_api.models import MetaAnalysis, User
+    with SessionLocal() as db:  # waiting for a machine (tests run meta-analyses inline, so make it by hand)
+        uid = db.scalar(select(User.id).where(User.email == "ama@example.org"))
+        ma = MetaAnalysis(project_id="hermes3", name="To stop", settings={}, dataset_ids=[], method="gwashub/gwama",
+                          created_by=uid, status="queued", batch_job_id="job-meta-stop")
+        db.add(ma)
+        db.commit()
+        mid = ma.id
+    as_user(client, "jonas@example.org")  # an uploader
+    assert client.post(f"/api/meta/{mid}/stop").status_code == 403
+    as_user(client, "ama@example.org")
+    assert client.delete(f"/api/meta/{mid}").status_code == 409  # still running
+    r = client.post(f"/api/meta/{mid}/stop").json()
+    assert r["status"] == "stopped" and r["error"].startswith("Stopped by")
+    assert client.post(f"/api/meta/{mid}/stop").status_code == 409
+    with SessionLocal() as db:
+        event = {"detail": {"jobId": "job-meta-stop", "jobName": f"gwashub-meta-{mid}", "status": "FAILED", "statusReason": "terminated"}}
+        assert "ignored" in jobs.handle_batch_event(db, event)
+        assert db.get(MetaAnalysis, mid).status == "stopped"
+    assert client.delete(f"/api/meta/{mid}").status_code == 204
+
+
 def test_column_suggestion_coded_allele_names():
     """The coded / non-coded allele naming (A_coded, A_noncoded, AFreq_coded) maps to EA, OA and EAF; n_events (the
     number of cases, as survival analyses name it) to cases."""

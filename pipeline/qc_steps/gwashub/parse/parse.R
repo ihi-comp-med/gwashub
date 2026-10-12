@@ -286,7 +286,7 @@ valid <- list(
 )
 summary[, out_of_bounds := sapply(column, function(col) sum(!is.na(gwas[[col]]) & !valid[[col]](gwas[[col]])))]
 for (col in names(gwas)) gwas[!valid[[col]](get(col)), (col) := NA]
-same <- !is.na(gwas$ea) & gwas$ea == gwas$oa
+same <- !is.na(gwas$ea) & !is.na(gwas$oa) & gwas$ea == gwas$oa  # both checked: an NA here breaks the removal reasons
 identical_alleles <- sum(same)
 gwas[same, c("ea", "oa") := NA_character_]
 

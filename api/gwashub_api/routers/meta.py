@@ -46,7 +46,7 @@ COMMON_PARAMS = P.normalise([
 STATUSES = ("passed", "review")
 PUBLIC_FILES = {"manhattan.png", "qq.png", "plot_data.json", "forest.json", "lead_loci.tsv", "signals.tsv", "summary.json", "datasets.tsv",
                 "README.txt"}
-REVIEWER_FILES = {"meta_results.tsv.gz"}
+REVIEWER_FILES = {"meta_results.tsv.gz", "method_output.txt"}  # the method's console: kept failed or not
 
 
 def methods() -> dict:
@@ -160,6 +160,7 @@ def meta_view(db, ma: MetaAnalysis, detail=False):
          "created_by": db.get(User, ma.created_by).name, "created_at": ma.created_at,
          "finished_at": ma.finished_at, "error": ma.error, "lambda_gc": ma.lambda_gc, "location": ma.run_dir,
          "batch_note": jobs.batch_note(ma.batch_state) if ma.status in ("queued", "running") else None,
+         "has_output": ma.status in ("completed", "failed") and bool(ma.run_dir) and storage.exists(storage.join(ma.run_dir, "method_output.txt")),
          "summary": {k: v for k, v in ((ma.result or {}).get("summary") or {}).items() if k != "settings"}}
     if detail and ma.status == "completed":
         lead = storage.read_bytes(storage.join(ma.run_dir, "lead_loci.tsv"))
@@ -246,7 +247,8 @@ def meta_file(meta_id: int, name: str, user: User = Depends(current_user), db: S
     if name in REVIEWER_FILES and m.role != "reviewer":
         raise HTTPException(403, "Only reviewers can download full meta-analysis results")
     region = re.fullmatch(r"region_\d+\.json", name) is not None  # a locus plot's data (_metalib/regions.py)
-    if not (region or name in PUBLIC_FILES | REVIEWER_FILES | {f["path"] for f in method_files(ma)}) or ma.status != "completed":
+    available = ma.status == "completed" or (ma.status == "failed" and name == "method_output.txt")
+    if not (region or name in PUBLIC_FILES | REVIEWER_FILES | {f["path"] for f in method_files(ma)}) or not available:
         raise HTTPException(404, "No such file")
     if region:  # small, and read by the page itself: returned directly rather than via a (cross-origin) S3 redirect
         loc = storage.join(ma.run_dir, name)
@@ -255,6 +257,19 @@ def meta_file(meta_id: int, name: str, user: User = Depends(current_user), db: S
         return json.loads(storage.read_bytes(loc))
     from gwashub_api.routers.datasets import send_file
     return send_file(storage.join(ma.run_dir, name), f"meta_{ma.id}_{name}")
+
+
+@router.post("/meta/{meta_id}/stop")
+def stop_meta(meta_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Stop a queued or running meta-analysis (reviewers). It stays in the list as stopped, to delete or run again."""
+    ma, m = require_meta(db, user, meta_id)
+    if m.role != "reviewer":
+        raise HTTPException(403, "Only reviewers can stop meta-analyses")
+    if ma.status not in jobs.STOPPABLE:
+        raise HTTPException(409, "This meta-analysis isn't running")
+    jobs.stop_meta(ma, user.name)
+    db.commit()
+    return meta_view(db, ma)
 
 
 @router.delete("/meta/{meta_id}", status_code=204)

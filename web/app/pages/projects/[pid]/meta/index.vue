@@ -76,7 +76,16 @@ function resetDefaults() { if (settingsResp.value) Object.assign(s, JSON.parse(J
 const methodSummary = (a: any) => [a.method?.title ?? a.settings.method, a.settings.params?.model ?? a.settings.params?.scheme].filter(Boolean).join(', ')
 const inflated = computed(() => selected.value.filter(c => (c.lambda_gc ?? 0) > 1.1))
 const statusChoices = [{ l: 'Passed QC', v: 'passed' }, { l: 'For review', v: 'review' }]
-const statusSev = (st: string) => ({ completed: 'success', running: 'info', queued: 'secondary', failed: 'danger' } as any)[st]
+const statusSev = (st: string) => ({ completed: 'success', running: 'info', queued: 'secondary', failed: 'danger', stopped: 'secondary' } as any)[st]
+async function stopMeta(a: any) {
+  if (!window.confirm(`Stop "${a.name}"? It stays in the list as stopped.`)) return
+  try {
+    await api(`/meta/${a.id}/stop`, { method: 'POST' })
+    toast.add({ severity: 'info', summary: 'Meta-analysis stopped', life: 2500 })
+    await refresh()
+  }
+  catch (e: any) { toast.add({ severity: 'error', summary: 'Could not stop it', detail: e.message, life: 4000 }) }
+}
 </script>
 
 <template>
@@ -165,7 +174,11 @@ const statusSev = (st: string) => ({ completed: 'success', running: 'info', queu
             <Column header="λGC"><template #body="{ data }">{{ data.lambda_gc?.toFixed(3) ?? '–' }}</template></Column>
             <Column header="Run by"><template #body="{ data }">{{ data.created_by }} · {{ fmtDate(data.created_at) }}</template></Column>
             <Column header="Status">
-              <template #body="{ data }"><Tag :value="data.status" :severity="statusSev(data.status)" :icon="['queued', 'running'].includes(data.status) ? 'pi pi-spin pi-spinner' : undefined" /></template>
+              <template #body="{ data }">
+                <Tag :value="data.status" :severity="statusSev(data.status)" :icon="['queued', 'running'].includes(data.status) ? 'pi pi-spin pi-spinner' : undefined" />
+                <Button v-if="isReviewer && ['queued', 'running'].includes(data.status)" icon="pi pi-stop-circle" text rounded size="small" severity="danger"
+                        aria-label="Stop" v-tooltip.top="'Stop'" @click.stop="stopMeta(data)" />
+              </template>
             </Column>
           </DataTable>
         </template>

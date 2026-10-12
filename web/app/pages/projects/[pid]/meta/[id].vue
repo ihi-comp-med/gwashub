@@ -54,6 +54,15 @@ const HELP = {
   ldsc: 'LD score regression intercept from QC: near 1 means inflation is polygenic signal; well above 1 points to confounding or stratification.',
   qc: 'QC status of the dataset; a warning icon lists the QC steps that warned on the run used here.',
 }
+async function stop() {
+  if (!window.confirm('Stop this meta-analysis? It stays in the list as stopped; delete it or start a new one.')) return
+  try {
+    await api(`/meta/${id.value}/stop`, { method: 'POST' })
+    toast.add({ severity: 'info', summary: 'Meta-analysis stopped', life: 2500 })
+    await refresh()
+  }
+  catch (e: any) { toast.add({ severity: 'error', summary: 'Could not stop it', detail: e.message, life: 4000 }) }
+}
 async function remove() {
   if (!window.confirm('Delete this meta-analysis? This cannot be undone.')) return
   try {
@@ -118,6 +127,7 @@ const num = (x: any, d = 4) => x === '' || x == null || Number.isNaN(Number(x)) 
                     @click="e => downloadMenu.toggle(e)" />
             <Menu id="ma-downloads" ref="downloadMenu" :model="downloads" popup class="dl-menu" />
           </template>
+          <Button v-if="isReviewer && ['queued', 'running'].includes(ma.status)" label="Stop" icon="pi pi-stop-circle" size="small" text severity="danger" @click="stop" />
           <Button v-if="isReviewer && !['queued', 'running'].includes(ma.status)" icon="pi pi-trash" text severity="danger" aria-label="Delete" @click="remove" />
         </div>
 
@@ -144,7 +154,11 @@ const num = (x: any, d = 4) => x === '' || x == null || Number.isNaN(Number(x)) 
         </div>
 
         <Message v-if="['queued', 'running'].includes(ma.status)" :severity="ma.batch_note ? 'warn' : 'info'" :closable="false" icon="pi pi-spin pi-spinner">{{ ma.batch_note || 'Running…' }}</Message>
-        <Message v-if="ma.status === 'failed'" severity="error" :closable="false"><pre class="err">{{ ma.error }}</pre></Message>
+        <Message v-if="ma.status === 'failed'" severity="error" :closable="false">
+          <pre class="err">{{ ma.error }}</pre>
+          <a v-if="ma.has_output && isReviewer" :href="`/api/meta/${ma.id}/files/method_output.txt`" class="p-button p-button-sm p-button-outlined outlink"><i class="pi pi-download" />&nbsp;Method output</a>
+        </Message>
+        <Message v-if="ma.status === 'stopped'" severity="info" :closable="false" icon="pi pi-stop-circle">{{ ma.error }}</Message>
 
         <template v-if="ma.status === 'completed'">
           <div class="grid tiles">
@@ -272,6 +286,7 @@ const num = (x: any, d = 4) => x === '' || x == null || Number.isNaN(Number(x)) 
 .h2 { font-size: 1.35rem; margin: 0 0 4px; }
 .small { font-size: 0.8rem; }
 .err { white-space: pre-wrap; font-size: 0.75rem; margin: 0; max-height: 200px; overflow: auto; }
+.outlink { margin-top: 8px; }
 .tiles { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-bottom: 16px; }
 .stat-detail { font-size: 0.75rem; color: var(--gh-muted); margin-top: 2px; }
 .plots { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: stretch; margin-bottom: 16px; }

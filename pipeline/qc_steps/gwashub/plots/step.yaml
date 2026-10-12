@@ -10,4 +10,5 @@ command:
 image: gwashub/base
 default_on_fail: continue
 resources: []
+compute: {vcpus: 2, memory_gb: 32}   # reads the whole file, as stats_summary
 params: {}

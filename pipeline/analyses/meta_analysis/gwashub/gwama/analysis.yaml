@@ -7,6 +7,7 @@ description: >
 reference: Mägi R & Morris AP (2010) GWAMA, BMC Bioinformatics 11:288
 command: [python, run_gwama.py]
 image: gwashub/gwama
+compute: {vcpus: 4, memory_gb: 60}   # every dataset's variants in memory: 8 GB (the default) runs out at about 10 datasets of 20 million
 params:
   - {key: model, label: Model, type: select, options: [fixed, random], default: fixed, help: "random: GWAMA's --random"}
   - {key: min_studies, label: Minimum datasets per variant, type: integer, min: 1, default: 2,

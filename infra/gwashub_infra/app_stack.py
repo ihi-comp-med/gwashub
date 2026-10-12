@@ -143,6 +143,12 @@ class AppStack(cdk.Stack):
                 route53.AaaaRecord(self, "WwwAaaa", zone=zone, record_name=f"www.{cfg.domain}", target=alias)
         site_url = f"https://{cfg.domain}" if cfg.domain else f"https://{dist.distribution_domain_name}"
         if os.path.isdir(WEB_BUILD):
+            # prune=True replaces the bucket's contents with the build's: an empty or half-written build (the folder
+            # rebuilt while CDK packages it) would leave the site empty, so stop instead.
+            missing = [f for f in ("index.html", "200.html") if not os.path.isfile(os.path.join(WEB_BUILD, f))]
+            if missing:
+                raise RuntimeError(f"The website build {WEB_BUILD} is incomplete (no {', '.join(missing)}): rebuild it "
+                                   "(cd web && npx nuxi generate) and make sure nothing else rebuilds it during the deploy")
             s3deploy.BucketDeployment(self, "WebFiles", sources=[s3deploy.Source.asset(WEB_BUILD)], destination_bucket=web_bucket,
                                       distribution=dist, distribution_paths=["/*"], prune=True, memory_limit=512)
 
@@ -314,6 +320,9 @@ class AppStack(cdk.Stack):
                 resources=[job_queue.job_queue_arn, job_queue_x86.job_queue_arn,
                            *(_unversioned(jd.job_definition_arn) for jd in job_defs.values())]))
             td.task_role.add_to_principal_policy(iam.PolicyStatement(actions=["batch:DescribeJobs"], resources=["*"]))
+            # Stop QC (jobs.stop_qc): terminate a run's job, waiting or running; job ARNs aren't known in advance
+            td.task_role.add_to_principal_policy(iam.PolicyStatement(
+                actions=["batch:TerminateJob"], resources=[self.format_arn(service="batch", resource="job", resource_name="*")]))
         events_queue.grant_consume_messages(worker_td.task_role)
         # The API task definition also runs admin commands (devtools/aws_admin.sh), which invite users.
         api_td.task_role.add_to_principal_policy(iam.PolicyStatement(actions=["cognito-idp:AdminCreateUser"], resources=[pool.user_pool_arn]))

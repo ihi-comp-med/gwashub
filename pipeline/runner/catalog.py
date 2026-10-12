@@ -168,6 +168,7 @@ class AnalysisDef:
     reference: str = ""  # citation shown with the method
     source: dict = field(default_factory=dict)
     narrative: str = ""  # what the method's script does, in plain words (analysis.yaml `narrative:`)
+    compute: dict = field(default_factory=dict)  # {"vcpus", "memory_gb"} its Batch job needs (analysis.yaml `compute:`)
 
     @property
     def owner(self):
@@ -189,6 +190,6 @@ def load_analyses(root=META_ANALYSIS_DIR):
             out[key] = AnalysisDef(
                 key=key, title=d["title"], description=d.get("description", ""), narrative=d.get("narrative", ""), workdir=workdir,
                 command=list(d["command"]), image=d["image"], param_schema=P.normalise(d.get("params")),
-                reference=d.get("reference", ""),
+                reference=d.get("reference", ""), compute=_compute(d.get("compute"), path),
                 source={"repo": "gwashub", "path": os.path.relpath(os.path.join(workdir, d["command"][-1]), REPO_ROOT)})
     return out

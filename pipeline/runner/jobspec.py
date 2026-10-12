@@ -32,6 +32,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # Not published: the working copy (same as gwas_qc.tsv), per-step links to reference files, and the
 # hand-over state between groups (published separately, under _state/).
 NOT_PUBLISHED = ("working.tsv", "state.json", "resources/", "_resources/", "_state/")
+# A meta-analysis method's scratch folders in its OUT_DIR (gwama_work/, metal_work/, publish.py's _loci_work/): copies
+# of every input dataset and the program's raw output. Never published, and removed once the method has finished.
+SCRATCH_SUFFIX = "_work"
+
+
+def _scratch(rel: str) -> bool:
+    return rel.split("/", 1)[0].endswith(SCRATCH_SUFFIX) and "/" in rel
 
 
 # ---------- locations ----------
@@ -82,7 +89,7 @@ def publish(local_dir, loc):
         for fn in files:
             full = os.path.join(dirpath, fn)
             rel = os.path.relpath(full, local_dir).replace(os.sep, "/")
-            if rel in NOT_PUBLISHED or rel.startswith(NOT_PUBLISHED) or os.path.islink(full):
+            if rel in NOT_PUBLISHED or rel.startswith(NOT_PUBLISHED) or _scratch(rel) or os.path.islink(full):
                 continue
             _s3().upload_file(full, bucket, posixpath.join(prefix, rel))
 
@@ -210,12 +217,26 @@ def run_qc(spec, workdir, on_step=None, group=None):
 
 # ---------- meta-analysis ----------
 
+METHOD_OUTPUT = "method_output.txt"  # the method's console, stdout and stderr
+
+
 def run_method(method, inputs, params, common, local_out, resources=None):
+    """Run one meta-analysis method and then GWASHub's post-processing in local_out (_run_method); then remove the
+    scratch folders (*_work/) however they ended, a failure or an out-of-memory kill included."""
+    try:
+        return _run_method(method, inputs, params, common, local_out, resources)
+    finally:
+        for name in os.listdir(local_out) if os.path.isdir(local_out) else []:
+            if name.endswith(SCRATCH_SUFFIX) and os.path.isdir(os.path.join(local_out, name)):
+                shutil.rmtree(os.path.join(local_out, name), ignore_errors=True)
+
+
+def _run_method(method, inputs, params, common, local_out, resources=None):
     """Run one meta-analysis method (analysis.yaml) and then GWASHub's post-processing in local_out.
     inputs: [{id, label, path (local), n_cases, n_controls, n_total, ancestry, sex}]. resources: a folder with the 1000 Genomes
     LD panels (1kg_b38_<POP>.*) for clumping the lead loci, if any. Returns the result dict."""
     from pipeline.runner.catalog import META_ANALYSIS_DIR
-    from pipeline.runner.executor import _interpreter, docker_command, step_runner
+    from pipeline.runner.executor import _interpreter, describe_exit, docker_command, step_runner
     os.makedirs(local_out, exist_ok=True)
     inputs = [{**i, "path": os.path.realpath(i["path"])} for i in inputs]
     for name, obj in (("inputs.json", inputs), ("params.json", params), ("common.json", common)):
@@ -235,8 +256,15 @@ def run_method(method, inputs, params, common, local_out, resources=None):
             else [os.path.join(method.workdir, method.command[0])]
         argv = [*cmd, *args]
     proc = subprocess.run(argv, cwd=method.workdir, env=env, capture_output=True, text=True)
+    # The method's whole console, kept for download (the results page offers it, failed or not).
+    with open(os.path.join(local_out, METHOD_OUTPUT), "w") as f:
+        f.write(f"$ {' '.join(argv)}\nexit code: {proc.returncode}\n\n--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}")
     if proc.returncode != 0 or not os.path.exists(os.path.join(local_out, "meta_results.tsv.gz")):
-        return {"status": "failed", "method": method.key, "error": (proc.stderr[-2000:] or proc.stdout[-2000:] or "the method wrote no results")}
+        why = (f"The method {describe_exit(proc.returncode, 'method')}" if proc.returncode != 0
+               else "The method finished without writing meta_results.tsv.gz")
+        tail = (proc.stderr.strip() or proc.stdout.strip())[-2000:]
+        return {"status": "failed", "method": method.key, "error": why + "." + (f"\n\nLast output:\n{tail}" if tail else
+                " It printed nothing.") + f"\n\nThe full console output is in {METHOD_OUTPUT}."}
     if not os.path.exists(log):
         with open(log, "w") as f:
             json.dump({"method": method.key, "verdict": "pass", "metrics": {}, "messages": []}, f)
@@ -254,7 +282,9 @@ def run_method(method, inputs, params, common, local_out, resources=None):
         pub_argv = [sys.executable, os.path.join(publish_dir, "publish.py"), *pub_args]
     pub = subprocess.run(pub_argv, cwd=publish_dir, env=env, capture_output=True, text=True)
     if pub.returncode != 0:
-        return {"status": "failed", "method": method.key, "error": "Post-processing failed: " + (pub.stderr[-2000:] or pub.stdout[-2000:])}
+        tail = (pub.stderr.strip() or pub.stdout.strip())[-2000:]
+        return {"status": "failed", "method": method.key,
+                "error": f"Post-processing (lead loci, plots) {describe_exit(pub.returncode, 'method')}." + (f"\n\nLast output:\n{tail}" if tail else "")}
     with open(os.path.join(local_out, "summary.json")) as f:
         summary = json.load(f)
     with open(log) as f:
