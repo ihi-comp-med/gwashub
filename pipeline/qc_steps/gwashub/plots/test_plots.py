@@ -17,3 +17,17 @@ def test_writes_pngs_and_plot_data(tmp_path):
     assert (art / "manhattan.png").stat().st_size > 1000 and (art / "qq.png").exists()
     data = json.loads((art / "plot_data.json").read_text())
     assert len(data["manhattan"]["x"]) == n and 0.8 < data["qq"]["lambda"] < 1.2
+
+
+
+def test_qq_points_leave_no_gap():
+    """The website's QQ plot gets about 1,500 points: the 500 strongest and the rest spread evenly along the expected
+    -log10 P axis. Ranks spread evenly left a gap between the two (about 2.7 to 4.3 for 10 million variants)."""
+    from _lib.plotting import qq_points
+    for n in (10_000_000, 300_000, 800, 1):
+        idx = qq_points(n)
+        exp = -np.log10((idx + 0.5) / n)  # expected -log10 P at each chosen rank (0-based), strongest first
+        assert len(idx) <= 1500 and idx[0] == 0 and idx[-1] == n - 1
+        gaps = -np.diff(exp)
+        consecutive = np.diff(idx) == 1  # neighbouring ranks: their gap is the data's own, not the sampling's
+        assert (gaps[~consecutive] < 0.02).all(), (n, gaps[~consecutive].max())

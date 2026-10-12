@@ -81,7 +81,7 @@ images/app/          the site image (API and worker)
 infra/               AWS CDK app: Network, Data and App stacks (docs/AWS_FULL.md)
 devtools/            dev.sh, build_images.sh, synth.py (synthetic data), seed.py, e2e.py, run_demo.py; AWS: aws_cdk_deploy.sh,
                      aws_admin.sh, aws_upload_resources.py, aws_db_tunnel.sh, aws_bookmarks.py
-docs/                PROGRESS (where it stands), AWS guides, validation plan, bulk upload design; images/ (posters)
+docs/                PROGRESS (where it stands), AWS guides, validation plan, bulk upload design; images/ (posters; prompts in IMAGE_PROMPTS.md)
 local/               git-ignored: synthetic/ (fake data + resources), app/ (dev DB, uploads, runs), runs/
 ```
 

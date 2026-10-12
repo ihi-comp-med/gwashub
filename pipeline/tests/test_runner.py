@@ -280,3 +280,27 @@ def test_range_defaults_load_as_written():
     assert beta["on"] is False and beta["max_on"] is True and beta["max"] == 20
     with pytest.raises(ValueError, match='"on" in quotes'):
         range_value({True: True, "max_on": True, "max": 20}, ["max"])
+
+
+def test_number_parameters_are_numbers():
+    """YAML reads 5e-20 (no decimal point) as text; parse then crashed on it. A number parameter's default, min and max
+    must be numbers: every step and method in the catalog, and the schema refuses text."""
+    from pipeline.runner.catalog import load_analyses
+    from pipeline.runner.params import normalise
+    for key, d in [*load_steps().items(), *load_analyses().items()]:
+        for f in d.param_schema:
+            if f["type"] in ("number", "integer"):
+                assert all(not isinstance(f.get(k), str) for k in ("default", "min", "max")), (key, f["key"])
+    assert load_steps()["gwashub/parse"].params["zero_p_max"] == 5e-20
+    with pytest.raises(ValueError, match="not a number"):
+        normalise([{"key": "x", "type": "number", "default": "5e-20"}])
+    # What the website sends from its text boxes: scientific notation is a number; other text is named.
+    from pipeline.runner.params import validate
+    schema = load_steps()["gwashub/parse"].param_schema
+    assert validate({"zero_p_max": "1e-20"}, schema)["zero_p_max"] == 1e-20
+    with pytest.raises(ValueError, match="must be a number"):
+        validate({"zero_p_max": "tiny"}, schema)
+    se = load_steps()["gwashub/filter"].param_schema
+    with pytest.raises(ValueError, match="maximum must be a number"):
+        validate({"se": {"on": True, "max_on": True, "max": "big"}}, se)
+    assert validate({"se": {"on": True, "max_on": True, "max": "1e3"}}, se)["se"]["max"] == 1000

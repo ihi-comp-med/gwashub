@@ -7,7 +7,8 @@ Used by gwashub/plots (on a QC'd working file) and _metalib/publish.py (on meta_
   plot_data.json   for the website's interactive plots:
                      manhattan  {x, y (-log10 P), chr (1-23, 23 = X), pos, rsid?, ticks [{chr, x}], x_max}: every
                                 variant with P < 1e-3 plus a random sample of the rest up to max_points
-                     qq         {expected, observed, lambda}: the 500 strongest points and 500 spread over the rest
+                     qq         {expected, observed, lambda}: the 500 strongest points and about 1,000 spread evenly
+                                along the expected -log10 P axis
                      gws
 
 Notes
@@ -36,6 +37,15 @@ def lambda_gc(p):
     if not len(p):
         return float("nan")
     return float(np.median(stats.chi2.isf(np.clip(p, 1e-300, 1), 1)) / stats.chi2.ppf(0.5, 1))
+
+
+def qq_points(n, top=500, spread=1000):
+    """Which of n ranked points (0 = strongest) the website's QQ plot gets: the `top` strongest, plus about `spread`
+    spaced evenly along the expected -log10 P axis (ranks spaced geometrically). Ranks spaced evenly left a gap between
+    the strongest 500 and the rest, at about 2.7 to 4.3 for 10 million variants."""
+    if not n:
+        return np.array([], int)
+    return np.unique(np.concatenate([np.arange(min(top, n)), np.geomspace(1, n, min(spread, n)).astype(int) - 1]))
 
 
 def make_plots(df, out_dir, gws=5e-8, max_points=6000, title=None):
@@ -91,7 +101,7 @@ def make_plots(df, out_dir, gws=5e-8, max_points=6000, title=None):
     rest = df[df["p"] >= 1e-3]
     k = max(0, max_points - len(strong))
     sample = pd.concat([strong, rest.sample(min(k, len(rest)), random_state=1)]).sort_values("x")
-    qq_idx = np.unique(np.concatenate([np.arange(min(500, n)), np.linspace(0, max(n - 1, 0), min(500, n)).astype(int)])) if n else np.array([], int)
+    qq_idx = qq_points(n)
     with open(os.path.join(out_dir, "plot_data.json"), "w") as f:
         json.dump({
             "manhattan": {"x": sample["x"].round(0).astype(int).tolist(), "y": sample["logp"].round(3).tolist(),

@@ -42,6 +42,10 @@ def normalise(raw) -> list[dict]:
         t = f.get("type") or _infer(f["key"], f.get("default"))["type"]
         if t not in TYPES:
             raise ValueError(f"parameter {f['key']}: type must be one of {', '.join(TYPES)}")
+        if t in ("number", "integer"):
+            for k in ("default", "min", "max"):  # YAML reads 5e-20 (no decimal point) as text: write 5.0e-20
+                if isinstance(f.get(k), str) or isinstance(f.get(k), bool):
+                    raise ValueError(f"parameter {f['key']}: {k} {f[k]!r} is not a number (in YAML, write 5e-20 as 5.0e-20)")
         if t == "select" and not f.get("options"):
             raise ValueError(f"parameter {f['key']}: a select needs options")
         if t == "range":
@@ -80,7 +84,10 @@ def _check_range(v, f) -> dict:
         x = merged[sd]
         if x is None or isinstance(x, bool):
             raise ValueError(f"the {sd}imum is switched on, so give it a value")
-        x = merged[sd] = float(x)
+        try:
+            x = merged[sd] = float(x)  # the website sends what was typed: a number, or text it couldn't read as one
+        except (TypeError, ValueError):
+            raise ValueError(f"the {sd}imum must be a number (e.g. 0.01 or 1e-6)") from None
         if ("min" in f and x < f["min"]) or ("max" in f and x > f["max"]):
             raise ValueError(f"the {sd}imum must be between {f.get('min', '-∞')} and {f.get('max', '∞')}")
     if merged["on"] and merged["min_on"] and merged["max_on"] and merged["min"] > merged["max"]:
@@ -112,7 +119,10 @@ def validate(values: dict | None, schema: list[dict], where: str = "") -> dict:
             elif t in ("number", "integer"):
                 if isinstance(v, bool):
                     raise ValueError("must be a number")
-                v = float(v)
+                try:
+                    v = float(v)  # "5e-20" as typed on the website is a number too
+                except (TypeError, ValueError):
+                    raise ValueError("must be a number (e.g. 0.01 or 5e-20)") from None
                 if t == "integer":
                     if v != int(v):
                         raise ValueError("must be a whole number")

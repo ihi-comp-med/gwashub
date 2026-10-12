@@ -19,8 +19,17 @@ const toggles = computed(() => props.schema.filter(f => f.type === 'boolean'))
 const rangeOf = (f: ParamField): Range => ({ ...f.default, ...(props.modelValue?.[f.key] ?? {}) })
 function setRange(f: ParamField, part: keyof Range, v: any) { set(f, { ...rangeOf(f), [part]: v }) }
 const sideLabel = { min: 'Min', max: 'Max' } as const
-const small = (v: any) => typeof v === 'number' && v !== 0 && Math.abs(v) < 1e-3
 const id = (f: ParamField) => `${props.idPrefix}-${f.key}`
+// Decimal parameters and range limits are typed as text so scientific notation works ("5e-20" for a P threshold), as
+// in MetadataForm. While a box is being typed in, its text is kept as typed; anything that isn't a number is sent as
+// it is, and the server names the field.
+const drafts = reactive<Record<string, string>>({})
+const isNum = (s: string) => s.trim() !== '' && Number.isFinite(Number(s.trim()))
+const parsed = (s: string) => s.trim() === '' ? null : isNum(s) ? Number(s.trim()) : s.trim()
+const numText = (k: string, v: any) => drafts[k] ?? (v === null || v === undefined ? '' : String(v))
+const endDraft = (k: string) => { delete drafts[k] }
+function setNum(f: ParamField, s: string) { drafts[f.key] = s; set(f, parsed(s)) }
+function setLimit(f: ParamField, sd: 'min' | 'max', s: string) { drafts[`${f.key}.${sd}`] = s; setRange(f, sd, parsed(s)) }
 </script>
 
 <template>
@@ -31,12 +40,10 @@ const id = (f: ParamField) => `${props.idPrefix}-${f.key}`
         <Select v-if="f.type === 'select'" :input-id="id(f)" :model-value="value(f)" :options="f.options" :disabled="disabled" size="small" @update:model-value="v => set(f, v)" />
         <InputNumber v-else-if="f.type === 'integer'" :input-id="id(f)" :model-value="value(f)" :min="f.min" :max="f.max" :use-grouping="false" :disabled="disabled"
                      size="small" show-buttons @update:model-value="v => set(f, v)" />
-        <InputNumber v-else-if="f.type === 'number'" :input-id="id(f)" :model-value="value(f)" :min="f.min" :max="f.max" :min-fraction-digits="0" :max-fraction-digits="12"
-                     :use-grouping="false" :disabled="disabled" size="small" @update:model-value="v => set(f, v)" />
+        <InputText v-else-if="f.type === 'number'" :id="id(f)" inputmode="decimal" :model-value="numText(f.key, value(f))" :disabled="disabled" size="small"
+                   @update:model-value="v => setNum(f, v ?? '')" @blur="endDraft(f.key)" />
         <InputText v-else :id="id(f)" :model-value="value(f)" :disabled="disabled" size="small" @update:model-value="v => set(f, v)" />
-        <small v-if="small(value(f)) || changed(f)" class="muted">
-          <span v-if="small(value(f))">{{ Number(value(f)).toExponential(0) }}</span><span v-if="small(value(f)) && changed(f)">. </span><span v-if="changed(f)">Default {{ f.default }}</span>
-        </small>
+        <small v-if="changed(f)" class="muted">Default {{ f.default }}</small>
       </div>
     </div>
     <div v-if="ranges.length" class="ranges">
@@ -52,9 +59,9 @@ const id = (f: ParamField) => `${props.idPrefix}-${f.key}`
             <Checkbox :model-value="!!rangeOf(f)[`${sd}_on`]" binary :input-id="`${id(f)}-${sd}`" :disabled="disabled || !rangeOf(f).on"
                       @update:model-value="v => setRange(f, `${sd}_on`, v)" />
             <label :for="`${id(f)}-${sd}`" class="muted small">{{ sideLabel[sd] }}</label>
-            <InputNumber :model-value="rangeOf(f)[sd]" :min="f.min" :max="f.max" :min-fraction-digits="0" :max-fraction-digits="12" :use-grouping="false"
-                         :disabled="disabled || !rangeOf(f).on || !rangeOf(f)[`${sd}_on`]" size="small" :aria-label="`${f.label} ${sideLabel[sd].toLowerCase()}`"
-                         class="limit-input" @update:model-value="v => setRange(f, sd, v)" />
+            <InputText :model-value="numText(`${f.key}.${sd}`, rangeOf(f)[sd])" inputmode="decimal"
+                       :disabled="disabled || !rangeOf(f).on || !rangeOf(f)[`${sd}_on`]" size="small" :aria-label="`${f.label} ${sideLabel[sd].toLowerCase()}`"
+                       class="limit-input" @update:model-value="v => setLimit(f, sd, v ?? '')" @blur="endDraft(`${f.key}.${sd}`)" />
           </div>
         </template>
       </div>
@@ -84,6 +91,6 @@ const id = (f: ParamField) => `${props.idPrefix}-${f.key}`
 .range { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; gap: 4px 18px; align-items: center; }
 .range.off .limit { opacity: 0.5; }
 .limit { display: flex; align-items: center; gap: 6px; }
-.limit-input :deep(input) { width: 7rem; }
+.limit-input { width: 7rem; }
 .toggle .info { margin-left: -4px; }
 </style>

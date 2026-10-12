@@ -11,12 +11,21 @@ onBeforeUnmount(() => clearInterval(timer))
 
 const selectedLocus = ref<any>(null)
 // The selected locus's plot data (region_<locus_id>.json), loaded when a locus is picked.
+// The previous locus's plot stays (dimmed) until the new one has loaded, so the row keeps its layout instead of the
+// forest plot widening to the whole row for a moment.
 const region = ref<any>(null)
+const regionLoading = ref(false)
+const hasRegions = computed(() => ma.value?.status === 'completed' && !!ma.value?.summary?.n_region_files)
 watch(selectedLocus, async (f) => {
-  region.value = null
-  if (!f?.locus_id || ma.value?.status !== 'completed' || !ma.value?.summary?.n_region_files) return
-  try { region.value = await $fetch(fileUrl(`region_${f.locus_id}.json`)) }
-  catch { region.value = null }
+  if (!f?.locus_id || !hasRegions.value) { region.value = null; return }
+  const id = f.locus_id
+  regionLoading.value = true
+  try {
+    const r = await $fetch(fileUrl(`region_${id}.json`))
+    if (selectedLocus.value?.locus_id === id) region.value = r  // a later click wins
+  }
+  catch { if (selectedLocus.value?.locus_id === id) region.value = null }
+  finally { if (selectedLocus.value?.locus_id === id) regionLoading.value = false }
 })
 watch(ma, (v) => { if (v?.forest?.length && !selectedLocus.value) selectedLocus.value = v.forest[0] })
 const forestFor = (row: any) => ma.value?.forest?.find((f: any) => f.chr === String(row.chr) && f.pos === Number(row.pos))
@@ -217,12 +226,18 @@ const num = (x: any, d = 4) => x === '' || x == null || Number.isNaN(Number(x)) 
             </template>
           </Card>
           <!-- The selected locus: its plot (most of the width) and forest plot, below the table. -->
-          <div class="locus-row" :class="{ single: !region }">
-            <Card v-if="region" class="region">
-              <template #title>Locus {{ region.locus_id }}: {{ region.lead.rsid || `chr${region.chr}:${region.lead.pos.toLocaleString()}` }}
-                <span class="muted small mono">chr{{ region.chr }}:{{ region.locus_start.toLocaleString() }}–{{ region.locus_end.toLocaleString() }}</span></template>
+          <div class="locus-row" :class="{ single: !hasRegions }">
+            <Card v-if="hasRegions" class="region" :class="{ loading: regionLoading }" :aria-busy="regionLoading">
+              <template #title>
+                <template v-if="region">Locus {{ region.locus_id }}: {{ region.lead.rsid || `chr${region.chr}:${region.lead.pos.toLocaleString()}` }}
+                  <span class="muted small mono">chr{{ region.chr }}:{{ region.locus_start.toLocaleString() }}–{{ region.locus_end.toLocaleString() }}</span></template>
+                <template v-else>Locus plot</template>
+              </template>
               <template #subtitle>Every variant in the locus, coloured by r² with the lead SNP; the shaded band is the locus.</template>
-              <template #content><RegionPlot :data="region" /></template>
+              <template #content>
+                <RegionPlot v-if="region" :data="region" />
+                <p v-else class="muted small">{{ regionLoading ? 'Loading the locus plot…' : 'No locus plot for this locus.' }}</p>
+              </template>
             </Card>
             <Card v-if="selectedLocus">
               <template #title>{{ selectedLocus.rsid }} <span class="muted small mono">chr{{ selectedLocus.chr }}:{{ selectedLocus.pos.toLocaleString() }} · {{ selectedLocus.ea }}/{{ selectedLocus.oa }}</span></template>
@@ -307,6 +322,8 @@ const num = (x: any, d = 4) => x === '' || x == null || Number.isNaN(Number(x)) 
 .qc { gap: 6px; }
 .locus-row { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr); gap: 16px; align-items: stretch; margin-bottom: 16px; }
 .locus-row.single { grid-template-columns: minmax(0, 1fr); }
+.locus-row .region { transition: opacity 0.15s; }
+.locus-row .region.loading { opacity: 0.55; }
 @media (max-width: 1000px) { .plots, .locus-row { grid-template-columns: 1fr; } }
 .info { font-size: 0.8rem; line-height: 1.5; background: var(--p-surface-0, #fff); border: 1px solid var(--gh-border); border-radius: 8px;
   padding: 10px 14px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 4px; }

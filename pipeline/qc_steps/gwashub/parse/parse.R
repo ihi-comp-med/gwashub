@@ -48,7 +48,7 @@
 #   fail   a required column not mapped or not in the file; a truncated gzip; the values contradict effect_type;
 #          the P column looks like -log10 P; fewer than min_rows rows left; more than fail_drop_fraction removed
 #   warn   more than warn_drop_fraction removed; BETA, SE or P rounded; N above the declared total; an autosome
-#          absent from a genome-wide file
+#          absent from a genome-wide file; a P of 0 that BETA/SE doesn't support
 #   pass   otherwise. The script always exits 0 once the log is written; the runner reports any other exit as a crash.
 #
 # -----------------------------------------------------------------------------------------------------------------
@@ -62,8 +62,13 @@
 # - A P filled in from BETA/SE uses the normal approximation. For small samples (t statistics) or for tests with a
 #   saddlepoint or Firth correction (SAIGE, REGENIE) it is less accurate than the P the cohort computed, which is why
 #   an uploaded P always wins and the computed one only fills gaps.
-# - P = 0 becomes the smallest positive double (about 2.2e-308) so gwas2vcf keeps the row. The true P is unknown
-#   below that; anything that works on -log10 P is capped near 307 for those rows.
+# - A P of exactly 0 means the program's P underflowed (below about 2.2e-308, |z| above about 37.5) or that its fit
+#   failed. It is believable only when BETA/SE gives a P below zero_p_max (default 5e-20: likelihood-ratio, score and
+#   saddlepoint tests can give smaller P values than BETA/SE, but not by hundreds of orders of magnitude). Believable
+#   ones become the P from BETA/SE (by default; the smallest positive double when that underflows too), the smallest
+#   double for all (as hermes3_dcm), or are removed; the others are removed with a warning, since setting them to
+#   2.2e-308 would make failed fits the strongest signals in the plots, the lead loci, LDSC and a METAL sample-size
+#   meta-analysis.
 # - EAF of exactly 0 or 1 means the variant was monomorphic in the sample (or EAF was rounded to 0 or 1); its effect
 #   estimate carries no information.
 # - Out-of-bounds values become NA. Required columns then lose the row (with a reason); optional columns keep the row.
@@ -78,7 +83,9 @@ DEFAULTS <- list(
   min_rows = 1000,
   warn_drop_fraction = 0.01,
   fail_drop_fraction = 0.5,
-  min_distinct = 1000         # BETA, SE or P with fewer distinct values than this (in 50,000+ rows) look rounded
+  min_distinct = 1000,        # BETA, SE or P with fewer distinct values than this (in 50,000+ rows) look rounded
+  zero_p_max = 5e-20,         # a P of 0 is believable only when BETA/SE gives a P below this
+  zero_p = "from BETA/SE"     # believable P of 0: "from BETA/SE", "smallest number" (as hermes3_dcm) or "remove the variant"
 )
 MAPPABLE <- c("rsid", "chr", "pos", "ea", "oa", "eaf", "beta", "se", "p", "log10p", "n", "ncase", "ncontrol", "info")
 REQUIRED <- c("chr", "pos", "ea", "oa", "beta", "se", "p", "eaf")
@@ -333,10 +340,35 @@ if (from_log) messages <- c(messages, sprintf("P missing for %s rows: computed f
 if (sum(use)) messages <- c(messages, sprintf("P missing for %s rows: computed from BETA / SE (normal approximation).", format(sum(use), big.mark = ",")))
 metrics$p_computed <- filled_p
 
-# P = 0 -> the smallest positive double (as hermes3_dcm); gwas2vcf needs P > 0
-zero_p <- gwas[!is.na(p) & p == 0, .N]
-gwas[!is.na(p) & p == 0, p := .Machine$double.xmin]
-if (zero_p) messages <- c(messages, sprintf("Recoded %s P values of 0 to %g.", format(zero_p, big.mark = ","), .Machine$double.xmin))
+# P = 0: believable only when BETA/SE agrees the association is overwhelming (a P underflows to 0 only below about
+# 1e-308); otherwise it is a failed fit, typically a rare variant with a huge SE, and the row goes. A believable one is
+# set as zero_p says; gwas2vcf needs P > 0.
+sp$zero_p_max <- as.numeric(sp$zero_p_max)  # in case it arrives as text ("5e-20")
+is_zero <- !is.na(gwas$p) & gwas$p == 0
+wald <- 2 * pnorm(-abs(gwas$beta / gwas$se))
+believable <- is_zero & !is.na(wald) & wald < sp$zero_p_max
+zero_bad <- is_zero & !is.na(wald) & !believable  # rows without BETA or SE go anyway, for that reason
+zero_p <- sum(is_zero)
+zero_bad_wald <- wald[zero_bad]
+if (sp$zero_p == "smallest number") {
+  gwas[believable, p := .Machine$double.xmin]
+} else if (sp$zero_p == "remove the variant") {
+  gwas[believable, p := NA_real_]
+} else {
+  gwas[believable, p := pmax(wald[believable], .Machine$double.xmin)]  # BETA/SE's own P underflows above |z| of about 37.5
+}
+gwas[zero_bad, p := NA_real_]
+if (zero_p) {
+  done <- switch(sp$zero_p, "smallest number" = sprintf("set to %g", .Machine$double.xmin),
+                 "remove the variant" = "removed (setting)", "set to the P from BETA/SE")
+  messages <- c(messages, sprintf("%s P values of 0: %s believable (BETA/SE gives P below %g), %s; %s not.",
+                                  format(zero_p, big.mark = ","), format(sum(believable), big.mark = ","), sp$zero_p_max, done,
+                                  format(sum(zero_bad), big.mark = ",")))
+}
+if (any(zero_bad)) {
+  warnings <- c(warnings, sprintf("%s rows have P = 0 but BETA/SE gives P between %.2g and %.2g: not believable (a failed fit, often a rare variant with a huge SE), so removed. Check how the P values were written.",
+                                  format(sum(zero_bad), big.mark = ","), min(zero_bad_wald), max(zero_bad_wald)))
+}
 
 #=============================================================================
 # drop rows without the required values; write the GWASHub format
@@ -356,11 +388,18 @@ for (col in REQUIRED) {
   if (col %in% c("ea", "oa")) lost <- lost & !same
   if (col == "eaf") lost <- lost & !mono
   miss <- was_missing[[col]] %||% rep(TRUE, rows_in)
+  if (col == "p") lost <- lost & !is_zero  # a P of 0 removed has its own reason (below)
   add(lost & miss, if (col == "p") "P missing and not computable" else sprintf("%s missing", toupper(col)))
   add(lost & !miss, INVALID[[col]])
   if (col == "oa") add(same, "EA and OA identical")
   if (col == "eaf") add(mono, "EAF 0 or 1 (monomorphic)")
 }
+# A P of 0 removed: not believable (with the P BETA/SE gives), or believable but removed by the zero_p setting.
+zero_reason <- rep("", rows_in)
+zero_reason[zero_bad] <- sprintf("P = 0, but BETA/SE gives P = %.2g", zero_bad_wald)
+zero_reason[believable & is.na(gwas$p)] <- "P = 0 (removed by the P = 0 setting)"
+m <- nzchar(zero_reason) & !keep
+reasons[m] <- paste0(reasons[m], ifelse(nzchar(reasons[m]), "; ", ""), zero_reason[m])
 reasons[header_line] <- "repeated header line"
 removed_rows <- raw[!keep]
 removed_rows[, `:=`(line = which(!keep), reason = reasons[!keep])]
@@ -412,7 +451,7 @@ if (rows_out >= LARGE && length(absent)) {
 
 indels <- gwas[nchar(ea) > 1 | nchar(oa) > 1, .N]
 messages <- c(messages, sprintf("Indels: %s (%.2f%%); kept (gwashub/filter can remove them).", format(indels, big.mark = ","), 100 * indels / max(rows_out, 1)))
-metrics <- c(metrics, list(rows_out = rows_out, rows_removed = dropped, p_zero_recoded = zero_p,
+metrics <- c(metrics, list(rows_out = rows_out, rows_removed = dropped, p_zero = zero_p, p_zero_believable = sum(believable), p_zero_not_believable = sum(zero_bad),
                            identical_alleles = identical_alleles, eaf_monomorphic = monomorphic, indels = indels))
 frac <- if (rows_in) dropped / rows_in else 1
 messages <- c(sprintf("Parsed %s of %s rows (%.2f%% removed: a required value missing or out of bounds, or EAF 0 or 1).",

@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url'
+
 // GWASHub web. In dev, /api is proxied to the local API (uvicorn on :8000) so the session cookie is same-origin.
 export default defineNuxtConfig({
   compatibilityDate: '2026-10-01',
@@ -19,6 +21,9 @@ export default defineNuxtConfig({
     importTheme: { from: '~/theme.ts' },
   },
   nitro: {
+    // The posters in docs/images (prompts in docs/IMAGE_PROMPTS.md) are served as /posters/* for the About page; one
+    // copy, so regenerating a poster updates the site at the next deploy.
+    publicAssets: [{ dir: fileURLToPath(new URL('../docs/images', import.meta.url)), baseURL: '/posters', maxAge: 3600 }],
     devProxy: {
       '/api': { target: `${process.env.GWASHUB_API ?? 'http://127.0.0.1:8000'}/api`, changeOrigin: true },
     },

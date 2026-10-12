@@ -94,6 +94,7 @@ copyright notice for any code ported from them). Useful there: liftover worker
 - Nothing deployment-specific as literals: settings come from env vars (`api/gwashub_api/config.py`).
 - No credentials in code or git. Locally: env vars. In AWS: IAM roles, Secrets Manager, GitHub OIDC.
 - The local dev login (`/api/auth/login`, `/api/auth/users`) must never be reachable in production.
+- When a change alters what a poster in `docs/images/` shows, update its prompt in `docs/IMAGE_PROMPTS.md` too.
 - UI copy: plain and specific; no em dashes.
 - Guided tours (`web/app/utils/tours.ts`) point at `data-tour="…"` markers: keep a marker when changing its element
   (or update the tour); `api/tests/test_tours.py` checks they match.

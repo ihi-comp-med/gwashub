@@ -19,7 +19,7 @@ def upload(n=2000, seed=1):
 @needs_image("gwashub/base-r")
 def test_parse_writes_gwashub_format(tmp_path):
     df = upload()
-    df.loc[0, "P"] = 0  # recoded, not dropped
+    df.loc[0, ["BETA", "P"]] = [1.0, 0]  # P = 0 that BETA/SE supports (z = 20): recoded, not dropped
     df.loc[1, "SE"] = -1  # invalid required value: dropped
     df.loc[2, "FRQ"] = 1.5  # EAF out of bounds: EAF is required, so dropped
     df.loc[3, "CHR"] = "MT"  # not a chromosome: dropped
@@ -32,7 +32,7 @@ def test_parse_writes_gwashub_format(tmp_path):
     assert list(out.columns) == ["chr", "pos", "ea", "oa", "beta", "se", "p", "eaf", "n", "ncase", "ncontrol", "rsid"]
     assert len(out) == len(df) - 4 and log["metrics"]["rows_removed"] == 4 and log["metrics"]["identical_alleles"] == 1
     assert set(out["chr"]) <= {"1", "2", "X"} and out["ea"].str.fullmatch("[ACGT]+").all()
-    assert out.loc[out["rsid"] == "rs0", "p"].iloc[0] > 0 and log["metrics"]["p_zero_recoded"] == 1
+    assert 0 < out.loc[out["rsid"] == "rs0", "p"].iloc[0] < 1e-80 and log["metrics"]["p_zero_believable"] == 1
     assert "rs2" not in out["rsid"].tolist()
     assert (out["n"] == 1000).all() and (out["ncase"] == 100).all() and log["metrics"]["filled_n"] == len(df)
 
@@ -211,3 +211,32 @@ def test_censored_counts_are_missing_not_their_bound(tmp_path):
     assert by_rsid["rs0"] == 1000 and by_rsid["rs12"] == 1000 and by_rsid["rs20"] == 1020  # filled from the study (100 + 900)
     assert log["metrics"]["censored_n"] == 15
     assert any("15 values given as a bound (<=40, < 20)" in m for m in log["messages"])
+
+
+@needs_image("gwashub/base-r")
+def test_p_zero_is_checked_against_beta_se(tmp_path):
+    """A P of 0 is believable only when BETA/SE gives a P below zero_p_max; the others (failed fits: large BETA, huge
+    SE) are removed with their own reason and a warning. Believable ones follow the zero_p setting."""
+    from scipy import stats
+    df = upload()
+    df.loc[0:1, ["BETA", "SE", "P"]] = [[1.0, 0.05, 0], [2.0, 0.04, 0]]  # z = 20 and 50 (BETA/SE's P underflows at 50)
+    df.loc[2:4, ["BETA", "SE", "P"]] = [[3.5, 40.0, 0], [-2.1, 25.0, 0], [0.8, 0.1, 0]]  # z = 0.09, -0.08, 8
+    for d in ("default", "min", "rm"):
+        (tmp_path / d).mkdir()
+    log, out = run_step("parse", df, {"column_mapping": MAP}, tmp_path / "default")
+    p = out.set_index("rsid")["p"]
+    assert np.isclose(p["rs0"], 2 * stats.norm.sf(20), rtol=1e-6) and np.isclose(p["rs1"], np.finfo(float).tiny, rtol=1e-12, atol=0)
+    assert not {"rs2", "rs3", "rs4"} & set(p.index)  # rs4: P from BETA/SE 1e-15, above the default 5e-20
+    m = log["metrics"]
+    assert (m["p_zero"], m["p_zero_believable"], m["p_zero_not_believable"]) == (5, 2, 3)
+    assert log["verdict"] == "warn" and any("P = 0 but BETA/SE gives P between" in x for x in log["messages"])
+    removed = pd.read_csv(tmp_path / "default" / "artifacts" / "removed_rows.tsv.gz", sep="\t", dtype=str).set_index("line")
+    assert removed.loc["3", "reason"].startswith("P = 0, but BETA/SE gives P = 0.9")
+    # Looser threshold; and the other two settings.
+    log, out = run_step("parse", df, {"column_mapping": MAP, "step": {"zero_p_max": 1e-10, "zero_p": "smallest number"}}, tmp_path / "min")
+    p = out.set_index("rsid")["p"]
+    assert np.allclose(p[["rs0", "rs1", "rs4"]], np.finfo(float).tiny, rtol=1e-12, atol=0) and log["metrics"]["p_zero_not_believable"] == 2
+    log, out = run_step("parse", df, {"column_mapping": MAP, "step": {"zero_p": "remove the variant"}}, tmp_path / "rm")
+    assert not {"rs0", "rs1", "rs2", "rs3", "rs4"} & set(out["rsid"])
+    removed = pd.read_csv(tmp_path / "rm" / "artifacts" / "removed_rows.tsv.gz", sep="\t", dtype=str).set_index("line")
+    assert removed.loc["1", "reason"] == "P = 0 (removed by the P = 0 setting)"

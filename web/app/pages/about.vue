@@ -66,6 +66,21 @@ const onFail: Record<string, string> = {
       <li>Reference files are checksummed and versioned; a pipeline version records the exact files and code it used.</li>
       <li>Only summary statistics are accepted. Reviewers confirm that reference files contain no individual-level data.</li>
     </ul>
+
+    <!-- The posters live in docs/images (served as /posters); their prompts, kept up to date, in docs/IMAGE_PROMPTS.md. -->
+    <h2>The whole picture</h2>
+    <a href="/posters/GWASHub-how-it-works.png" target="_blank" rel="noopener" class="poster">
+      <img src="/posters/GWASHub-how-it-works.png" loading="lazy" alt="How GWASHub works: people and roles, QC steps and pipelines, meta-analysis, and the AWS deployment">
+    </a>
+    <p class="muted small">Click to open it full size.</p>
+
+    <h2>Developers</h2>
+    <p class="muted">The software behind GWASHub, from the website down to the AWS infrastructure. How consortia add QC steps,
+      meta-analysis methods and images is in CONTRIBUTING.md in the repository.</p>
+    <a href="/posters/GWASHub-stack.png" target="_blank" rel="noopener" class="poster">
+      <img src="/posters/GWASHub-stack.png" loading="lazy" alt="The GWASHub stack: website, API and worker, pipeline jobs and images, data, and infrastructure as code">
+    </a>
+    <p class="muted small">Click to open it full size.</p>
   </div>
 </template>
 
@@ -90,4 +105,6 @@ h2 { font-size: 1.1rem; margin: 36px 0 14px; }
 .steps tr:last-child td { border-bottom: 0; }
 .small { font-size: 0.78rem; }
 .plain { margin: 0; padding-left: 18px; color: var(--gh-muted); line-height: 1.7; }
+.poster { display: block; border: 1px solid var(--gh-border); border-radius: 12px; overflow: hidden; background: #fff; }
+.poster img { display: block; width: 100%; height: auto; }
 </style>
