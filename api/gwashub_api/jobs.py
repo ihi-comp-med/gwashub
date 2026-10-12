@@ -147,7 +147,8 @@ def start_meta(meta_id: int):
         spec = meta_spec(db, ma)
         db.commit()
         if settings().jobs == "batch":
-            ma.batch_job_id = _submit_batch(spec, f"gwashub-meta-{ma.id}", meta_image(spec["method"]), compute=meta_compute(spec["method"]))
+            ma.batch_job_id = _submit_batch(spec, f"gwashub-meta-{ma.id}", meta_image(spec["method"]), compute=meta_compute(spec["method"]),
+                                           meta=True)
             db.commit()
         else:
             _in_background(_run_meta_locally, ma.id, spec)
@@ -172,8 +173,11 @@ def _put_spec(spec: dict) -> str:
     return spec_loc
 
 
-def _submit_batch(spec: dict, name: str, image: str, extra_args=(), put_spec=True, compute: dict | None = None) -> str:
-    """image_cfg may name its own job queue (x86-64 images run on their own compute environment)."""
+def _submit_batch(spec: dict, name: str, image: str, extra_args=(), put_spec=True, compute: dict | None = None,
+                  meta=False) -> str:
+    """image_cfg may name its own job queue (x86-64 images run on their own compute environment) and, for
+    meta-analyses (meta=True), an On-Demand one (meta_job_queue): a meta-analysis runs for hours and a Spot reclaim
+    would restart it from the beginning."""
     image_cfg = settings().images.get(image)
     if not image_cfg:
         raise RuntimeError(f"No Batch job definition for image {image}; deploy it first (pipeline/images)")
@@ -182,7 +186,8 @@ def _submit_batch(spec: dict, name: str, image: str, extra_args=(), put_spec=Tru
     if compute:
         overrides["resourceRequirements"] = [{"type": "VCPU", "value": str(compute["vcpus"])},
                                              {"type": "MEMORY", "value": str(int(compute["memory_gb"] * 1024))}]
-    r = _batch().submit_job(jobName=name, jobQueue=image_cfg.get("job_queue") or settings().batch_queue,
+    queue = (meta and image_cfg.get("meta_job_queue")) or image_cfg.get("job_queue") or settings().batch_queue
+    r = _batch().submit_job(jobName=name, jobQueue=queue,
                             jobDefinition=image_cfg["job_definition"], containerOverrides=overrides,
                             tags={"gwashub": name})
     log.info("Submitted %s (%s) as Batch job %s", name, image, r["jobId"])
@@ -474,6 +479,17 @@ def live_progress(run: QCRun) -> list | None:
         return None
     try:
         return json.loads(storage.read_bytes(storage.join(run.run_dir, "progress.json")))
+    except Exception:
+        return None
+
+
+def live_meta(ma: MetaAnalysis) -> dict | None:
+    """While a meta-analysis runs, the last lines of its console and which part is running ({stage, tail}), from
+    progress.json next to its outputs (pipeline/runner/jobspec.py ConsoleTail)."""
+    if ma.status != "running" or not ma.run_dir:
+        return None
+    try:
+        return json.loads(storage.read_bytes(storage.join(ma.run_dir, "progress.json")))
     except Exception:
         return None
 

@@ -7,7 +7,7 @@ description: >
 reference: Mägi R & Morris AP (2010) GWAMA, BMC Bioinformatics 11:288
 command: [python, run_gwama.py]
 image: gwashub/gwama
-compute: {vcpus: 4, memory_gb: 60}   # every dataset's variants in memory: 8 GB (the default) runs out at about 10 datasets of 20 million
+compute: {vcpus: 4, memory_gb: 60}   # GWAMA runs per chromosome now, so this is likely more than needed; lower it once a full-size run (docs/VALIDATION_PLAN.md) has recorded its peak memory
 params:
   - {key: model, label: Model, type: select, options: [fixed, random], default: fixed, help: "random: GWAMA's --random"}
   - {key: min_studies, label: Minimum datasets per variant, type: integer, min: 1, default: 2,
@@ -15,9 +15,9 @@ params:
   - {key: maf_min, label: Minimum MAF, type: number, min: 0, max: 0.5, default: 0,
      help: "Per dataset, variants below this minor allele frequency are left out before GWAMA runs (needs EAF; 0 = all)"}
   - {key: genomic_control, label: Genomic control per dataset, type: boolean, default: false,
-     help: "GWAMA's --genomic_control: each dataset's statistics corrected by its λGC"}
+     help: "As GWAMA's --genomic_control: each dataset's SEs multiplied by √λGC when its λGC is above 1 (applied by GWASHub before GWAMA, which runs per chromosome)"}
   - {key: genomic_control_output, label: Genomic control on the results, type: boolean, default: false,
-     help: "GWAMA's --genomic_control_output: the meta-analysis results corrected by their λGC"}
+     help: "GWAMA's --genomic_control_output: the results' P-values corrected by their λGC. GWAMA then runs on the whole genome at once, which needs much more memory"}
   - {key: direction_threshold, label: Direction shown below P, type: number, min: 0, max: 1, default: 1,
      help: "GWAMA's --threshold: a dataset's effect direction is shown only when its P is below this (1 = always)"}
   - {key: sex_differentiated, label: Sex-differentiated test, type: boolean, default: false,

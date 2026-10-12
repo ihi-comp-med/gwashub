@@ -64,6 +64,55 @@ def test_gwama_fixed_effects_match_hand_calculation(tmp_path):
     files = {f["path"] for f in result["log"]["files"]}
     assert {"gwama_console.txt", "gwama_log.txt"} <= files and all((out / f).exists() for f in files)
     assert not (out / "gwama_work").exists()
+    # Its progress, and GWAMA's own output, reach the console as they print (the running meta-analysis's tail).
+    console = (out / "method_output.txt").read_text()
+    for line in ("Reading dataset 1 of 2: S1", "Running GWAMA on 2 datasets", "Writing ", "Lead loci: LD clumping", "Manhattan and QQ plots"):
+        assert line in console, line
+    assert (out / "gwama_console.txt").read_text().split("\n\n", 1)[1].strip() in console
+
+
+def genome(seed, n=600, chroms=("1", "2", "3", "X"), inflate=1.0):
+    """A small multi-chromosome dataset: shared positions (so variants match across datasets), alleles written either
+    way round, a few real effects; inflate scales the test statistics (for genomic control)."""
+    rng = np.random.default_rng(seed)
+    c = np.array(chroms)[np.arange(n) % len(chroms)]
+    se = rng.uniform(0.02, 0.1, n)
+    beta = rng.normal(0, se * np.sqrt(inflate)) + np.where(np.arange(n) % 97 == 0, 0.3, 0)
+    flip = rng.random(n) < 0.3
+    return pd.DataFrame({"chr": c, "pos": 1000 + np.arange(n) * 10, "ea": np.where(flip, "G", "A"), "oa": np.where(flip, "A", "G"),
+                         "beta": np.where(flip, -beta, beta), "se": se, "p": 2 * stats.norm.sf(np.abs(beta / se)),
+                         "eaf": np.where(flip, 0.7, 0.3), "n": 500, "rsid": [f"rs{seed}{i}" for i in range(n)]})
+
+
+@needs_image("gwashub/gwama")
+def test_gwama_per_chromosome_matches_one_whole_genome_run(tmp_path, monkeypatch):
+    """GWAMA runs one chromosome at a time (memory); the results are those of one whole-genome run: identical files
+    for the fixed and random models with a direction threshold, datasets missing a whole chromosome included (the
+    direction string keeps every dataset's place), and the same per-dataset counts. Genomic control, applied by the
+    wrapper before GWAMA, matches GWAMA's own --genomic_control (to GWAMA's printed precision)."""
+    studies = [genome(1), genome(2, chroms=("1", "2", "3")), genome(3, inflate=1.4), genome(4, n=300, inflate=0.8)]
+    for params in ({}, {"model": "random", "direction_threshold": 0.5, "min_studies": 1}, {"genomic_control": True}):
+        tag = "_".join(f"{k}{v}" for k, v in params.items()) or "default"
+        monkeypatch.delenv("GWASHUB_GWAMA_WHOLE_GENOME", raising=False)
+        split, _, out_split, r_split = run_meta(tmp_path / f"split_{tag}", studies, params)
+        monkeypatch.setenv("GWASHUB_GWAMA_WHOLE_GENOME", "1")
+        whole, _, out_whole, r_whole = run_meta(tmp_path / f"whole_{tag}", studies, params)
+        assert r_split["log"]["metrics"]["runs"] == 4 and r_whole["log"]["metrics"]["runs"] == 1
+        assert len(split) == len(whole) > 0 and "X" in set(split["chr"])
+        if params.get("genomic_control"):
+            assert "--genomic_control" in (out_whole / "gwama_console.txt").read_text()
+            assert "--genomic_control" not in (out_split / "gwama_console.txt").read_text()
+            gc = pd.read_csv(out_split / "genomic_control.tsv", sep="\t")
+            gwama = pd.read_csv(out_whole / "gwama_gc.txt", sep="\t", index_col=False)  # GWAMA's own lambdas
+            assert np.allclose(gc["lambda"], gwama["directly_genotyped_markers_lambda"], atol=1e-4)
+            assert gc["se_corrected"].tolist() == [True, False, True, False]  # only lambdas above 1 correct the SEs
+            for col in ("beta", "se", "z"):
+                assert np.allclose(split[col], whole[col], atol=2e-6), col
+            assert np.allclose(split["p"], whole["p"], rtol=1e-4) and (split["direction"] == whole["direction"]).all()
+        else:
+            assert (out_split / "meta_results.tsv.gz").read_bytes() == (out_whole / "meta_results.tsv.gz").read_bytes()
+        counts = lambda o: pd.read_csv(o / "datasets.tsv", sep="\t")["in_results"].tolist()  # noqa: E731
+        assert counts(out_split) == counts(out_whole)
 
 
 @needs_image("gwashub/gwama")
@@ -119,6 +168,9 @@ def test_metal_matches_hand_calculation_and_keeps_its_files(tmp_path):
     files = {f["path"] for f in result["log"]["files"]}
     assert {"metal_script.txt", "metal_console.txt", "metal_info.txt"} <= files and all((out / f).exists() for f in files)
     assert "MINMAXFREQ ON" in (out / "metal_script.txt").read_text()
+    console = (out / "method_output.txt").read_text()
+    assert "Reading dataset 2 of 2: S2" in console and "Running METAL on 2 datasets" in console
+    assert (out / "metal_console.txt").read_text().strip() in console
 
 
 @needs_image("gwashub/gwama", "gwashub/metal")
@@ -324,3 +376,51 @@ def test_a_failing_method_keeps_its_output_and_says_why(tmp_path, monkeypatch):
     assert not (out / "boom_work").exists()  # its scratch folder (a copy of the inputs) is removed, failed or not
     from pipeline.runner.jobspec import _scratch
     assert _scratch("gwama_work/study_1.txt") and _scratch("_loci_work/x") and not _scratch("lead_loci.tsv")
+
+
+def test_a_running_method_shows_its_output_tail(tmp_path, monkeypatch):
+    """A meta-analysis's console reaches method_output.txt as it prints, stdout and stderr in order; its last lines
+    are published to progress.json with the part that is running, and only when they change."""
+    from pipeline.runner.catalog import AnalysisDef
+    from pipeline.runner.jobspec import METHOD_OUTPUT, ConsoleTail, run_method
+    monkeypatch.setenv("GWASHUB_STEP_RUNNER", "host")
+    (tmp_path / "m").mkdir()
+    (tmp_path / "m" / "slow.py").write_text(
+        "import sys\nprint('study 1 of 2')\nsys.stderr.write('warning: few variants\\n')\nprint('study 2 of 2')\nsys.exit(1)\n")
+    method = AnalysisDef(key="testco/slow", title="Slow", description="", workdir=str(tmp_path / "m"),
+                         command=["python", "slow.py"], image="gwashub/base")
+    out = tmp_path / "out"
+    res = run_method(method, [], {}, {}, str(out))
+    console = (out / METHOD_OUTPUT).read_text()
+    assert console.index("study 1 of 2") < console.index("warning: few variants") < console.index("study 2 of 2")
+    assert "exit code: 1" in console and "study 2 of 2" in res["error"]
+    progress = tmp_path / "progress.json"
+    tail = ConsoleTail(str(out / METHOD_OUTPUT), str(progress))
+    tail.publish_once()
+    live = json.loads(progress.read_text())
+    assert live["stage"] == "method" and live["tail"]["lines"][-1] == "exit code: 1" and "study 1 of 2" in live["tail"]["lines"]
+    progress.unlink()
+    tail.publish_once()  # nothing new: not written again
+    assert not progress.exists()
+    tail.stage = "post-processing"
+    tail.publish_once()
+    assert json.loads(progress.read_text())["stage"] == "post-processing"
+
+
+def test_a_failed_program_says_how_it_ended(capsys):
+    """When GWAMA or METAL fails, the wrapper says how that program ended, not the wrapper: a kill is named as running
+    out of memory (and the wrapper exits 137, which the runner explains as well); GWAMA's line counters are left out."""
+    import pytest
+    from _metalib.common import tool_failed
+    with pytest.raises(SystemExit) as e:
+        tool_failed("GWAMA", -9, "Reading file: study_29.txt\nLine: 25300000\nLine: 25310000\nLine: ", " on chromosome 2",
+                    "Its error file ends:\nW000001 Warning")
+    msg = capsys.readouterr().err
+    assert e.value.code == 137 and "GWAMA was killed (signal 9), most likely because it ran out of memory on chromosome 2" in msg
+    assert "Reading file: study_29.txt" in msg and "Line:" not in msg and "W000001" in msg
+    with pytest.raises(SystemExit) as e:
+        tool_failed("METAL", 2, "bad header")
+    assert e.value.code == 2 and "METAL exited with 2." in capsys.readouterr().err
+    with pytest.raises(SystemExit) as e:
+        tool_failed("GWAMA", 0, "")
+    assert e.value.code == 1 and "finished without writing its results" in capsys.readouterr().err

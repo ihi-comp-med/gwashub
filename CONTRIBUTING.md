@@ -192,7 +192,8 @@ The method is called once per meta-analysis, in the method's folder, as
   `_work`, such as `OUT_DIR/mymethod_work/`. GWASHub never uploads those folders and deletes them when the method ends,
   failed or not; everything else in `OUT_DIR` is kept with the results.
 - Exit 0 when it ran. No network calls, no database. GWASHub keeps the method's console (stdout and stderr) as
-  `method_output.txt`, which reviewers can download, and explains a crash in the error (an out-of-memory kill names
+  `method_output.txt`, which reviewers can download; while it runs, the results page shows its last 5 lines, so print
+  progress as you go (study by study, chromosome by chromosome). It also explains a crash in the error (an out-of-memory kill names
   `compute:`). Ask for a bigger machine with `compute: {vcpus, memory_gb}` in `analysis.yaml` (default 2 vCPUs, 8 GB).
 
 GWASHub then does the rest for every method: lead loci (LD clumping against the 1000 Genomes panels, `_metalib/loci.py`) with

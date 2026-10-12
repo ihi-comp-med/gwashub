@@ -235,6 +235,39 @@ pull request, which shows exactly what changed.
 
 ## Status
 
-Tests 1 to 4 run on gwashub-dev and passed (7/7, 18/18, 19/19, 41/41). In test 4 the upload wizard itself suggests
+Tests 1 to 4 run on gwashub-dev and passed (7/7, 18/18, 19/19, 41/41), **with GWAMA run on the whole genome in one go.
+The GWAMA wrapper has changed since (October 2026, below), so tests 1 and 2 and test 3's GWAMA comparison must be run
+again before their results stand for the current version.** In test 4 the upload wizard itself suggests
 "Odds ratios" for the odds-ratios-as-BETA file; it is uploaded as BETA on purpose, so parse's check (which guards
 uploads by script) is what's tested.
+
+### Revalidation needed: GWAMA per chromosome (October 2026)
+
+**What changed:** a 15-dataset meta-analysis ran out of memory (60 GB) because GWAMA holds every variant of every
+dataset at once. The GWAMA wrapper (`pipeline/analyses/meta_analysis/gwashub/gwama/run_gwama.py`) now runs GWAMA one
+chromosome at a time and joins the results. Two consequences need checking against GWAMA by hand:
+
+1. **Per chromosome.** Each variant is meta-analysed on its own, so splitting should change nothing. Every dataset is
+   listed on every chromosome in the same order (an empty file where it has none), so the direction string keeps its
+   meaning.
+2. **Genomic control per dataset** can't be left to GWAMA any more (it would compute λ per chromosome). The wrapper
+   applies it before GWAMA, as GWAMA 2.2.2 does: λ = median((β/se)²) / 0.4549364 over the dataset's variants, raised
+   to 1 if below, every se multiplied by √λ; it writes `genomic_control.tsv`. **Genomic control on the results** is
+   still GWAMA's own, so with that option GWAMA runs once on the whole genome (and needs the memory for it).
+
+**Checked so far (synthetic data only):** `pipeline/tests/test_meta_analysis.py`
+`test_gwama_per_chromosome_matches_one_whole_genome_run` gives byte-identical results files per chromosome and in one
+run (fixed; random with a direction threshold; datasets missing a whole chromosome), the same per-dataset counts, and
+with genomic control the wrapper's λ equals GWAMA's own (`gwama.gc.out`) and β, se, z, p agree to GWAMA's printed
+precision. That is not a validation: it is 4 small simulated datasets.
+
+**To do, on gwashub-dev with the new version:**
+
+| Run | Covers | Pass if |
+|---|---|---|
+| Test 1 again | per chromosome, defaults | as test 1 |
+| Test 2 again, both runs | the options run still uses genomic control on the results, so GWAMA runs whole genome there, with the wrapper's genomic control per dataset; the sex run is per chromosome | as test 2; the λ in `genomic_control.tsv` equal those of GWAMA by hand (`gwama.gc.out`) to 4 decimals |
+| Test 2, *options* without genomic control on the results (new) | per chromosome with the wrapper's genomic control, random effects, threshold, MAF filter | identical to GWAMA by hand with `--random --genomic_control --threshold 0.05` |
+| Test 3's GWAMA comparison again | per chromosome vs METAL | as test 3 |
+| Scale: the 15 HERMES 3 DCM datasets (meta-analysis 17) | memory and time at full size | completes on the 60 GB machine; record peak memory and time per chromosome |
+

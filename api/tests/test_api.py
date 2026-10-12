@@ -204,6 +204,34 @@ def test_stop_meta_analysis(client):
     assert client.delete(f"/api/meta/{mid}").status_code == 204
 
 
+def test_running_meta_analysis_shows_its_output_tail(client):
+    """A running meta-analysis's view carries its console's last lines and which part runs (progress.json); a
+    finished one doesn't."""
+    import json
+    from sqlalchemy import select
+    from gwashub_api import storage
+    from gwashub_api.db import SessionLocal
+    from gwashub_api.models import MetaAnalysis, User
+    run_dir = storage.location("results", f"meta/hermes3/tail-{storage.stamp()}")
+    live = {"stage": "method", "tail": {"lines": ["GWAMA: study 3 of 12"], "at": "2026-10-12T10:00:00+00:00"}}
+    with SessionLocal() as db:
+        uid = db.scalar(select(User.id).where(User.email == "ama@example.org"))
+        ma = MetaAnalysis(project_id="hermes3", name="Tail", settings={}, dataset_ids=[], method="gwashub/gwama",
+                          created_by=uid, status="running", run_dir=run_dir)
+        db.add(ma)
+        db.commit()
+        mid = ma.id
+    os.makedirs(run_dir, exist_ok=True)
+    with open(storage.join(run_dir, "progress.json"), "w") as f:
+        json.dump(live, f)
+    as_user(client, "ama@example.org")
+    assert client.get(f"/api/meta/{mid}").json()["live"] == live
+    with SessionLocal() as db:
+        db.get(MetaAnalysis, mid).status = "stopped"
+        db.commit()
+    assert client.get(f"/api/meta/{mid}").json()["live"] is None
+
+
 def test_column_suggestion_coded_allele_names():
     """The coded / non-coded allele naming (A_coded, A_noncoded, AFreq_coded) maps to EA, OA and EAF; n_events (the
     number of cases, as survival analyses name it) to cases."""
@@ -1266,6 +1294,27 @@ def test_grouped_batch_events(client, synth_small, tmp_path, monkeypatch):
                                                                              "status": "FAILED", "statusReason": "Essential container exited"}})
     finally:
         db.close()
+
+
+def test_meta_analyses_go_to_the_on_demand_queue(monkeypatch):
+    """On AWS, meta-analyses go to the image's On-Demand queue (a Spot reclaim would restart one from the beginning);
+    QC jobs stay on the Spot queue, and an image with no On-Demand queue uses its own."""
+    from gwashub_api import jobs
+    from gwashub_api.config import settings
+    monkeypatch.setitem(settings().images, "gwashub/gwama", {"job_definition": "jd-gwama", "job_queue": "spot-q", "meta_job_queue": "od-q"})
+    monkeypatch.setitem(settings().images, "testco/plain", {"job_definition": "jd-plain", "job_queue": "spot-q"})
+    sent = []
+
+    class FakeBatch:
+        def submit_job(self, **kw):
+            sent.append(kw["jobQueue"])
+            return {"jobId": f"job-{len(sent)}"}
+    monkeypatch.setattr(jobs, "_batch", lambda: FakeBatch())
+    spec = {"output": "s3://results/meta/x"}
+    jobs._submit_batch(spec, "gwashub-meta-1", "gwashub/gwama", put_spec=False, meta=True)
+    jobs._submit_batch(spec, "gwashub-qc-1-g0", "gwashub/gwama", put_spec=False)
+    jobs._submit_batch(spec, "gwashub-meta-2", "testco/plain", put_spec=False, meta=True)
+    assert sent == ["od-q", "spot-q", "spot-q"]
 
 
 def test_reviewers_manage_members(client, monkeypatch):

@@ -21,7 +21,8 @@ Outputs
                                 METAL's HetISq / 100; n_studies is HetDf + 1.
   OUT_DIR/metal_script.txt, metal_console.txt, metal_info.txt   METAL's script and its own output, for download
   --log      {"method": "gwashub/metal", "verdict": "pass", "metrics", "messages", "studies", "files"}. A failure exits
-             non-zero (SystemExit) with METAL's tail as the message.
+             non-zero with how METAL ended (its own exit code; 137 when it was killed, usually for memory) and its
+             last output (_metalib.common.tool_failed).
   _metalib/publish.py then adds the loci, plots and summary.
 
 Notes for whoever maintains this
@@ -44,11 +45,10 @@ Notes for whoever maintains this
 """
 import os
 import shutil
-import subprocess
 
 import pandas as pd
 
-from _metalib.common import load_study, marker_id, parse_args, split_marker, write_log, write_results
+from _metalib.common import load_study, marker_id, parse_args, run_tool, say, split_marker, tool_failed, write_log, write_results
 
 
 def main():
@@ -65,7 +65,8 @@ def main():
               "MARKER MARKERNAME", "ALLELE EA NEA", "EFFECT BETA", "STDERR SE", "PVALUE P", "WEIGHT N", "FREQ EAF",
               "COLUMNCOUNTING LENIENT"]
     infos, rsids = [], {}
-    for s in specs:
+    for k, s in enumerate(specs, 1):
+        say(f"Reading dataset {k} of {len(specs)}: {s.get('label', s['id'])}")
         df, info = load_study(s, p.get("maf_min", 0))
         df["MARKERNAME"] = marker_id(df)
         if "rsid" in df:
@@ -79,17 +80,19 @@ def main():
     script += [f"OUTFILE {os.path.join(work, 'metal')} .tbl", "ANALYZE HETEROGENEITY", "QUIT"]
     with open(os.path.join(a.out, "metal_script.txt"), "w") as f:
         f.write("\n".join(script) + "\n")
-    proc = subprocess.run(["metal", os.path.join(a.out, "metal_script.txt")], capture_output=True, text=True)
+    say(f"Running METAL on {len(specs)} datasets")
+    code, output = run_tool(["metal", os.path.join(a.out, "metal_script.txt")])
     with open(os.path.join(a.out, "metal_console.txt"), "w") as f:
-        f.write(proc.stdout + proc.stderr)
+        f.write(output)
     files = [{"path": "metal_script.txt", "label": "METAL script"}, {"path": "metal_console.txt", "label": "METAL console output"}]
     tbl = os.path.join(work, "metal1.tbl")
     if os.path.exists(tbl + ".info"):
         shutil.move(tbl + ".info", os.path.join(a.out, "metal_info.txt"))
         files.append({"path": "metal_info.txt", "label": "METAL run information"})
-    if proc.returncode != 0 or not os.path.exists(tbl):
-        raise SystemExit(f"METAL failed: {(proc.stderr or proc.stdout)[-1500:]}")
+    if code != 0 or not os.path.exists(tbl):
+        tool_failed("METAL", code, output)
 
+    say("Reading METAL's results")
     m = pd.read_csv(tbl, sep="\t")
     chrom, pos = split_marker(m["MarkerName"])
     res = pd.DataFrame({"chr": chrom, "pos": pos, "rsid": m["MarkerName"].map(rsids), "ea": m["Allele1"].str.upper(),
@@ -103,6 +106,7 @@ def main():
         if src in m:
             res[dst] = m[src]
     res = res[res["n_studies"] >= p.get("min_studies", 2)]
+    say(f"Writing {len(res):,} variants (in at least {p.get('min_studies', 2)} datasets)")
     write_results(res, a.out)
     write_log(a.log, "gwashub/metal", "pass", {"scheme": scheme},
               [f"METAL ({scheme} scheme) meta-analysis of {len(res):,} variants across {len(specs)} datasets."],

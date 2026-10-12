@@ -108,6 +108,11 @@ const downloads = computed(() => {
   return [{ label: 'Results', items: results }, ...(program.length ? [{ label: `${v.method?.title} files`, items: program }] : [])]
 })
 const common = computed(() => ma.value?.settings?.common ?? {})
+// How long ago the running meta-analysis's output tail was published (it refreshes about every 15 seconds).
+function ago(iso: string) {
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000))
+  return s < 60 ? `${s} s ago` : `${Math.round(s / 60)} min ago`
+}
 const num = (x: any, d = 4) => x === '' || x == null || Number.isNaN(Number(x)) ? '–' : Number(x).toFixed(d)
 </script>
 
@@ -154,6 +159,10 @@ const num = (x: any, d = 4) => x === '' || x == null || Number.isNaN(Number(x)) 
         </div>
 
         <Message v-if="['queued', 'running'].includes(ma.status)" :severity="ma.batch_note ? 'warn' : 'info'" :closable="false" icon="pi pi-spin pi-spinner">{{ ma.batch_note || 'Running…' }}</Message>
+        <div v-if="ma.status === 'running' && ma.live?.tail?.lines?.length" class="tail" aria-live="polite">
+          <pre>{{ ma.live.tail.lines.join('\n') }}</pre>
+          <span class="muted small">The {{ ma.live.stage === 'post-processing' ? 'post-processing (lead loci, plots)' : 'method' }}'s last {{ ma.live.tail.lines.length }} output lines · updated {{ ago(ma.live.tail.at) }}</span>
+        </div>
         <Message v-if="ma.status === 'failed'" severity="error" :closable="false">
           <pre class="err">{{ ma.error }}</pre>
           <a v-if="ma.has_output && isReviewer" :href="`/api/meta/${ma.id}/files/method_output.txt`" class="p-button p-button-sm p-button-outlined outlink"><i class="pi pi-download" />&nbsp;Method output</a>
@@ -285,6 +294,9 @@ const num = (x: any, d = 4) => x === '' || x == null || Number.isNaN(Number(x)) 
 .head a { text-decoration: none; }
 .h2 { font-size: 1.35rem; margin: 0 0 4px; }
 .small { font-size: 0.8rem; }
+.tail { margin: 6px 0 2px; }
+.tail pre { margin: 0 0 2px; padding: 6px 8px; font-size: 0.72rem; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere;
+  background: var(--p-content-hover-background); border: 1px solid var(--p-content-border-color); border-radius: 4px; }
 .err { white-space: pre-wrap; font-size: 0.75rem; margin: 0; max-height: 200px; overflow: auto; }
 .outlink { margin-top: 8px; }
 .tiles { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-bottom: 16px; }

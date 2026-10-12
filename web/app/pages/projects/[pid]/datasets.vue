@@ -134,6 +134,9 @@ function open(d: any) {
   panelOpen.value = true
 }
 function changed() { refresh(); refreshProject() }
+// Uploads running in this tab show their progress in the status column; the list refreshes as each one finishes.
+const { uploads } = useUploads()
+watch(() => Object.keys(uploads.value).length, (now, before) => { if (now < before) changed() })
 </script>
 
 <template>
@@ -230,7 +233,8 @@ function changed() { refresh(); refreshProject() }
             <Column field="status" header="QC status" sortable>
               <template #body="{ data }">
                 <div class="status">
-                  <Tag :value="STATUS_META[data.status as DatasetStatus].label" :severity="STATUS_META[data.status as DatasetStatus].severity" />
+                  <Tag v-if="data.status === 'uploading' && uploads[data.id]" :value="`Uploading ${uploads[data.id].percent}%`" severity="info" icon="pi pi-cloud-upload" />
+                  <Tag v-else :value="STATUS_META[data.status as DatasetStatus].label" :severity="STATUS_META[data.status as DatasetStatus].severity" />
                   <i v-if="data.metadata_complete?.missing_required?.length" v-tooltip.top="`Metadata incomplete. Required: ${data.metadata_complete.missing_required.join(', ')}`"
                      class="pi pi-exclamation-circle warnic" />
                 </div>

@@ -160,6 +160,7 @@ def meta_view(db, ma: MetaAnalysis, detail=False):
          "created_by": db.get(User, ma.created_by).name, "created_at": ma.created_at,
          "finished_at": ma.finished_at, "error": ma.error, "lambda_gc": ma.lambda_gc, "location": ma.run_dir,
          "batch_note": jobs.batch_note(ma.batch_state) if ma.status in ("queued", "running") else None,
+         "live": jobs.live_meta(ma),
          "has_output": ma.status in ("completed", "failed") and bool(ma.run_dir) and storage.exists(storage.join(ma.run_dir, "method_output.txt")),
          "summary": {k: v for k, v in ((ma.result or {}).get("summary") or {}).items() if k != "settings"}}
     if detail and ma.status == "completed":

@@ -10,6 +10,12 @@ production. The AWS accounts themselves are described in `docs/AWS_ACCOUNT_SETUP
 - **Batch on EC2, not Fargate, for jobs.** A harmonised GWAS takes about 265 bytes per variant in memory, so a
   20-million-variant file is ~5 GB per copy and 20 to 40 GB at peak; EC2 gives more memory and disk per dollar. Spot,
   scaling to zero, so idle costs nothing.
+- **Meta-analyses on On-Demand, QC on Spot.** A meta-analysis is one job of several hours on a large machine (60 GB),
+  and GWAMA and METAL can't resume: each Spot reclaim restarted it from the beginning, and some ran out of attempts.
+  On-Demand machines are never taken back; at about $0.50 an hour (r7g.2xlarge in London) against about $0.15 on Spot,
+  a 3-hour run costs $1 to $2 more. QC jobs are short image groups, so a reclaim repeats little. Set by
+  `meta_on_demand` in `infra/gwashub_infra/config.py`. On-Demand machines count against the account's EC2 quota
+  "Running On-Demand Standard instances" (vCPUs), separate from the Spot one.
 - **Jobs survive deploys.** The API submits Batch jobs and returns; a separate worker records results from Batch
   events (EventBridge → SQS), so restarts lose nothing.
 - **One domain.** CloudFront serves the website and forwards `/api/*` to an internal load balancer, so there's no CORS,
@@ -25,7 +31,7 @@ production. The AWS accounts themselves are described in `docs/AWS_ACCOUNT_SETUP
 | Website | S3 + CloudFront | Static files from `nuxt generate`. Address: the environment's `domain` (`infra/gwashub_infra/config.py`) with an ACM certificate in us-east-1, requested by the App stack (the region guardrail blocks CloudFormation there); `https://<id>.cloudfront.net` without one |
 | API | ECS Fargate (Graviton) behind an **internal** load balancer | Reached only through CloudFront (`/api/*`, VPC origin). No public address |
 | Worker | ECS Fargate | Reads Batch job events from SQS and records results in the database |
-| QC runs and meta-analyses | AWS Batch on EC2 Spot, scales to zero: Graviton (m7g/r7g) for arm64 images, queue `gwashub-<env>`; Intel (m7i/r7i) for x86-64 images, queue `gwashub-<env>-x86`. Jobs get a 200 GB (dev) / 500 GB (prod) encrypted volume and a 12 h timeout | One job per *image group* of a run (below); `python -m pipeline.runner.aws.batch_entry s3://.../spec.json --group N` |
+| QC runs and meta-analyses | AWS Batch on EC2, scales to zero: Graviton (m7g/r7g) for arm64 images, queue `gwashub-<env>`; Intel (m7i/r7i) for x86-64 images, queue `gwashub-<env>-x86` (both Spot). Meta-analyses on On-Demand: `gwashub-<env>-ondemand` and `gwashub-<env>-ondemand-x86`. Jobs get a 200 GB (dev) / 500 GB (prod) encrypted volume and a 12 h timeout | One job per *image group* of a run (below); `python -m pipeline.runner.aws.batch_entry s3://.../spec.json --group N` |
 | Files | S3: uploads, results, resources buckets | KMS-encrypted, versioned, private, TLS only. Browsers upload straight to S3 in 64 MB parts |
 | Metadata | RDS PostgreSQL 16 | Private subnets, encrypted, automated backups, deletion protection. Schema by Alembic (`api/migrations`) |
 | Sign-in | Amazon Cognito | Invite-only, password + authenticator app (MFA) for everyone |

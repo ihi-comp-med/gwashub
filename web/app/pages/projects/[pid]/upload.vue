@@ -100,11 +100,18 @@ const mapping = reactive<Record<string, string | null>>({})
 const missingColumns = computed(() => unmappedRequired(mapping))
 const unmappedColumns = computed(() => (suggestion.value?.columns ?? []).filter((c: string) => !Object.values(mapping).includes(c)))
 
-// Step 4: upload in parts (straight to S3 on AWS), then QC starts and we go to the dataset.
+// Step 4: upload in parts (straight to S3 on AWS), then QC starts and we go to the dataset. The upload carries on if
+// you leave this page: its progress is shared (useUploads) so the Datasets page and the dataset panel can show it.
 const progress = ref(0)
 const submitting = ref(false)
+const uploadsStore = useUploads()
+// Set when you leave this page. Coming back to the upload page later (e.g. for the next file) makes a new page, so an
+// upload started from this one doesn't take you away from what you're entering there.
+let left = false
+onBeforeUnmount(() => { left = true })
 async function submit() {
   const f = file.value!
+  const label = [details.cohort.trim(), details.phenotype, details.ancestry, details.sex].filter(Boolean).join(' · ')
   submitting.value = true
   progress.value = 0
   let datasetId: number | null = null
@@ -114,20 +121,30 @@ async function submit() {
     const start = await api<{ id: number, part_size: number, parts: number }>(`/projects/${pid.value}/uploads`,
       { method: 'POST', body: { meta, file_name: f.name, file_size: f.size } })
     datasetId = start.id
+    uploadsStore.start({ datasetId: start.id, projectId: pid.value, label, fileName: f.name, percent: 0 })
     const etags = await uploadInParts(f, {
-      partSize: start.part_size, parts: start.parts, onProgress: (x) => { progress.value = Math.round(99 * x) },
+      partSize: start.part_size, parts: start.parts,
+      onProgress: (x) => { progress.value = Math.round(99 * x); uploadsStore.progress(start.id, progress.value) },
       urlFor: async n => (await api<{ urls: Record<string, string> }>(`/datasets/${start.id}/upload/urls`, { method: 'POST', body: { parts: [n] } })).urls[String(n)]!,
     })
     await api(`/datasets/${start.id}/upload/complete`, { method: 'POST', body: { parts: etags } })
     progress.value = 100
-    toast.add({ severity: 'success', summary: 'Uploaded: waiting for QC', detail: 'Check the details, then click Start QC in its panel.', life: 5000 })
-    navigateTo({ path: `/projects/${pid.value}/datasets`, query: { open: String(start.id) } })
+    uploadsStore.finish(start.id)
+    // Go to the dataset only if you never left this page; otherwise just say it's done, wherever you are.
+    if (!left) {
+      toast.add({ severity: 'success', summary: `Uploaded: ${label}`, detail: 'It waits for QC: check the details, then click Start QC in its panel.', life: 6000 })
+      navigateTo({ path: `/projects/${pid.value}/datasets`, query: { open: String(start.id) } })
+    }
+    else toast.add({ severity: 'success', summary: `Uploaded: ${label}`, detail: 'It waits for QC: open it from the Datasets page to check the details and start QC.', life: 8000 })
   }
   catch (e: any) {
-    toast.add({ severity: 'error', summary: 'Upload failed', detail: `${e.message}. Nothing was kept; please try again.`, life: 7000 })
+    toast.add({ severity: 'error', summary: `Upload failed: ${label}`, detail: `${e.message}. Nothing was kept; please try again.`, life: 7000 })
     if (datasetId) await api(`/datasets/${datasetId}`, { method: 'DELETE' }).catch(() => {})
   }
-  finally { submitting.value = false }
+  finally {
+    if (datasetId) uploadsStore.finish(datasetId)
+    submitting.value = false
+  }
 }
 const stepTitle = (key: string) => pl.value?.catalog.find((c: any) => c.key === key)?.title ?? key
 </script>

@@ -200,6 +200,11 @@ const outStep = ref<any>(null)
 const outFocus = ref<string | null>(null)
 function viewOutput(s: any, focus: string | null = null) { outStep.value = s; outFocus.value = focus; outOpen.value = true }
 
+// An upload still running in this tab (it carries on when you leave the upload page): its progress, then a refresh.
+const { uploads } = useUploads()
+const myUpload = computed(() => d.value ? uploads.value[d.value.id] : undefined)
+watch(myUpload, (now, before) => { if (before && !now) load() })
+
 // --- Details tab: edit descriptive fields + study metadata -------------------------------
 const tab = ref('qc')
 const editing = ref(false)
@@ -304,8 +309,8 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
         <a v-if="d.run?.status === 'completed'" :href="fileUrl('qc')" class="p-button p-button-sm"><i class="pi pi-download" />&nbsp;QC'd file</a>
         <a v-if="d.run && d.status !== 'processing'" :href="fileUrl('report')" :download="`qc_report_${d.id}.html`" class="p-button p-button-secondary p-button-text p-button-sm"><i class="pi pi-file" />&nbsp;Download report</a>
         <span class="spacer" />
-        <Button v-if="isReviewer && !['processing', 'review'].includes(d.status) && !overriding" label="Override QC outcome" size="small" text severity="secondary" @click="overriding = true; tab = 'qc'" />
-        <Button v-if="isReviewer && !['processing', 'pending'].includes(d.status)" label="Re-run QC" icon="pi pi-refresh" size="small" text @click="rerun" />
+        <Button v-if="isReviewer && !['processing', 'review', 'uploading'].includes(d.status) && !overriding" label="Override QC outcome" size="small" text severity="secondary" @click="overriding = true; tab = 'qc'" />
+        <Button v-if="isReviewer && !['processing', 'pending', 'uploading'].includes(d.status)" label="Re-run QC" icon="pi pi-refresh" size="small" text @click="rerun" />
         <Button v-if="d.can_edit && d.status === 'processing'" label="Stop QC" icon="pi pi-stop-circle" size="small" text severity="danger" @click="stopQc" />
         <Button v-if="d.can_edit" v-tooltip.top="d.status === 'processing' ? 'Wait for QC to finish' : undefined" label="Delete" icon="pi pi-trash" size="small" text severity="danger" :disabled="d.status === 'processing'" @click="remove" />
       </div>
@@ -320,6 +325,13 @@ const showVal = (v: any) => v === null || v === undefined || v === '' ? '(empty)
         <div class="row">
           <span>The last QC run used a different pipeline version than the one this dataset now follows. Re-run QC to bring it up to date.</span>
           <Button v-if="isReviewer" label="Re-run QC" icon="pi pi-refresh" size="small" text severity="warn" class="oodbtn" @click="rerun" />
+        </div>
+      </Message>
+
+      <Message v-if="d.status === 'uploading' && myUpload" severity="info" size="small" :closable="false" icon="pi pi-cloud-upload" class="oodmsg">
+        <div class="upmsg">
+          <span><strong>Uploading {{ myUpload.fileName }}: {{ myUpload.percent }}%.</strong> Keep this tab open until it finishes; you can use the rest of the site meanwhile.</span>
+          <ProgressBar :value="myUpload.percent" :show-value="false" class="upbar" />
         </div>
       </Message>
 
@@ -679,6 +691,8 @@ h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: .05em; color:
 .tail { margin: 6px 0 2px; }
 .tail pre { margin: 0 0 2px; padding: 6px 8px; font-size: 0.72rem; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere;
   background: var(--p-content-hover-background); border: 1px solid var(--p-content-border-color); border-radius: 4px; }
+.upmsg { display: grid; gap: 6px; width: 100%; }
+.upbar { height: 10px; }
 .remap { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; align-items: center; margin-top: 6px; }
 .params { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: max-content max-content minmax(0, 1fr);
   gap: 1px 16px; font-size: 0.8rem; }

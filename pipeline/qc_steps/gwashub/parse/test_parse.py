@@ -135,16 +135,18 @@ def test_parse_stops_on_a_truncated_gzip(tmp_path):
 
 @needs_image("gwashub/base-r")
 def test_parse_header_lines_xy_and_allele_codes(tmp_path):
-    """Header lines inside the data (files joined together) are removed and named; chromosome 25 / XY is X; alleles
-    coded 1/2 are named."""
+    """Header lines inside the data (files joined together) are removed and named; chromosome 25 / XY is X; a leading
+    zero (01, chr09) is dropped; alleles coded 1/2 are named."""
     df = upload().astype(str)
     df.iloc[100] = df.columns  # the header again
     df.loc[101:102, "CHR"] = ["XY", "25"]
+    df.loc[103:105, "CHR"] = ["01", "chr09", "023"]
     df.loc[200:239, ["A1", "A2"]] = ["1", "2"]
     log, out = run_step("parse", df, {"column_mapping": MAP}, tmp_path)
     msgs = " ".join(log["messages"])
     assert log["metrics"]["header_lines"] == 1 and "repeated header lines" in msgs
     assert out.set_index("rsid").loc[["rs101", "rs102"], "chr"].tolist() == ["X", "X"] and "read as X" in msgs
+    assert out.set_index("rsid").loc[["rs103", "rs104", "rs105"], "chr"].tolist() == ["1", "9", "X"] and "leading zero" in msgs
     assert "coded 1/2" in msgs
     removed = pd.read_csv(tmp_path / "artifacts" / "removed_rows.tsv.gz", sep="\t", dtype=str).set_index("line")
     assert removed.loc["101", "reason"] == "repeated header line"

@@ -149,6 +149,10 @@ whatever the pipeline. A QC run is four Batch jobs (one per change of image).
 
 ## Not done
 
+- **Revalidate GWAMA.** It now runs one chromosome at a time (memory), with genomic control per dataset applied by the
+  wrapper; checked only on synthetic data so far. Validation tests 1 to 3 must be run again, plus a new one and a
+  full-size run: `docs/VALIDATION_PLAN.md`, "Revalidation needed".
+
 - Production: the plan, in order, with costs, is `docs/PRODUCTION_ROADMAP.md` (WAF, domains, isolated
   consortium steps, malware scanning, alarms, CI/CD, SES for invitations).
 - Resource import from a URL (upload only).

@@ -14,7 +14,8 @@ class EnvConfig:
     db_backup_days: int
     api_tasks: int
     batch_max_vcpus: int
-    batch_spot: bool
+    batch_spot: bool  # QC jobs on Spot
+    meta_on_demand: bool  # meta-analyses on On-Demand machines: hours-long and restarted from scratch if Spot takes one back
     batch_volume_gb: int  # root volume of Batch instances (reference files + intermediate VCFs)
     log_days: int
     noncurrent_version_days: int  # how long deleted/overwritten files stay recoverable
@@ -25,10 +26,12 @@ class EnvConfig:
 
 ENVIRONMENTS = {
     "dev": EnvConfig(name="dev", account="203248996074", region="eu-west-2", nat_gateways=1, db_instance="t4g.small",
-                     db_multi_az=False, db_backup_days=7, api_tasks=1, batch_max_vcpus=32, batch_spot=True, batch_volume_gb=200,
+                     db_multi_az=False, db_backup_days=7, api_tasks=1, batch_max_vcpus=32, batch_spot=True, meta_on_demand=True,
+                     batch_volume_gb=200,
                      log_days=90, noncurrent_version_days=30, banner="Development build", domain="gwashub.com",
                      www=True),
     "prod": EnvConfig(name="prod", account="269626333085", region="eu-west-2", nat_gateways=2, db_instance="t4g.medium",
-                      db_multi_az=True, db_backup_days=30, api_tasks=2, batch_max_vcpus=128, batch_spot=True, batch_volume_gb=500,
+                      db_multi_az=True, db_backup_days=30, api_tasks=2, batch_max_vcpus=128, batch_spot=True, meta_on_demand=True,
+                      batch_volume_gb=500,
                       log_days=365, noncurrent_version_days=90, banner=""),
 }

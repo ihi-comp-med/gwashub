@@ -41,7 +41,7 @@ import pandas as pd
 
 from _lib.plotting import lambda_gc, make_plots
 from _metalib import loci, regions
-from _metalib.common import FLOAT_FORMAT
+from _metalib.common import FLOAT_FORMAT, say
 
 COMMON = {**loci.DEFAULTS, "het_p_threshold": 1e-3}
 
@@ -223,8 +223,10 @@ def main():
         res["direction"] = ""
 
     work = os.path.join(a.out, "_loci_work")
+    say(f"Lead loci: LD clumping {len(res):,} variants against the 1000 Genomes {opts['ld_panel']} panel")
     leads, signals, loci_info = loci.define_loci(res, opts, a.resources, work)
     leads = regions.annotate_genes(leads, regions.load_genes(a.resources))
+    say(f"{len(leads)} lead loci; writing the locus plots")
     region_files = regions.write_regions(res, leads, signals, a.resources, opts, a.out, work)
     __import__("shutil").rmtree(work, ignore_errors=True)
     forest = forest_data(leads, specs)
@@ -234,6 +236,7 @@ def main():
     signals.to_csv(os.path.join(a.out, "signals.tsv"), sep="\t", index=False, float_format=FLOAT_FORMAT)
     with open(os.path.join(a.out, "forest.json"), "w") as f:
         json.dump(forest, f)
+    say("Manhattan and QQ plots")
     lam, _ = make_plots(res, a.out, gws=opts["gws"], title=f"Meta-analysis ({len(specs)} datasets, {a.title or a.method})")
 
     # Per-dataset table: the method's own rows if it gave them, else counts from the inputs.

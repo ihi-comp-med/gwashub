@@ -218,15 +218,15 @@ class AppStack(cdk.Stack):
             device_name="/dev/xvda", volume=ec2.BlockDeviceVolume.ebs(cfg.batch_volume_gb, encrypted=True,
                                                                       volume_type=ec2.EbsDeviceVolumeType.GP3))])
 
-        def compute_env(cid, families):
+        def compute_env(cid, families, spot=cfg.batch_spot):
             return batch.ManagedEc2EcsComputeEnvironment(
                 self, cid, vpc=vpc, vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
-                security_groups=[net.app_sg], spot=cfg.batch_spot, minv_cpus=0, maxv_cpus=cfg.batch_max_vcpus,
+                security_groups=[net.app_sg], spot=spot, minv_cpus=0, maxv_cpus=cfg.batch_max_vcpus,
                 use_optimal_instance_classes=False, launch_template=job_lt,
                 # Sizes up to 4xlarge (16 vCPU, 128 GiB): enough for any job (pipeline/runner/catalog.py MAX_COMPUTE),
                 # and Spot can't hand a small job a much larger machine.
                 instance_types=[ec2.InstanceType(f"{fam}.{size}") for fam in families for size in ("large", "xlarge", "2xlarge", "4xlarge")],
-                allocation_strategy=batch.AllocationStrategy.SPOT_PRICE_CAPACITY_OPTIMIZED if cfg.batch_spot
+                allocation_strategy=batch.AllocationStrategy.SPOT_PRICE_CAPACITY_OPTIMIZED if spot
                 else batch.AllocationStrategy.BEST_FIT_PROGRESSIVE,
                 images=[batch.EcsMachineImage(image_type=batch.EcsMachineImageType.ECS_AL2023)],
                 update_to_latest_image_version=True)
@@ -239,8 +239,20 @@ class AppStack(cdk.Stack):
         compute_x86 = compute_env("ComputeX86", ["m7i", "r7i"])
         job_queue_x86 = batch.JobQueue(self, "JobQueueX86", job_queue_name=f"gwashub-{n}-x86",
                                        compute_environments=[batch.OrderedComputeEnvironment(compute_environment=compute_x86, order=1)])
+        queues = [job_queue, job_queue_x86]
+        # Meta-analyses (jobs.start_meta) on On-Demand machines, which AWS never takes back: a Spot reclaim restarts a
+        # meta-analysis from the beginning, hours in. Scales to zero like the others, so it costs nothing when idle.
+        meta_queue = meta_queue_x86 = None
+        if cfg.meta_on_demand:
+            meta_queue = batch.JobQueue(self, "MetaJobQueue", job_queue_name=f"gwashub-{n}-ondemand", compute_environments=[
+                batch.OrderedComputeEnvironment(compute_environment=compute_env("ComputeOnDemand", ["m7g", "r7g"], spot=False), order=1)])
+            meta_queue_x86 = batch.JobQueue(self, "MetaJobQueueX86", job_queue_name=f"gwashub-{n}-ondemand-x86", compute_environments=[
+                batch.OrderedComputeEnvironment(compute_environment=compute_env("ComputeOnDemandX86", ["m7i", "r7i"], spot=False), order=1)])
+            queues += [meta_queue, meta_queue_x86]
         pipeline_images = {ref: v if isinstance(v, dict) else {"digest": v} for ref, v in pipeline_images.items()}
-        queue_of = {ref: job_queue_x86 if v.get("platform") == "linux/amd64" else job_queue for ref, v in pipeline_images.items()}
+        x86 = {ref for ref, v in pipeline_images.items() if v.get("platform") == "linux/amd64"}
+        queue_of = {ref: job_queue_x86 if ref in x86 else job_queue for ref in pipeline_images}
+        meta_queue_of = {ref: meta_queue_x86 if ref in x86 else meta_queue for ref in pipeline_images}
         # One job definition per pipeline image (pipeline/images/<owner>/<image>), pinned by digest. A QC
         # run is one job per group of consecutive steps sharing an image; a meta-analysis uses gwashub/base.
         job_defs = {}
@@ -261,11 +273,12 @@ class AppStack(cdk.Stack):
                     logging=ecs.LogDriver.aws_logs(stream_prefix=f"batch-{slug}", log_group=log_group)))
         images_env = self.to_json_string({ref: {"uri": f"{self.account}.dkr.ecr.{self.region}.amazonaws.com/gwashub-images/{ref}@{img['digest']}",
                                                 "job_definition": job_defs[ref].job_definition_arn,
-                                                "job_queue": queue_of[ref].job_queue_arn}
+                                                "job_queue": queue_of[ref].job_queue_arn,
+                                                **({"meta_job_queue": meta_queue_of[ref].job_queue_arn} if meta_queue else {})}
                                           for ref, img in pipeline_images.items()})
         rule = events.Rule(self, "JobEvents", event_pattern=events.EventPattern(
             source=["aws.batch"], detail_type=["Batch Job State Change"],
-            detail={"jobQueue": [job_queue.job_queue_arn, job_queue_x86.job_queue_arn], "status": ["RUNNABLE", "STARTING", "RUNNING", "SUCCEEDED", "FAILED"]}))
+            detail={"jobQueue": [q.job_queue_arn for q in queues], "status": ["RUNNABLE", "STARTING", "RUNNING", "SUCCEEDED", "FAILED"]}))
         rule.add_target(targets.SqsQueue(events_queue))
 
         # ---------- API + worker on Fargate ----------
@@ -317,7 +330,7 @@ class AppStack(cdk.Stack):
             data.resources.grant_delete(td.task_role)  # deleting a project removes its resources
             td.task_role.add_to_principal_policy(iam.PolicyStatement(
                 actions=["batch:SubmitJob", "batch:TagResource"],
-                resources=[job_queue.job_queue_arn, job_queue_x86.job_queue_arn,
+                resources=[*(q.job_queue_arn for q in queues),
                            *(_unversioned(jd.job_definition_arn) for jd in job_defs.values())]))
             td.task_role.add_to_principal_policy(iam.PolicyStatement(actions=["batch:DescribeJobs"], resources=["*"]))
             # Stop QC (jobs.stop_qc): terminate a run's job, waiting or running; job ARNs aren't known in advance

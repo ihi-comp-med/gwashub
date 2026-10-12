@@ -159,10 +159,14 @@ if (any(header_line)) {
   messages <- c(messages, sprintf("%s repeated header lines (were files joined together?) are removed.", format(sum(header_line), big.mark = ",")))
 }
 
-# chromosome: drop a "chr" prefix, upper case, 23 -> X, 24 -> Y, and PLINK's 25 / XY (the X pseudo-autosomal regions,
-# in X coordinates) -> X; anything else (MT, contigs) is invalid
+# chromosome: drop a "chr" prefix and leading zeros ("01", "chr09"), upper case, 23 -> X, 24 -> Y, and PLINK's 25 / XY
+# (the X pseudo-autosomal regions, in X coordinates) -> X; anything else (MT, contigs) is invalid
 received_chr <- gwas$chr
 gwas[, chr := toupper(sub("(?i)^chr", "", trimws(chr), perl = TRUE))]
+zero_rows <- sum(grepl("^0+[1-9]", gwas$chr))
+gwas[, chr := sub("^0+([1-9])", "\\1", chr)]
+if (zero_rows) messages <- c(messages, sprintf("%s rows have chromosomes written with a leading zero (e.g. 01); read without it.",
+                                               format(zero_rows, big.mark = ",")))
 par_rows <- sum(gwas$chr %in% c("25", "XY"))
 gwas[, chr := fcase(chr %in% CHROMS, chr, chr == "23", "X", chr == "24", "Y", chr %in% c("25", "XY"), "X", default = NA_character_)]
 if (par_rows) messages <- c(messages, sprintf("%s rows on chromosome 25 / XY (pseudo-autosomal) are read as X.", format(par_rows, big.mark = ",")))

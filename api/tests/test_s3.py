@@ -87,9 +87,9 @@ def test_qc_job_through_s3(s3, synth_small, tmp_path):
     assert f"qc/7/{result['outputs']['qc_report']}" in keys
 
 
-def test_qc_in_groups_matches_one_job(s3, synth_small):
+def test_qc_in_groups_matches_one_job(s3, synth_small, tmp_path):
     """Batch runs one job per image group; split the default pipeline in three and check the
-    hand-over gives the same result as a single job."""
+    hand-over gives the same result as a single job, also when a group's job is a second attempt."""
     from pipeline.runner.aws import batch_entry
     from gwashub_api.services import default_template
     entry = synth_small["manifest"][0]
@@ -110,7 +110,25 @@ def test_qc_in_groups_matches_one_job(s3, synth_small):
         s3.put_object(Bucket="gh-res", Key=spec["output"][len("s3://gh-res/"):] + "/spec.json", Body=json.dumps(spec).encode())
     batch_entry.main(["s3://gh-res/qc/20/spec.json"])
     for g in range(3):
-        batch_entry.main(["s3://gh-res/qc/21/spec.json", "--group", str(g)])
+        if g != 1:
+            batch_entry.main(["s3://gh-res/qc/21/spec.json", "--group", str(g)])
+        else:
+            # As a reclaimed first attempt leaves it: the group's later steps still "running", with old output. The
+            # next attempt starts at the group's first step, and shows the others as queued, not running.
+            from pipeline.runner import jobspec
+            stale = json.loads(s3.get_object(Bucket="gh-res", Key="qc/21/progress.json")["Body"].read())
+            for i in split["groups"][1]["steps"][1:]:
+                stale[i].update(state="running", tail={"lines": ["old output"], "at": "2026-10-12T16:04:26+00:00"}, messages=["old"])
+            s3.put_object(Bucket="gh-res", Key="qc/21/progress.json", Body=json.dumps(stale).encode())
+            first_running = []
+
+            def on_step(i, state, res):
+                if state == "running" and not first_running:
+                    first_running.append(json.loads(s3.get_object(Bucket="gh-res", Key="qc/21/progress.json")["Body"].read()))
+            jobspec.run_spec(split, str(tmp_path / "work-g1"), on_step=on_step, group=1)
+            seen = first_running[0]
+            later = split["groups"][1]["steps"][1:]
+            assert all(seen[i]["state"] == "queued" and "tail" not in seen[i] and "messages" not in seen[i] for i in later)
         keys = {o["Key"] for o in s3.list_objects_v2(Bucket="gh-res", Prefix="qc/21/")["Contents"]}
         assert ("qc/21/result.json" in keys) == (g == 2)  # only the last group finishes the run
         assert any(k.startswith("qc/21/_state/") for k in keys) == (g < 2)  # hand-over state removed at the end

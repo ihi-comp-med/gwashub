@@ -21,6 +21,9 @@ Notes for whoever maintains this
 import argparse
 import json
 import os
+import re
+import subprocess
+import sys
 
 import numpy as np
 import pandas as pd
@@ -92,6 +95,51 @@ def sort_results(res):
     res = res.copy()
     res["_c"] = res["chr"].astype(str).map(lambda c: 23 if c == "X" else int(c) if str(c).isdigit() else 99)
     return res.sort_values(["_c", "pos"]).drop(columns="_c")
+
+
+def say(msg):
+    """A progress line on the method's console: the results page shows a running meta-analysis's last lines."""
+    print(msg, flush=True)
+
+
+def run_tool(cmd, console=None):
+    """Run a program (GWAMA, METAL), passing its output through line by line as it prints (so it shows while it runs),
+    and save it to console when given. Returns (exit code, all of its output)."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    seen = []
+    for line in proc.stdout:
+        seen.append(line)
+        print(line, end="", flush=True)
+    code, output = proc.wait(), "".join(seen)
+    if console:
+        with open(console, "w") as f:
+            f.write("$ " + " ".join(cmd) + "\n\n" + output)
+    return code, output
+
+
+_COUNTER = re.compile(r"^\s*(Finding lambda\. )?Line: \d*\s*$")  # GWAMA's progress counter, every 10,000 lines
+
+
+def tool_failed(name, code, output, where="", extra=""):
+    """Stop the method after its program (GWAMA, METAL) failed, saying how that program ended: its own exit code, not
+    the wrapper's, so an out-of-memory kill is named as one (the wrapper exits 137 then, which the runner explains too).
+    The message has the program's last lines (progress counters left out) and anything in extra (e.g. its error file)."""
+    lines = [ln for ln in output.splitlines() if ln.strip() and not _COUNTER.match(ln)]
+    if code in (-9, 137):
+        how = "was killed (signal 9), most likely because it ran out of memory"
+    elif code < 0:
+        how = f"was stopped by signal {-code}"
+    elif code:
+        how = f"exited with {code}"
+    else:
+        how = "finished without writing its results"
+    msg = f"{name} {how}{where}."
+    if lines:
+        msg += "\nIts last output:\n" + "\n".join(lines[-12:])
+    if extra:
+        msg += "\n" + extra
+    print(msg, file=sys.stderr, flush=True)
+    raise SystemExit(137 if code in (-9, 137) else code if code > 0 else 1)
 
 
 def write_results(res, out_dir):
