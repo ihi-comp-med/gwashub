@@ -2,10 +2,15 @@
 // Platform admins create projects. The creator becomes the first reviewer and can then invite people.
 const visible = defineModel<boolean>('visible', { default: false })
 const toast = useToast()
-const form = reactive({ id: '', name: '', short: '', description: '', phenotypes: [] as string[], metadata_preset: 'default' })
+const form = reactive({ id: '', name: '', short: '', description: '', phenotypes: [] as string[], metadata_preset: 'default', template: 'default' })
+// Pipeline templates (pipeline/qc_steps/templates): the first pipeline's steps, and for some the default meta-analysis.
+const { data: templates } = useApiGet<any[]>('/templates')
+const chosenTemplate = computed(() => templates.value?.find(t => t.name === form.template))
+// SGC's study metadata fields are only in the full set, so choosing the SGC template switches to it (it can be changed back).
+watch(() => form.template, (t) => { if (t === 'sgc') form.metadata_preset = 'all' })
 const idTouched = ref(false)
 const busy = ref(false)
-watch(visible, (v) => { if (v) { Object.assign(form, { id: '', name: '', short: '', description: '', phenotypes: [], metadata_preset: 'default' }); idTouched.value = false } })
+watch(visible, (v) => { if (v) { Object.assign(form, { id: '', name: '', short: '', description: '', phenotypes: [], metadata_preset: 'default', template: 'default' }); idTouched.value = false } })
 watch(() => form.short, (s) => { if (!idTouched.value) form.id = s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) })
 const idOk = computed(() => /^[a-z][a-z0-9-]{1,39}$/.test(form.id))
 const newPheno = ref('')
@@ -50,6 +55,11 @@ async function submit() {
           <Button label="Add" icon="pi pi-plus" size="small" outlined :disabled="!newPheno.trim()" @click="addPheno" />
         </div>
         <small class="muted">What uploaders choose from. Each starts as case/control; mark quantitative traits (and edit the list) under Upload options, before their first dataset.</small>
+      </div>
+      <div class="field"><label for="np-template">QC pipeline to start from</label>
+        <Select v-model="form.template" input-id="np-template" :options="templates ?? []" option-label="title" option-value="name" fluid />
+        <small v-if="chosenTemplate" class="muted">{{ chosenTemplate.description }}</small>
+        <small class="muted">The project's first pipeline; reviewers can change its steps, or add pipelines, later.</small>
       </div>
       <div class="field"><label>Study metadata fields</label>
         <SelectButton v-model="form.metadata_preset" :options="[{ l: 'HERMES default set', v: 'default' }, { l: 'Every field (HERMES + SGC)', v: 'all' }]"

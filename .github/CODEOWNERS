@@ -2,3 +2,8 @@
 *                                   @gwashub/maintainers
 /pipeline/qc_steps/custom_example/  @gwashub/maintainers
 /pipeline/analyses/meta_analysis/custom_example/  @gwashub/maintainers
+# Skin Genetics Consortium: their steps, image and meta-analysis method
+/pipeline/qc_steps/sgc/                       @gwashub/maintainers @Katie-Watts
+/pipeline/images/sgc/                         @gwashub/maintainers @Katie-Watts
+/pipeline/analyses/meta_analysis/sgc/         @gwashub/maintainers @Katie-Watts
+/pipeline/qc_steps/templates/sgc.yaml         @gwashub/maintainers @Katie-Watts

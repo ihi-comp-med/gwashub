@@ -14,9 +14,22 @@ from pipeline.runner.catalog import StepDef, load_images, load_steps
 from pipeline.runner.pipeline import entries_from_dicts, plan_groups, resolve
 
 
+def templates() -> dict:
+    """Pipeline templates (pipeline/qc_steps/templates/*.yaml), default first: {name: {name, title, description, steps,
+    meta_method}}. A new project's first pipeline starts from one; meta_method (optional) is its default method."""
+    folder = os.path.join(settings().qc_steps_dir, "templates")
+    out = {}
+    for fn in sorted(os.listdir(folder), key=lambda f: (f != "default.yaml", f)):
+        if fn.endswith(".yaml"):
+            with open(os.path.join(folder, fn)) as f:
+                t = yaml.safe_load(f)
+            out[t["name"]] = {"name": t["name"], "title": t.get("title", t["name"]), "description": " ".join(str(t.get("description", "")).split()),
+                              "steps": t["steps"], "meta_method": t.get("meta_method")}
+    return out
+
+
 def default_template():
-    with open(os.path.join(settings().qc_steps_dir, "templates", "default.yaml")) as f:
-        return yaml.safe_load(f)["steps"]
+    return templates()["default"]["steps"]
 
 
 def catalog() -> dict:
@@ -185,13 +198,14 @@ def step_titles() -> dict:
     return {k: sd.title for k, sd in catalog().items()}
 
 
-def ensure_project_pipeline(db: Session, project: Project, user_id: int | None = None):
-    """A new project's "Default" pipeline, version 1 from the default template."""
+def ensure_project_pipeline(db: Session, project: Project, user_id: int | None = None, template: str = "default"):
+    """A new project's "Default" pipeline, version 1 from a template (the default one unless another is named)."""
+    t = templates()[template]
     if not default_pipeline(db, project.id):
         db.add(Pipeline(project_id=project.id, name="Default", is_default=True, created_by=user_id))
         db.flush()
     if not current_pipeline(db, project.id):
-        save_pipeline(db, project.id, default_template(), "Created from the default template", user_id)
+        save_pipeline(db, project.id, t["steps"], f"Created from the {t['title']} template", user_id)
 
 
 

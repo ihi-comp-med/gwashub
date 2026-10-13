@@ -1,0 +1,21 @@
+name: check_build
+title: Check the genome build
+description: "Checks that the data are on the genome build declared at upload, and stops the run if they aren't."
+narrative: >
+  Infers the genome build from the data and compares it with the one declared at upload, which sgc/qc_munge gives
+  qc_munge.R. With rsIDs it uses MungeSumstats' own inference (rsID, chromosome and position against dbSNP 155 on each
+  build), as qc_munge.R does when no build is given; without them it checks a sample of single-base variants against
+  the reference genome of each build. On the wrong build it fails, so the run stops before qc_munge.R lifts the data
+  over from the wrong starting point.
+command: [Rscript, check_build.R]
+image: sgc/mungesumstats
+default_on_fail: block
+resources: []
+compute: {vcpus: 2, memory_gb: 16}
+params:
+  - {key: sampled_snps, label: Variants sampled, type: integer, min: 1000, default: 10000,
+     help: How many variants the inference uses (MungeSumstats' sampled_snps)}
+  - {key: min_match, label: Minimum allele match, type: number, min: 0, max: 1, default: 0.8,
+     help: "Without rsIDs: the declared build must match at least this share of reference bases to be confirmed"}
+  - {key: min_gap, label: Minimum gap between builds, type: number, min: 0, max: 1, default: 0.2,
+     help: "Without rsIDs: the two builds' match shares must differ by at least this, else the build can't be told"}

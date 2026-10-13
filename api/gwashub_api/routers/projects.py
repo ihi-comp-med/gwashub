@@ -360,6 +360,7 @@ class ProjectIn(BaseModel):
     phenotypes: list[str]
     phenotype_types: dict[str, str] = {}  # code -> binary | quantitative (unlisted: binary)
     metadata_preset: str = "default"  # "default" (the HERMES set) or "all" (every field, HERMES and SGC)
+    template: str = "default"  # the pipeline template the first pipeline starts from (pipeline/qc_steps/templates)
 
 
 @router.post("/projects", status_code=201)
@@ -380,13 +381,17 @@ def create_project(body: ProjectIn, user: User = Depends(current_user), db: Sess
         raise HTTPException(422, "Add at least one phenotype")
     if body.metadata_preset not in METADATA_PRESETS:
         raise HTTPException(422, "metadata_preset must be default or all")
+    tpl = services.templates().get(body.template)
+    if not tpl:
+        raise HTTPException(422, f"Unknown pipeline template {body.template}")
     preset = METADATA_PRESETS[body.metadata_preset]
     p = Project(id=pid, name=name, short=short, description=body.description.strip(), phenotypes=phenos,
-                phenotype_types=phenotype_types(phenos, body.phenotype_types), metadata_config=preset() if preset else None)
+                phenotype_types=phenotype_types(phenos, body.phenotype_types), metadata_config=preset() if preset else None,
+                meta_defaults={"method": tpl["meta_method"]} if tpl["meta_method"] else {})
     db.add(p)
     db.flush()
     db.add(Membership(user_id=user.id, project_id=pid, role="reviewer"))
-    services.ensure_project_pipeline(db, p, user.id)
+    services.ensure_project_pipeline(db, p, user.id, body.template)
     db.commit()
     return {"id": pid}
 

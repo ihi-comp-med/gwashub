@@ -14,3 +14,4 @@ steps:
 - step: gwashub/stats_summary
 - step: gwashub/plots
 - step: gwashub/qc_report
+meta_method: gwashub/gwama

@@ -4,7 +4,19 @@
     {
       "name": "gwashub-dev",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "PATH=/opt/homebrew/bin:$PATH ./devtools/dev.sh"],
+      "runtimeArgs": [
+        "-c",
+        "PATH=/opt/homebrew/bin:$PATH ./devtools/dev.sh"
+      ],
+      "port": 3000
+    },
+    {
+      "name": "gwashub-dev-no-image-build",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "PATH=/opt/homebrew/bin:$PATH; export GWASHUB_STEP_RUNNER=docker MPLCONFIGDIR=/tmp/gwashub-mpl GWASHUB_WORKERS=4; .venv/bin/uvicorn gwashub_api.main:app --app-dir api --port 8000 & trap 'kill $!' EXIT; until curl -sf localhost:8000/api/health >/dev/null; do sleep 0.5; done; cd web && npx nuxt dev --port 3000"
+      ],
       "port": 3000
     }
   ]

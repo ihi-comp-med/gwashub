@@ -100,6 +100,14 @@ def default_steps():
             "images": list(images().values())}
 
 
+@app.get("/api/templates")
+def pipeline_templates():
+    """Public: the pipeline templates a new project can start from (pipeline/qc_steps/templates)."""
+    from gwashub_api.services import templates
+    return [{k: t[k] for k in ("name", "title", "description", "meta_method")} | {"steps": [s["step"] for s in t["steps"]]}
+            for t in templates().values()]
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True}

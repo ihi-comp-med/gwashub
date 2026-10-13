@@ -10,7 +10,7 @@ How to regenerate: paste a prompt into an image or design tool (e.g. Claude Desi
 at least 1920 × 1080), check every label against the prompt (tools misspell and invent), and save it as the file
 named. Each prompt is self-contained.
 
-Last checked against the code: 12 October 2026.
+Last checked against the code: 13 October 2026.
 
 ---
 
@@ -60,11 +60,12 @@ recorded automatically." A highlighted amber note: "Every step after the first s
 position, alleles, effect, SE, P ...). Output: GRCh38, a cleaned file, plots and a QC report." Under the steps, the
 default pipeline in order (small labels): Parse → Filter → Harmonise and liftover → EAF check → LD score regression →
 Summary statistics → Manhattan & QQ plots → QC report. Small boxes: "GWASHub defaults", "Consortium additions (by pull
-request)", and "Images: base (Python), base-r (R), vcf (bcftools liftover, gwas2vcf), ldsc (LD score regression),
-gwama, metal; consortium images build on these".
+request), e.g. the Skin Genetics Consortium's own QC and METAL scripts, run as they wrote them", and "Images: base (Python),
+base-r (R), vcf (bcftools liftover, gwas2vcf), ldsc (LD score regression), gwama, metal; consortium images build on
+these, e.g. sgc/mungesumstats". A note: "A new project starts from a pipeline template: GWASHub default or SGC".
 
 PANEL "Meta-analysis" (right-top): four document icons each with a green tick "QC passed" → a "Method" card with pills
-"GWAMA" (default) and "METAL" and a dashed pill "consortium methods by pull request", the caption "script · image ·
+"GWAMA" (default) and "METAL" and a dashed pill "consortium methods by pull request (e.g. SGC's METAL script)", the caption "script · image ·
 parameters", and the note "GWAMA runs one chromosome at a time" → a "Post-processing (GWASHub)" card listing: lead loci
 by LD clumping against 1000 Genomes; nearest genes; forest plots; locus plots; per-dataset checks (direction,
 outliers, λGC, LDSC intercept). Below, four small thumbnails: Manhattan plot, Forest plot, Locus plot, Results table.
@@ -162,8 +163,10 @@ per image group"):
   gwashub/vcf (bcftools liftover, gwas2vcf; x86-64) ·
   gwashub/ldsc (LDSC in Python 2.7; x86-64) ·
   gwashub/gwama (+ GWAMA 2.2.2; arm64) ·
-  gwashub/metal (+ METAL 2020-05-05; arm64).
-  Under it: "Meta-analysis methods: GWAMA (default), METAL, and consortium methods by pull request".
+  gwashub/metal (+ METAL 2020-05-05; arm64) ·
+  sgc/mungesumstats (+ MungeSumstats, dbSNP 155, GRCh37 and GRCh38 genomes, installed by SGC's qc_setup.R; arm64).
+  Under it: "Meta-analysis methods: GWAMA (default), METAL, SGC's METAL script, and consortium methods by pull
+  request". (Seven image tiles: arrange them in two columns of four and three.)
 
 ROW 4, amber label card "Data" (note "Database for records, object storage for files"):
 - PostgreSQL 16 on Amazon RDS: SSL enforced; SQLite when running locally; the same API tests run on both.
@@ -206,5 +209,5 @@ BOTTOM STRIP "Building, testing and contributing", four cards:
   API on :8000, website on :3000.
 - AWS helpers: aws_admin.sh for admin commands, aws_db_tunnel.sh for the database, aws_bookmarks.py for console links.
 - GitHub pull requests: CODEOWNERS and a pull-request template; CONTRIBUTING.md explains how a consortium adds a step,
-  method or image; validation tests compare GWASHub with the original programs (docs/VALIDATION_PLAN.md).
+  method or image, or runs its existing scripts as they are (copied with their checksums, GWASHub code around them); validation tests compare GWASHub with the original programs (docs/VALIDATION_PLAN.md).
 ```

@@ -1,0 +1,13 @@
+name: metal
+title: METAL (SGC script)
+description: >
+  The Skin Genetics Consortium's METAL script, unchanged: fixed-effect inverse-variance meta-analysis (SCHEME STDERR)
+  with heterogeneity, average and min/max effect-allele frequency, and cases and controls summed across datasets. Only
+  the dataset (PROCESS) and output (OUTFILE) lines are set for each run, as SGC's README says.
+reference: Willer CJ, Li Y & Abecasis GR (2010) METAL, Bioinformatics 26:2190; script from github.com/Katie-Watts/SGC
+command: [python, gwashub_metal.py]
+image: gwashub/metal
+compute: {vcpus: 4, memory_gb: 60}   # as gwashub/metal: every dataset's variants in memory
+params:
+  - {key: min_studies, label: Minimum datasets per variant, type: integer, min: 1, default: 1,
+     help: "Variants in fewer datasets are left out of the results (1 = none, as SGC's script)"}

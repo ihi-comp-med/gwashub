@@ -1,0 +1,14 @@
+name: sgc
+title: Skin Genetics Consortium (SGC)
+description: >
+  SGC's QC, with SGC's own scripts: parse (reads the upload with the wizard's column mapping), a check that
+  the data are on the declared genome build, SGC's qc_munge.R (MungeSumstats with SGC's filters, lifted to GRCh38),
+  then GWASHub's summary statistics, plots and report. Meta-analyses default to SGC's METAL script.
+steps:
+- step: gwashub/parse
+- step: sgc/check_build
+- step: sgc/qc_munge
+- step: gwashub/stats_summary
+- step: gwashub/plots
+- step: gwashub/qc_report
+meta_method: sgc/metal
