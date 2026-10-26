@@ -232,6 +232,31 @@ def test_running_meta_analysis_shows_its_output_tail(client):
     assert client.get(f"/api/meta/{mid}").json()["live"] is None
 
 
+def test_contact_email_owns_a_dataset_like_its_uploader(client, synth_small):
+    """Someone uploading for a cohort can name its analyst as contact email: that person (an uploader too) then sees and
+    acts on the dataset as if they had uploaded it. Changing the contact moves that access."""
+    entry = synth_small["manifest"][0]
+    as_user(client, "jonas@example.org")
+    up = upload(client, synth_small, entry, start=False, cohort="Contact Cohort", study_meta={"contact_email": " MEI@example.org "})
+    other = upload(client, synth_small, entry, start=False, cohort="Contact Cohort B", study_meta={})
+    as_user(client, "mei@example.org")
+    d = client.get(f"/api/datasets/{up['id']}")
+    assert d.status_code == 200 and d.json()["can_edit"] and d.json()["mine"]
+    assert client.get(f"/api/datasets/{up['id']}/files/raw").status_code in (200, 302)
+    assert client.patch(f"/api/datasets/{up['id']}", json={"phenotype": entry["phenotype"], "n_cases": 101}).status_code == 200
+    rows = {r["id"]: r for r in client.get("/api/projects/hermes3/datasets").json()}
+    assert rows[up["id"]]["mine"] and rows[up["id"]]["can_open"] and not rows[other["id"]]["can_open"]
+    assert client.get(f"/api/datasets/{other['id']}").status_code == 403  # no contact named: still only the uploader's
+    as_user(client, "jonas@example.org")
+    meta = client.get(f"/api/datasets/{up['id']}").json()["study_meta"]
+    assert client.patch(f"/api/datasets/{up['id']}", json={"study_meta": {**meta, "contact_email": "someone@else.org"}}).status_code == 200
+    as_user(client, "mei@example.org")
+    assert client.get(f"/api/datasets/{up['id']}").status_code == 403
+    as_user(client, "jonas@example.org")
+    for x in (up, other):
+        assert client.delete(f"/api/datasets/{x['id']}").status_code == 204
+
+
 def test_column_suggestion_coded_allele_names():
     """The coded / non-coded allele naming (A_coded, A_noncoded, AFreq_coded) maps to EA, OA and EAF; n_events (the
     number of cases, as survival analyses name it) to cases."""
@@ -745,10 +770,14 @@ def test_meta_analysis(client, synth_small):
     assert "Effect allele" in client.get(f"/api/meta/{ma['id']}/files/README.txt").text
 
     as_user(client, "jonas@example.org")
-    assert client.get(f"/api/meta/{ma['id']}").status_code == 200  # uploaders can view results
-    assert client.get(f"/api/meta/{ma['id']}/files/manhattan.png").status_code == 200
-    assert client.get(f"/api/meta/{ma['id']}/files/meta_results.tsv.gz").status_code == 403
-    assert client.get(f"/api/meta/{ma['id']}/files/gwama_log.txt").status_code == 200
+    view = client.get(f"/api/meta/{ma['id']}")
+    assert view.status_code == 200 and view.json()["lead_loci"] is not None  # uploaders see the results on the page...
+    for name in ("manhattan.png", "lead_loci.tsv", "signals.tsv", "datasets.tsv", "README.txt", "meta_results.tsv.gz",
+                 "gwama_log.txt", "gwama_console.txt"):  # ...but download none of the files
+        assert client.get(f"/api/meta/{ma['id']}/files/{name}").status_code == 403, name
+    if view.json()["summary"].get("n_region_files"):  # except the locus plots' data, which the page reads to draw them
+        locus = view.json()["forest"][0]["locus_id"]
+        assert client.get(f"/api/meta/{ma['id']}/files/region_{locus}.json").status_code == 200
     assert client.put("/api/projects/hermes3/meta/settings", json={"method": "gwashub/gwama"}).status_code == 403
     as_user(client, "ama@example.org")
     s = client.put("/api/projects/hermes3/meta/settings", json={"method": "gwashub/metal", "params": {"gwashub/metal": {"scheme": "samplesize"}},

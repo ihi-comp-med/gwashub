@@ -6,7 +6,9 @@
 # The R packages are built in their own stage, which depends only on qc_setup.R: GWASHub code changes rebuild
 # gwashub/base-r, and this way they don't reinstall the packages (hours), only copy them in.
 #   docker build -f pipeline/images/sgc/mungesumstats/Dockerfile -t sgc/mungesumstats .
-FROM python:3.12-slim AS rlib
+# Pinned by digest: a new python:3.12-slim on Docker Hub would otherwise rebuild this stage (about 40 minutes, then a
+# 16 GB upload). Update the digest deliberately, with gwashub/base's Debian in mind (the same R must result).
+FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS rlib
 # The same R as gwashub/base-r (Debian's r-base-core), plus what Bioconductor packages need to compile.
 RUN apt-get update && apt-get install -y --no-install-recommends r-base-core r-base-dev r-cran-data.table \
         libcurl4-openssl-dev libssl-dev libxml2-dev zlib1g-dev libbz2-dev liblzma-dev libdeflate-dev libpng-dev \

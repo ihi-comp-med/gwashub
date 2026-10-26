@@ -120,8 +120,20 @@ def require_member(db: Session, user: User, project_id: str, role: str | None = 
     return m
 
 
+def contact_email(ds: Dataset) -> str:
+    """The dataset's contact email: its own value if it overrides the cohort's, else the cohort's (metadata_schema)."""
+    email = (ds.study_meta or {}).get("contact_email") or ((ds.cohort_ref.meta or {}) if ds.cohort_ref else {}).get("contact_email")
+    return str(email or "").strip().lower()
+
+
+def owns_dataset(user: User, ds: Dataset) -> bool:
+    """The person who uploaded it, or the person its contact email names (e.g. a cohort's analyst whose files someone
+    else uploaded): both see it and act on it as its uploader."""
+    return ds.uploaded_by == user.id or (bool(contact_email(ds)) and contact_email(ds) == (user.email or "").strip().lower())
+
+
 def can_open_dataset(m: Membership, user: User, ds: Dataset) -> bool:
-    return m.role == "reviewer" or ds.uploaded_by == user.id
+    return m.role == "reviewer" or owns_dataset(user, ds)
 
 
 def require_dataset(db: Session, user: User, dataset_id: int, open_: bool = True) -> tuple[Dataset, Membership]:
@@ -130,5 +142,5 @@ def require_dataset(db: Session, user: User, dataset_id: int, open_: bool = True
         raise HTTPException(404, "Dataset not found")
     m = require_member(db, user, ds.project_id)
     if open_ and not can_open_dataset(m, user, ds):
-        raise HTTPException(403, "Uploaders can only open datasets they submitted")
+        raise HTTPException(403, "Uploaders can only open datasets they submitted, or whose contact email is theirs")
     return ds, m

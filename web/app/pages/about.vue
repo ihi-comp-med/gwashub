@@ -39,7 +39,7 @@ const onFail: Record<string, string> = {
 
     <h2>Roles</h2>
     <dl class="roles">
-      <dt>Uploader</dt><dd>Uploads datasets and edits their metadata. Sees project summaries, and opens only their own datasets.</dd>
+      <dt>Uploader</dt><dd>Uploads datasets and edits their metadata. Sees project summaries, and opens only their own datasets: those they uploaded, and those whose contact email is theirs (when someone else uploads for them).</dd>
       <dt>Reviewer</dt><dd>Sees every dataset, reviews QC outcomes, manages the pipeline and upload options, and runs meta-analyses.</dd>
     </dl>
 

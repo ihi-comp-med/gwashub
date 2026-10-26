@@ -136,7 +136,8 @@ const num = (x: any, d = 4) => x === '' || x == null || Number.isNaN(Number(x)) 
             <h2 class="h2">{{ ma.name }}</h2>
           </div>
           <span class="spacer" />
-          <template v-if="ma.status === 'completed'">
+          <!-- Downloads are for reviewers; uploaders see the results here but the server refuses them the files. -->
+          <template v-if="ma.status === 'completed' && isReviewer">
             <Button label="Download" icon="pi pi-download" icon-pos="left" size="small" aria-haspopup="true" aria-controls="ma-downloads"
                     @click="e => downloadMenu.toggle(e)" />
             <Menu id="ma-downloads" ref="downloadMenu" :model="downloads" popup class="dl-menu" />

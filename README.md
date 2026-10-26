@@ -41,7 +41,7 @@ Open http://localhost:3000 and sign in as any listed user (local mode has no pas
 | tom@example.org | – | reviewer |
 | noor@example.org | – | uploader |
 
-Uploaders open only their own datasets; reviewers see everything in the project, review QC, run
+Uploaders open only their own datasets (uploaded by them, or naming them as contact email); reviewers see everything in the project, review QC, run
 meta-analyses and manage the pipeline and members; platform admins can also create projects.
 
 ## Bulk upload

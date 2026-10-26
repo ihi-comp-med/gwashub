@@ -3,7 +3,6 @@ const route = useRoute()
 const router = useRouter()
 const toast = useToast()
 const { pid, project, error: projectError, isReviewer, refresh: refreshProject } = useProject()
-const { me } = useAuth()
 const { data: datasets, refresh } = useApiGet<any[]>(() => `/projects/${pid.value}/datasets`)
 const anyProcessing = computed(() => datasets.value?.some(d => d.status === 'processing'))
 let timer: ReturnType<typeof setInterval> | undefined
@@ -37,7 +36,7 @@ const rows = computed(() => (datasets.value ?? []).filter((d) => {
     && (!filters.cohort || d.cohort === filters.cohort)
     && (!filters.ancestry || d.ancestry === filters.ancestry) && (!filters.sex || d.sex === filters.sex)
     && (!filters.status || d.status === filters.status) && (!filters.phenotype || d.phenotype === filters.phenotype)
-    && (!filters.mine || d.uploaded_by === me.value?.id)
+    && (!filters.mine || d.mine)
 }))
 const anyFilter = computed(() => !!(filters.search || filters.cohort || filters.ancestry || filters.sex || filters.status || filters.phenotype || filters.mine))
 function clear() { Object.assign(filters, { search: '', cohort: null, ancestry: null, sex: null, status: null, phenotype: null, mine: false }) }
@@ -46,12 +45,12 @@ function clear() { Object.assign(filters, { search: '', cohort: null, ancestry: 
 // also re-run QC (each with its pipeline's current version) and pin datasets to a pipeline.
 // A dataset is out of date when its latest run used another pipeline, or an older version of its own.
 const picked = ref<any[]>([])
-const startable = (d: any) => d.status === 'pending' && (isReviewer.value || d.uploaded_by === me.value?.id)
+const startable = (d: any) => d.status === 'pending' && (isReviewer.value || d.mine)
 // Uploaders also re-run their own datasets a reviewer sent back (changes requested).
 const rerunnable = (d: any) => isReviewer.value ? !['processing', 'uploading'].includes(d.status)
-  : startable(d) || (d.status === 'changes_requested' && d.uploaded_by === me.value?.id)
-const stoppable = (d: any) => d.status === 'processing' && (isReviewer.value || d.uploaded_by === me.value?.id)
-const deletable = (d: any) => d.status !== 'processing' && (isReviewer.value || d.uploaded_by === me.value?.id)
+  : startable(d) || (d.status === 'changes_requested' && d.mine)
+const stoppable = (d: any) => d.status === 'processing' && (isReviewer.value || d.mine)
+const deletable = (d: any) => d.status !== 'processing' && (isReviewer.value || d.mine)
 const waiting = computed(() => (datasets.value ?? []).filter(startable))
 const runLabel = computed(() => {
   const n = picked.value.filter(rerunnable).length
@@ -127,7 +126,7 @@ const selected = ref<number | null>(route.query.open ? Number(route.query.open) 
 const panelOpen = ref(!!selected.value)
 function open(d: any) {
   if (!d.can_open) {
-    toast.add({ severity: 'secondary', summary: 'Restricted', detail: 'Uploaders can only open datasets they submitted. Ask a project reviewer for access.', life: 3500 })
+    toast.add({ severity: 'secondary', summary: 'Restricted', detail: 'Uploaders can only open datasets they submitted, or whose contact email is theirs. Ask a project reviewer for access.', life: 3500 })
     return
   }
   selected.value = d.id
@@ -144,7 +143,7 @@ watch(() => Object.keys(uploads.value).length, (now, before) => { if (now < befo
     <ProjectHeader :project="project" />
     <div class="container page">
       <Message v-if="!isReviewer" severity="info" :closable="false" class="mb" icon="pi pi-lock">
-        You're an uploader on this project: you can open and download only the datasets you submitted.
+        You're an uploader on this project: you can open and download only your own datasets (those you submitted, or whose contact email is yours).
       </Message>
 
       <Card>

@@ -105,7 +105,7 @@ whatever the pipeline. A QC run is four Batch jobs (one per change of image).
 - Changing a dataset's genome build re-runs QC automatically.
 
 **People and permissions**
-- Enforced server-side (`auth.py`). Uploaders see all rows and counts but open only their own datasets; reviewers do
+- Enforced server-side (`auth.py`). Uploaders see all rows and counts but open only their own datasets (uploaded by them, or whose contact email is theirs: `auth.owns_dataset`); reviewers do
   everything else in their project, including members, pipelines and metadata settings. Non-members get 404.
 - Platform admins create projects (becoming the first reviewer), upload resources and delete projects. For anything
   else they need a reviewer role in the project.

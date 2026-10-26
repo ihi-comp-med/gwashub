@@ -10,7 +10,7 @@ import logging
 
 from gwashub_api import metadata_schema, practice, services, storage
 from gwashub_api.accounts import InviteError, find_or_invite
-from gwashub_api.auth import current_user, membership, require_member
+from gwashub_api.auth import current_user, membership, owns_dataset, require_member
 from gwashub_api.db import get_db
 from gwashub_api.models import ApiToken, Cohort, Dataset, Membership, MetaAnalysis, Pipeline, PipelineVersion, Project, Resource, User
 from gwashub_api.services import current_pipeline
@@ -60,8 +60,8 @@ def get_project(project_id: str, user: User = Depends(current_user), db: Session
         "ancestries": p.ancestries, "sexes": p.sexes,
         "created_at": p.created_at, "role": m.role, "counts": counts(db, p.id), "is_practice": p.id == practice.PROJECT_ID,
         # The caller's datasets a reviewer sent back (a badge on the Datasets tab)
-        "my_changes_requested": db.scalar(select(func.count()).select_from(Dataset).where(
-            Dataset.project_id == project_id, Dataset.uploaded_by == user.id, Dataset.status == "changes_requested")),
+        "my_changes_requested": sum(owns_dataset(user, d) for d in db.scalars(select(Dataset).where(
+            Dataset.project_id == project_id, Dataset.status == "changes_requested"))),
         # Everyone is in the Practice project: each person sees only themselves there.
         "members": [{"id": x.user.id, "name": x.user.name, "institution": x.user.institution, "role": x.role,
                      "is_me": x.user_id == user.id, "uploads": uploads.get(x.user_id, 0),

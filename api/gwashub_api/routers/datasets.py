@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, object_session
 
 from gwashub_api import jobs, services, storage
-from gwashub_api.auth import Caller, can_open_dataset, current_user, require_dataset, require_member, upload_caller
+from gwashub_api.auth import Caller, can_open_dataset, current_user, owns_dataset, require_dataset, require_member, upload_caller
 from gwashub_api.colmap import suggest
 from gwashub_api import metadata_schema
 from gwashub_api.db import get_db
@@ -53,8 +53,9 @@ def latest_run(ds: Dataset) -> QCRun | None:
     return ds.runs[-1] if ds.runs else None
 
 
-def ds_row(ds: Dataset, can_open: bool, cfg: dict | None = None, current: dict | None = None):
-    """current: {pipeline_id: current version id} (services.current_versions), to spare a query per dataset in lists."""
+def ds_row(ds: Dataset, can_open: bool, cfg: dict | None = None, current: dict | None = None, mine: bool = False):
+    """current: {pipeline_id: current version id} (services.current_versions), to spare a query per dataset in lists.
+    mine: the caller uploaded it or is its contact (auth.owns_dataset): the website's "My uploads" and actions."""
     run = latest_run(ds)
     custom = services.custom_fields(ds.project)
     meta = metadata_schema.effective(ds.cohort_ref.meta if ds.cohort_ref else {}, ds.study_meta, custom)
@@ -62,7 +63,7 @@ def ds_row(ds: Dataset, can_open: bool, cfg: dict | None = None, current: dict |
             "sex": ds.sex, "build": ds.build, "n_cases": ds.n_cases, "n_controls": ds.n_controls, "n_total": ds.n_total,
             "trait_type": services.trait_type(ds.project, ds.phenotype), "file_name": ds.file_name,
             "file_size": ds.file_size, "status": ds.status, "uploaded_by": ds.uploaded_by,
-            "uploader": ds.uploader.name, "created_at": ds.created_at, "can_open": can_open, "review": ds.review,
+            "uploader": ds.uploader.name, "created_at": ds.created_at, "can_open": can_open, "mine": mine, "review": ds.review,
             "pipeline_version": run.pipeline_version.version if run else None,
             "pipeline": services.pipeline_state(object_session(ds), ds, current),
             "qc": qc_metrics(run) if can_open else {},
@@ -90,7 +91,7 @@ def list_datasets(project_id: str, user: User = Depends(current_user), db: Sessi
     q = select(Dataset).where(Dataset.project_id == project_id).order_by(Dataset.created_at.desc())
     # Unfinished uploads are listed only to the person uploading.
     current = services.current_versions(db, project_id)
-    return [ds_row(ds, can_open_dataset(m, user, ds), cfg, current) for ds in db.scalars(q)
+    return [ds_row(ds, can_open_dataset(m, user, ds), cfg, current, owns_dataset(user, ds)) for ds in db.scalars(q)
             if ds.status != "uploading" or ds.uploaded_by == user.id]
 
 
@@ -348,7 +349,7 @@ def require_can_replace(db, user: User, dataset_id: int) -> Dataset:
     ds, m = require_dataset(db, user, dataset_id)
     if ds.status in ("processing", "uploading"):
         raise HTTPException(409, "QC is running or the upload hasn't finished; try again when it has")
-    if not (m.role == "reviewer" or (ds.uploaded_by == user.id and ds.status in UPLOADER_CAN_FIX)):
+    if not (m.role == "reviewer" or (owns_dataset(user, ds) and ds.status in UPLOADER_CAN_FIX)):
         raise HTTPException(403, "Only a reviewer, or the uploader once a reviewer has requested changes, can replace the file")
     return ds
 
@@ -452,11 +453,11 @@ def get_dataset(dataset_id: int, user: User = Depends(current_user), db: Session
     ds, m = require_dataset(db, user, dataset_id)
     run = latest_run(ds)
     cohort_meta = (ds.cohort_ref.meta if ds.cohort_ref else {}) or {}
-    return {**ds_row(ds, True, services.metadata_config(m.project)), "column_mapping": ds.column_mapping, "effect_type": ds.effect_type,
+    return {**ds_row(ds, True, services.metadata_config(m.project), mine=owns_dataset(user, ds)), "column_mapping": ds.column_mapping, "effect_type": ds.effect_type,
             "study_meta": metadata_schema.effective(cohort_meta, ds.study_meta, services.custom_fields(m.project)), "cohort_meta": cohort_meta,
             "overrides": sorted(k for k in (ds.study_meta or {}) if k in metadata_schema.cohort_keys(services.custom_fields(m.project))),
             "metadata_config": services.metadata_config(m.project),
-            "edits": ds.edits or [], "can_edit": m.role == "reviewer" or ds.uploaded_by == user.id,
+            "edits": ds.edits or [], "can_edit": m.role == "reviewer" or owns_dataset(user, ds),
             "uploaded_with_token": token_label(db, ds.uploaded_with_token),
             "upload_location": storage.parent(ds.storage_path) if ds.storage_path else None,
             "run": run and run_view(run), "runs": [{"id": r.id, "status": r.status, "overall_verdict": r.overall_verdict,
@@ -542,7 +543,7 @@ def dataset_file(dataset_id: int, kind: str, path: str | None = None, run_id: in
 def can_start_qc(m, user: User, ds: Dataset) -> bool:
     """Reviewers start or re-run QC on any dataset; an uploader on their own datasets that are pending or that a
     reviewer sent back (changes requested)."""
-    return m.role == "reviewer" or (ds.status in UPLOADER_CAN_FIX and ds.uploaded_by == user.id)
+    return m.role == "reviewer" or (ds.status in UPLOADER_CAN_FIX and owns_dataset(user, ds))
 
 
 UPLOADER_CAN_FIX = ("pending", "changes_requested")  # an uploader may re-run QC or replace the file
@@ -568,7 +569,7 @@ def stop_reason(m, user: User, ds: Dataset) -> str | None:
     run = latest_run(ds)
     if ds.status != "processing" or not run or run.status not in jobs.STOPPABLE:
         return "QC isn't running"
-    if not (m.role == "reviewer" or ds.uploaded_by == user.id):
+    if not (m.role == "reviewer" or owns_dataset(user, ds)):
         return "only the uploader or a reviewer can stop QC"
     return None
 
@@ -624,7 +625,7 @@ COUNTS = ("n_cases", "n_controls", "n_total")
 def file_columns(dataset_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """The uploaded file's column names (its header line only), for remapping the columns."""
     ds, m = require_dataset(db, user, dataset_id)
-    if not (m.role == "reviewer" or ds.uploaded_by == user.id):
+    if not (m.role == "reviewer" or owns_dataset(user, ds)):
         raise HTTPException(403, "Only the uploader or a reviewer can edit this dataset")
     return {"columns": header_columns(ds.storage_path)}
 
@@ -633,7 +634,7 @@ def file_columns(dataset_id: int, user: User = Depends(current_user), db: Sessio
 def edit_dataset(dataset_id: int, body: DatasetEdit, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """The uploader or a reviewer can edit descriptive fields and study metadata. Every change is logged."""
     ds, m = require_dataset(db, user, dataset_id)
-    if not (m.role == "reviewer" or ds.uploaded_by == user.id):
+    if not (m.role == "reviewer" or owns_dataset(user, ds)):
         raise HTTPException(403, "Only the uploader or a reviewer can edit this dataset")
     p = m.project
     changes = {}
@@ -740,7 +741,7 @@ def delete_dataset(dataset_id: int, user: User = Depends(current_user), db: Sess
 
 
 def delete_problem(m, user: User, ds: Dataset) -> tuple[int, str] | None:
-    if not (m.role == "reviewer" or ds.uploaded_by == user.id):
+    if not (m.role == "reviewer" or owns_dataset(user, ds)):
         return 403, "Only the uploader or a reviewer can delete this dataset"
     if ds.status == "processing":
         return 409, "QC is running; delete the dataset when it has finished"

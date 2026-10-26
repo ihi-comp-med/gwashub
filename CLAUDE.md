@@ -57,7 +57,7 @@ copyright notice for any code ported from them). Useful there: liftover worker
   pass/warn/fail; exit 0 = it ran. Extra context via optional env vars (`GWASHUB_ARTIFACT_DIR`,
   `GWASHUB_STEP_LOGS`, `GWASHUB_RUN_DIR`). Steps never touch the database or the network.
 - **Permissions are enforced server-side** (`api/gwashub_api/auth.py`): uploaders open only their own
-  datasets; reviewers do everything else in their project, including managing members; platform admins
+  datasets (uploaded by them, or whose contact email is theirs: `owns_dataset`); reviewers do everything else in their project, including managing members; platform admins
   (`is_admin`) can also create projects and upload resources, but need a reviewer role for
   reviewer actions (the creator of a project is its first reviewer); non-members get 404. Personal API tokens (for the
   upload script) are accepted only by endpoints that use `auth.upload_caller`; everything else is cookie-only.

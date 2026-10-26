@@ -32,7 +32,7 @@ Meta-analysis; centre-bottom, wide: On AWS) and a strip along the bottom: Securi
 
 PANEL "People and roles" (left column, purple person icons):
 - Uploader (a cohort analyst): uploads their cohort's summary statistics, maps the columns, fills in study metadata;
-  opens only their own datasets; starts QC on their uploads.
+  opens only their own datasets (uploaded by them, or naming them as contact); starts QC on them.
 - Reviewer: sees every dataset in the project, starts, stops and re-runs QC, approves datasets that passed with
   warnings or sends them back, manages members and the project's pipelines, runs and stops meta-analyses.
 - Platform admin: creates projects; uploads shared reference resources.

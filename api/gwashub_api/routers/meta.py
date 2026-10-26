@@ -44,9 +44,10 @@ COMMON_PARAMS = P.normalise([
      "help": "Lead loci with Cochran's Q P below this are flagged as heterogeneous"},
 ])
 STATUSES = ("passed", "review")
-PUBLIC_FILES = {"manhattan.png", "qq.png", "plot_data.json", "forest.json", "lead_loci.tsv", "signals.tsv", "summary.json", "datasets.tsv",
-                "README.txt"}
-REVIEWER_FILES = {"meta_results.tsv.gz", "method_output.txt"}  # the method's console: kept failed or not
+# The files reviewers can download (uploaders none: they see the results on the page). method_output.txt, the method's
+# console, is kept whether it failed or not.
+FILES = {"manhattan.png", "qq.png", "plot_data.json", "forest.json", "lead_loci.tsv", "signals.tsv", "summary.json", "datasets.tsv",
+         "README.txt", "meta_results.tsv.gz", "method_output.txt"}
 
 
 def methods() -> dict:
@@ -245,11 +246,12 @@ def get_meta(meta_id: int, user: User = Depends(current_user), db: Session = Dep
 @router.get("/meta/{meta_id}/files/{name}")
 def meta_file(meta_id: int, name: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
     ma, m = require_meta(db, user, meta_id)
-    if name in REVIEWER_FILES and m.role != "reviewer":
-        raise HTTPException(403, "Only reviewers can download full meta-analysis results")
     region = re.fullmatch(r"region_\d+\.json", name) is not None  # a locus plot's data (_metalib/regions.py)
+    # Uploaders see the results on the page but download nothing; the page itself reads only the locus plots' data.
+    if m.role != "reviewer" and not region:
+        raise HTTPException(403, "Only reviewers can download meta-analysis files")
     available = ma.status == "completed" or (ma.status == "failed" and name == "method_output.txt")
-    if not (region or name in PUBLIC_FILES | REVIEWER_FILES | {f["path"] for f in method_files(ma)}) or not available:
+    if not (region or name in FILES | {f["path"] for f in method_files(ma)}) or not available:
         raise HTTPException(404, "No such file")
     if region:  # small, and read by the page itself: returned directly rather than via a (cross-origin) S3 redirect
         loc = storage.join(ma.run_dir, name)
