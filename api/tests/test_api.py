@@ -791,7 +791,7 @@ def test_meta_analysis(client, synth_small):
     # Every method is offered with typed parameters; the example consortium method runs end to end.
     ms = client.get("/api/meta/methods").json()
     assert ms["default_method"] == "gwashub/gwama" and ms["methods"][0]["key"] == "gwashub/gwama"
-    assert {m["key"] for m in ms["methods"]} == {"gwashub/gwama", "gwashub/metal", "custom_example/custom_meta_analysis", "sgc/metal"}
+    assert {m["key"] for m in ms["methods"]} == {"gwashub/gwama", "gwashub/metal", "custom_example/custom_meta_analysis"}
     r = client.post("/api/projects/hermes3/meta", json={"name": "Z-score", "dataset_ids": eligible, "settings": {
         "method": "custom_example/custom_meta_analysis", "params": {"weighting": "equal"}}})
     assert r.status_code == 201, r.text
@@ -1430,19 +1430,16 @@ def test_platform_admins_create_projects(client):
 
 def test_new_projects_start_from_a_template(client):
     """A new project's first pipeline starts from a template (pipeline/qc_steps/templates): the default unless another is
-    named; the SGC one also makes SGC's METAL script the project's default meta-analysis method."""
+    named; a template's meta_method becomes the project's default meta-analysis method."""
     tpls = {t["name"]: t for t in client.get("/api/templates").json()}
-    assert list(tpls)[0] == "default" and tpls["default"]["meta_method"] == "gwashub/gwama" and tpls["sgc"]["meta_method"] == "sgc/metal"
-    assert tpls["sgc"]["steps"] == ["gwashub/parse", "sgc/check_build", "sgc/qc_munge", "gwashub/stats_summary", "gwashub/plots", "gwashub/qc_report"]
+    assert list(tpls)[0] == "default" and tpls["default"]["meta_method"] == "gwashub/gwama"
     as_user(client, "demo@gwashub.org")
-    body = {"id": "sgc-test", "name": "Skin GWAS", "short": "SGC", "phenotypes": ["Atopic dermatitis"], "template": "sgc", "metadata_preset": "all"}
+    body = {"id": "tpl-test", "name": "Template test", "short": "TPL", "phenotypes": ["HF"], "template": "default"}
     assert client.post("/api/projects", json={**body, "template": "nope"}).status_code == 422
     assert client.post("/api/projects", json=body).status_code == 201
-    pl = client.get("/api/projects/sgc-test/pipeline").json()
-    assert [s["step"] for s in pl["steps"]] == tpls["sgc"]["steps"]
-    assert client.get("/api/projects/sgc-test/meta/settings").json()["settings"]["method"] == "sgc/metal"
-    assert client.post("/api/projects", json={**body, "id": "sgc-test2", "template": "default"}).status_code == 201
-    assert [s["step"] for s in client.get("/api/projects/sgc-test2/pipeline").json()["steps"]][2] == "gwashub/harmonise_liftover"
+    pl = client.get("/api/projects/tpl-test/pipeline").json()
+    assert [s["step"] for s in pl["steps"]] == tpls["default"]["steps"]
+    assert client.get("/api/projects/tpl-test/meta/settings").json()["settings"]["method"] == "gwashub/gwama"
 
 
 def test_cohorts_hold_shared_metadata_and_datasets_override(client, synth_small):

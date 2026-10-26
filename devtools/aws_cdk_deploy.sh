@@ -63,10 +63,8 @@ done
 PIPELINE_IMAGES="${PIPELINE_IMAGES%,}}"
 
 # Keep the build cache from filling the disk (it grows with every build), but big enough that the next build is fast.
-# 40 GB: sgc/mungesumstats' R packages alone are about 14 GB of cache; trimmed away, the next deploy would reinstall them
-# (about 40 minutes) and upload the whole image (16 GB) again.
 for b in $(docker buildx ls --format '{{.Name}}' 2>/dev/null | sort -u); do
-  docker buildx prune -f --builder "$b" --max-used-space 40gb >/dev/null 2>&1 || true
+  docker buildx prune -f --builder "$b" --max-used-space 15gb >/dev/null 2>&1 || true
 done
 
 echo "== infrastructure"

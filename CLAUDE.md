@@ -20,7 +20,7 @@ Read before substantial work:
 | `api/` | Backend web service: FastAPI (`gwashub_api`): projects, roles, datasets, metadata, pipelines, resources, meta-analysis. Tests in `api/tests/` |
 | `pipeline/` | Compute that runs as batch jobs (Python package `pipeline`) |
 | `pipeline/runner/` | Runs a pipeline (one process per step); `jobspec.py` runs a job spec (locally or as a Batch job, `aws/batch_entry.py`). CLI: `python -m pipeline.runner run …` |
-| `pipeline/qc_steps/` | QC steps by owner: `gwashub/` (defaults), `<consortium>/` (added by pull request, see `CONTRIBUTING.md`; `sgc/` runs the Skin Genetics Consortium's own scripts, with minor documented fixes only); one folder per step (script, `step.yaml`, `test_<name>.py`); shared `_lib/`, `templates/` (pipeline templates a new project starts from: `default`, `sgc`) |
+| `pipeline/qc_steps/` | QC steps by owner: `gwashub/` (defaults), `<consortium>/` (added by pull request, see `CONTRIBUTING.md`); one folder per step (script, `step.yaml`, `test_<name>.py`); shared `_lib/`, `templates/` (pipeline templates a new project starts from: `default`) |
 | `pipeline/images/` | Images steps and methods run in, by owner: `gwashub/base` (Python), `gwashub/base-r` (R), `gwashub/vcf` (bcftools + liftover, gwas2vcf; x86-64), `gwashub/ldsc` (bulik/ldsc; x86-64), `gwashub/gwama`, `gwashub/metal` (pinned, checksummed releases); consortium images build `FROM` these |
 | `pipeline/analyses/` | `meta_analysis/<owner>/<method>/` (`analysis.yaml` + script): `gwashub/gwama` (default), `gwashub/metal`, consortium methods by PR; shared `_metalib/` (inputs, `publish.py` post-processing) |
 | `pipeline/tests/` | Runner, grouping, meta-analysis, resource catalogue tests |

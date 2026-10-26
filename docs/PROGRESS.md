@@ -13,7 +13,6 @@ deployment in `docs/AWS_FULL.md`.
 | Default QC | The HERMES 3 DCM pipeline as eight steps (below). Tested on synthetic data and dry runs on real files; not yet compared with the HPC results on real cohorts |
 | Runner | One process per step, in the step's image; resources per step; block / flag / continue; crash handling; Python and R steps; image groups as Batch jobs |
 | Meta-analysis | `gwashub/gwama` (default), `gwashub/metal`, consortium methods by PR; shared post-processing: lead loci by PLINK 2 clumping, signals, locus plots with genes, forest plots, `datasets.tsv`, `README.txt` |
-| Skin Genetics Consortium | SGC's own `qc_munge.R` / `qc_setup.R` (MungeSumstats) and METAL script, copied with GWASHub code around them (two minor, documented fixes to `qc_munge.R`): steps `sgc/check_build` and `sgc/qc_munge`, image `sgc/mungesumstats`, method `sgc/metal`, the `sgc` pipeline template ("New project" chooses a template). Not yet validated against SGC's scripts run by hand, and not deployed |
 | Reference files | `resources/catalog.yaml` and build scripts; all 37 real files (~26 GB, incl. dbSNP 157) on AWS dev |
 | AWS | Live in gwashub-dev (`docs/AWS_FULL.md`); prod configured, not deployed |
 | Validation | All four tests pass on gwashub-dev: GWAMA defaults and options and METAL, each vs the program run by hand, and QC against planted problems (`docs/VALIDATION_PLAN.md`, `validation/`) |
@@ -150,8 +149,6 @@ whatever the pipeline. A QC run is four Batch jobs (one per change of image).
 
 ## Not done
 
-- **SGC:** run the SGC pipeline on a real file and size `sgc/qc_munge` from it (memory, time); validation test 5,
-  SGC's `qc_munge.R` and METAL script run by hand against the site on a public skin-disease GWAS.
 
 - **Revalidate GWAMA.** It now runs one chromosome at a time (memory), with genomic control per dataset applied by the
   wrapper; checked only on synthetic data so far. Validation tests 1 to 3 must be run again, plus a new one and a

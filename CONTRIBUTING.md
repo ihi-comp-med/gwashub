@@ -106,7 +106,7 @@ The runner calls your script as
   `PYTHONUNBUFFERED`); in R, `message()` arrives at once but `cat()` and `print()` can arrive in chunks, so prefer
   `message()` for progress. A program that logs to its own file shows there too if the file is in the step's folder
   (`$GWASHUB_ARTIFACT_DIR`) and ends in `.log`; if your script runs another program, pass its output through line by
-  line (as `sgc/qc_munge` does for `qc_munge.R`).
+  line.
 - Work only with your inputs: no network calls, no database, nothing outside the given paths.
 
 Python steps may import the shared helpers in `pipeline/qc_steps/_lib` (argument parsing, reading the
@@ -146,30 +146,6 @@ image digests it used. Software with no ARM64 build can use an x86-64 image inst
 `image.yaml` (as `gwashub/vcf` and `gwashub/ldsc` do; their Dockerfiles repeat `gwashub/base` because that image is
 ARM64). Those jobs run on a separate x86-64 compute environment. Consecutive steps that share an image run together as one job; each change of
 image starts another job, which adds a few minutes to a run.
-
-## 4b. Bringing in a consortium's existing scripts unchanged
-
-A consortium that already has QC or meta-analysis scripts can run them as they are, so its developers recognise every
-line. The Skin Genetics Consortium does this (`pipeline/qc_steps/sgc/`, `pipeline/images/sgc/`,
-`pipeline/analyses/meta_analysis/sgc/`):
-
-- **Copy the files in unchanged**, byte for byte, next to a `SOURCE.md` that names the repository, the commit and each
-  file's sha256. Where a file needs a fix to run here, keep it minor: mark each edited line `# GWASHub edit N`, list
-  each edit and its reason in `SOURCE.md` with the whole diff and both checksums (theirs and ours), and offer the fix
-  to the consortium. `pipeline/tests/test_sgc.py` fails if a file no longer matches its record or an edit isn't
-  marked and listed.
-- **Write GWASHub code around them, not in them**: before the script, write the dataset the way it expects its input
-  (its column names, its file naming) and call it the way its README says, using only its own options; after it,
-  read its output back into the GWASHub format, list the rows it removed, and write the step log. `sgc/qc_munge`
-  (`gwashub_qc_munge.py` around SGC's `qc_munge.R`) and `sgc/metal` (`gwashub_metal.py` around SGC's
-  `METAL_example_single.metal`, which only sets its PROCESS and OUTFILE lines) are the examples.
-- **Build the image with the consortium's own setup script** where it has one (the `sgc/mungesumstats` Dockerfile runs
-  SGC's `qc_setup.R`), in a stage of its own so GWASHub code changes don't reinstall everything.
-- **Steps don't use the network.** If the script downloads something while it runs, provide it from the image
-  instead (SGC's `qc_munge.R` gained a `--chain` option, GWASHub edit 2, so the liftover uses the Ensembl chain file
-  MungeSumstats ships rather than downloading it).
-- **A pipeline template** (`pipeline/qc_steps/templates/<name>.yaml`: `steps`, and optionally `meta_method`, the
-  project's default meta-analysis method) lets "New project" start a project with the consortium's pipeline.
 
 ## 5. The pull request
 

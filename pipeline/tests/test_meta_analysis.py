@@ -235,7 +235,7 @@ def test_recovers_true_loci_on_synthetic_data(synth_small, tmp_path):
 def test_methods_are_listed_with_typed_params():
     from pipeline.runner.catalog import load_analyses
     m = load_analyses()
-    assert set(m) == {"gwashub/gwama", "gwashub/metal", "custom_example/custom_meta_analysis", "sgc/metal"}
+    assert set(m) == {"gwashub/gwama", "gwashub/metal", "custom_example/custom_meta_analysis"}
     model = next(f for f in m["gwashub/gwama"].param_schema if f["key"] == "model")
     assert model["type"] == "select" and model["options"] == ["fixed", "random"] and model["default"] == "fixed"
     gwama = {f["key"] for f in m["gwashub/gwama"].param_schema}

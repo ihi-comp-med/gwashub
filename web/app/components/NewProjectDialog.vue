@@ -6,8 +6,6 @@ const form = reactive({ id: '', name: '', short: '', description: '', phenotypes
 // Pipeline templates (pipeline/qc_steps/templates): the first pipeline's steps, and for some the default meta-analysis.
 const { data: templates } = useApiGet<any[]>('/templates')
 const chosenTemplate = computed(() => templates.value?.find(t => t.name === form.template))
-// SGC's study metadata fields are only in the full set, so choosing the SGC template switches to it (it can be changed back).
-watch(() => form.template, (t) => { if (t === 'sgc') form.metadata_preset = 'all' })
 const idTouched = ref(false)
 const busy = ref(false)
 watch(visible, (v) => { if (v) { Object.assign(form, { id: '', name: '', short: '', description: '', phenotypes: [], metadata_preset: 'default', template: 'default' }); idTouched.value = false } })
