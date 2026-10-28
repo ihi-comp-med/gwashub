@@ -1,7 +1,8 @@
 # GWASHub
 
 Upload GWAS summary statistics, QC them with a transparent, reproducible pipeline, review the
-results, and meta-analyse across cohorts. A HERMES Consortium resource.
+results, and meta-analyse across cohorts. Developed in collaboration with the HERMES Consortium and the
+[Cardiovascular Disease Knowledge Portal](https://cvd.hugeamp.org/).
 
 The same code runs **locally** (synthetic data, SQLite, a local folder for files, jobs in threads,
 pick-a-user sign-in) and **on AWS** (S3, Postgres, AWS Batch, Cognito sign-in with MFA, CloudFront).
@@ -80,7 +81,7 @@ practice/            synthetic files for the site's Practice project (files.json
 images/app/          the site image (API and worker)
 infra/               AWS CDK app: Network, Data and App stacks (docs/AWS_FULL.md)
 devtools/            dev.sh, build_images.sh, synth.py (synthetic data), seed.py, e2e.py, run_demo.py; AWS: aws_cdk_deploy.sh,
-                     aws_admin.sh, aws_upload_resources.py, aws_db_tunnel.sh, aws_bookmarks.py
+                     aws_admin.sh, aws_hibernate.sh, aws_upload_resources.py, aws_db_tunnel.sh, aws_bookmarks.py
 docs/                PROGRESS (where it stands), AWS guides, validation plan, bulk upload design; images/ (posters; prompts in IMAGE_PROMPTS.md)
 local/               git-ignored: synthetic/ (fake data + resources), app/ (dev DB, uploads, runs), runs/
 ```

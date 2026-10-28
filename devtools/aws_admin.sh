@@ -12,6 +12,7 @@ ENV_NAME=${1:?usage: aws_admin.sh ENV COMMAND [ARGS...]}; shift
 export AWS_PROFILE=${AWS_PROFILE:-gwashub-$ENV_NAME} AWS_REGION=${AWS_REGION:-eu-west-2}
 OUT=infra/cdk-outputs-$ENV_NAME.json
 get() { python3 -c "import json,sys;print(json.load(open('$OUT'))['Gwashub-$ENV_NAME-App']['Out$1'])"; }
+[ "$(get Hibernating 2>/dev/null)" != "yes" ] || { echo "GWASHub $ENV_NAME is hibernating: wake it first (./devtools/aws_hibernate.sh $ENV_NAME wake)"; exit 1; }
 CLUSTER=$(get ClusterName); FAMILY=$(get ApiTaskFamily); SUBNETS=$(get PrivateSubnets); SG=$(get AppSecurityGroup); LOGS=$(get LogGroup)
 
 if [ "${1:-}" = "seed-demo" ]; then

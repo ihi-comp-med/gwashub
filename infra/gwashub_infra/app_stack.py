@@ -3,6 +3,9 @@ balancer, QC jobs on AWS Batch, the job-events queue, and the website on S3 + Cl
 
 CloudFront is the only way in: `/api/*` reaches the internal load balancer through a CloudFront VPC
 origin (the load balancer has no public address), everything else is the static site.
+
+Hibernating, the load balancer, the API and worker services and the database jump host go, and every page shows
+the holding page (web/public/paused.html). Sign-in, the queues, Batch (idle at zero) and the task definitions stay.
 """
 import json
 import os
@@ -36,7 +39,7 @@ WEB_BUILD = os.path.join(REPO_ROOT, "web", ".output", "public")
 # The website behaviour's viewer-request function (/api/* is untouched, so API 404s stay 404s and API calls are never
 # redirected). With a domain, a request for any other host (www.<domain>, the CloudFront address) is redirected to
 # https://<domain> with its path and query: sign-in returns only there. Then site paths without a file extension are
-# rewritten to the single-page app shell.
+# rewritten to the single-page app shell (the holding page, paused.html, when hibernating).
 SITE_FUNCTION = """
 var CANONICAL = '%s';
 function handler(event) {
@@ -51,14 +54,15 @@ function handler(event) {
              headers: { location: { value: 'https://' + CANONICAL + req.uri + (qs ? '?' + qs : '') } } };
   }
   var last = req.uri.split('/').pop();
-  if (last.indexOf('.') === -1) { req.uri = '/200.html'; }
+  if (last.indexOf('.') === -1) { req.uri = '%s'; }
   return req;
 }
 """
 
 
 class AppStack(cdk.Stack):
-    def __init__(self, scope: Construct, id: str, *, cfg, net, data, image_tag: str, pipeline_images: dict, **kwargs):
+    def __init__(self, scope: Construct, id: str, *, cfg, net, data, image_tag: str, pipeline_images: dict,
+                 hibernate: bool = False, **kwargs):
         """pipeline_images: {"gwashub/base": {"digest": "sha256:...", "platform": "linux/arm64"}, ...} (or just the
         digest), the images pushed by the deploy script to ECR repositories gwashub-images/<owner>/<image>."""
         super().__init__(scope, id, **kwargs)
@@ -73,6 +77,8 @@ class AppStack(cdk.Stack):
                                    generate_secret_string=sm.SecretStringGenerator(password_length=64, exclude_punctuation=True))
 
         # ---------- load balancer (internal) + website + CloudFront ----------
+        # The load balancer's inbound rule stays while hibernating: it keeps the App stack using the Network stack's
+        # load-balancer group, whose export the Network stack (deployed first) couldn't otherwise remove.
         alb_sg = net.alb_sg
         cf_prefix_list = cr.AwsCustomResource(
             self, "CloudFrontPrefixList",
@@ -86,12 +92,14 @@ class AppStack(cdk.Stack):
         ec2.CfnSecurityGroupIngress(self, "AlbFromCloudFront", group_id=alb_sg.security_group_id, ip_protocol="tcp",
                                     from_port=80, to_port=80, description="CloudFront VPC origin",
                                     source_prefix_list_id=cf_prefix_list.get_response_field("PrefixLists.0.PrefixListId"))
-        alb = elbv2.ApplicationLoadBalancer(self, "Alb", vpc=vpc, internet_facing=False, security_group=alb_sg,
-                                            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
-                                            drop_invalid_header_fields=True, idle_timeout=cdk.Duration.seconds(120))
-        listener = alb.add_listener("Http", port=80, open=False,
-                                    default_action=elbv2.ListenerAction.fixed_response(404, content_type="text/plain",
-                                                                                       message_body="Not found"))
+        alb = listener = None
+        if not hibernate:
+            alb = elbv2.ApplicationLoadBalancer(self, "Alb", vpc=vpc, internet_facing=False, security_group=alb_sg,
+                                                vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
+                                                drop_invalid_header_fields=True, idle_timeout=cdk.Duration.seconds(120))
+            listener = alb.add_listener("Http", port=80, open=False,
+                                        default_action=elbv2.ListenerAction.fixed_response(404, content_type="text/plain",
+                                                                                           message_body="Not found"))
 
         web_bucket = s3.Bucket(self, "Web", block_public_access=s3.BlockPublicAccess.BLOCK_ALL, enforce_ssl=True,
                                encryption=s3.BucketEncryption.S3_MANAGED, removal_policy=cdk.RemovalPolicy.DESTROY,
@@ -117,7 +125,8 @@ class AppStack(cdk.Stack):
                                                       subject_alternative_names=names[1:] or None, region="us-east-1")
             tls = dict(domain_names=names, certificate=certificate,
                        minimum_protocol_version=cf.SecurityPolicyProtocol.TLS_V1_2_2021)
-        spa = cf.Function(self, "SpaRewrite", code=cf.FunctionCode.from_inline(SITE_FUNCTION % (cfg.domain or "")),
+        shell = "/paused.html" if hibernate else "/200.html"
+        spa = cf.Function(self, "SpaRewrite", code=cf.FunctionCode.from_inline(SITE_FUNCTION % (cfg.domain or "", shell)),
                           runtime=cf.FunctionRuntime.JS_2_0)
         dist = cf.Distribution(
             self, "Site", comment=f"GWASHub {n}", price_class=cf.PriceClass.PRICE_CLASS_100, default_root_object="index.html",
@@ -126,7 +135,7 @@ class AppStack(cdk.Stack):
                 origin=origins.S3BucketOrigin.with_origin_access_control(web_bucket),
                 viewer_protocol_policy=cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS, response_headers_policy=headers,
                 function_associations=[cf.FunctionAssociation(function=spa, event_type=cf.FunctionEventType.VIEWER_REQUEST)]),
-            additional_behaviors={"/api/*": cf.BehaviorOptions(
+            additional_behaviors={} if hibernate else {"/api/*": cf.BehaviorOptions(
                 origin=origins.VpcOrigin.with_application_load_balancer(
                     alb, http_port=80, protocol_policy=cf.OriginProtocolPolicy.HTTP_ONLY,
                     read_timeout=cdk.Duration.seconds(60)),
@@ -145,7 +154,7 @@ class AppStack(cdk.Stack):
         if os.path.isdir(WEB_BUILD):
             # prune=True replaces the bucket's contents with the build's: an empty or half-written build (the folder
             # rebuilt while CDK packages it) would leave the site empty, so stop instead.
-            missing = [f for f in ("index.html", "200.html") if not os.path.isfile(os.path.join(WEB_BUILD, f))]
+            missing = [f for f in ("index.html", "200.html", "paused.html") if not os.path.isfile(os.path.join(WEB_BUILD, f))]
             if missing:
                 raise RuntimeError(f"The website build {WEB_BUILD} is incomplete (no {', '.join(missing)}): rebuild it "
                                    "(cd web && npx nuxi generate) and make sure nothing else rebuilds it during the deploy")
@@ -341,6 +350,15 @@ class AppStack(cdk.Stack):
         api_td.task_role.add_to_principal_policy(iam.PolicyStatement(actions=["cognito-idp:AdminCreateUser"], resources=[pool.user_pool_arn]))
         data.readonly_secret.grant_read(api_td.task_role)  # admin command db-readonly-user
 
+        outputs = {"SiteUrl": site_url, "ClusterName": cluster.cluster_name, "ApiTaskFamily": api_td.family,
+                   "PrivateSubnets": ",".join(s.subnet_id for s in vpc.private_subnets), "AppSecurityGroup": net.app_sg.security_group_id,
+                   "UserPoolId": pool.user_pool_id, "LogGroup": log_group.log_group_name, "JobQueue": job_queue.job_queue_name,
+                   "Hibernating": "yes" if hibernate else "no"}
+        for k, v in outputs.items():
+            cdk.CfnOutput(self, f"Out{k}", value=v)
+        if hibernate:
+            return
+
         # Jump host for database tunnels (devtools/aws_db_tunnel.sh): no inbound ports, no SSH; only
         # reachable through Session Manager with the caller's AWS sign-in.
         jump = ec2.Instance(
@@ -363,11 +381,7 @@ class AppStack(cdk.Stack):
                            security_groups=[net.app_sg], assign_public_ip=False, min_healthy_percent=0,
                            circuit_breaker=ecs.DeploymentCircuitBreaker(rollback=True),
                            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS))
-
-        for k, v in {"DbJumpInstance": jump.instance_id, "SiteUrl": site_url, "ClusterName": cluster.cluster_name, "ApiTaskFamily": api_td.family,
-                     "PrivateSubnets": ",".join(s.subnet_id for s in vpc.private_subnets), "AppSecurityGroup": net.app_sg.security_group_id,
-                     "UserPoolId": pool.user_pool_id, "LogGroup": log_group.log_group_name, "JobQueue": job_queue.job_queue_name}.items():
-            cdk.CfnOutput(self, f"Out{k}", value=v)
+        cdk.CfnOutput(self, "OutDbJumpInstance", value=jump.instance_id)
 
 
 def _retention(days: int) -> logs.RetentionDays:

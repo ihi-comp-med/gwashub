@@ -54,7 +54,8 @@ const helpItems = computed(() => [
   <main><slot /></main>
   <footer class="footer">
     <div class="container row muted">
-      <span>GWASHub · developed by the <a href="https://hermesconsortium.org" target="_blank" rel="noopener">HERMES Consortium</a></span>
+      <span>GWASHub · developed in collaboration with the <a href="https://hermesconsortium.org" target="_blank" rel="noopener">HERMES Consortium</a>
+        and the <a href="https://cvd.hugeamp.org/" target="_blank" rel="noopener">Cardiovascular Disease Knowledge Portal</a></span>
       <span class="spacer" /><NuxtLink to="/about">About</NuxtLink>
     </div>
   </footer>

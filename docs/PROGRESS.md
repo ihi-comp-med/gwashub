@@ -14,7 +14,7 @@ deployment in `docs/AWS_FULL.md`.
 | Runner | One process per step, in the step's image; resources per step; block / flag / continue; crash handling; Python and R steps; image groups as Batch jobs |
 | Meta-analysis | `gwashub/gwama` (default), `gwashub/metal`, consortium methods by PR; shared post-processing: lead loci by PLINK 2 clumping, signals, locus plots with genes, forest plots, `datasets.tsv`, `README.txt` |
 | Reference files | `resources/catalog.yaml` and build scripts; all 37 real files (~26 GB, incl. dbSNP 157) on AWS dev |
-| AWS | Live in gwashub-dev (`docs/AWS_FULL.md`); prod configured, not deployed |
+| AWS | Live in gwashub-dev (`docs/AWS_FULL.md`); prod configured, not deployed. Can hibernate (near-zero cost, data kept): `devtools/aws_hibernate.sh`, not yet used |
 | Validation | All four tests pass on gwashub-dev: GWAMA defaults and options and METAL, each vs the program run by hand, and QC against planted problems (`docs/VALIDATION_PLAN.md`, `validation/`) |
 | Tests | About 155, all passing (`.venv/bin/python -m pytest`; step tests need the images from `./devtools/build_images.sh`) |
 

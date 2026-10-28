@@ -14,7 +14,8 @@ export AWS_PROFILE=${AWS_PROFILE:-gwashub-$ENV_NAME} AWS_REGION=${AWS_REGION:-eu
 OUT=infra/cdk-outputs-$ENV_NAME.json
 get() { python3 -c "import json;print(json.load(open('$OUT'))['Gwashub-$ENV_NAME-$1']['Out$2'])"; }
 command -v session-manager-plugin >/dev/null || { echo "Install the Session Manager plugin first: brew install --cask session-manager-plugin"; exit 1; }
-JUMP=$(get App DbJumpInstance); HOST=$(get Data DbEndpoint)
+JUMP=$(get App DbJumpInstance 2>/dev/null) || { echo "No jump host: GWASHub $ENV_NAME is hibernating (./devtools/aws_hibernate.sh $ENV_NAME wake)"; exit 1; }
+HOST=$(get Data DbEndpoint)
 PW=$(aws secretsmanager get-secret-value --secret-id "$(get Data DbReadonlySecret)" --query SecretString --output text)
 cat <<MSG
 Database tunnel open while this runs (Ctrl+C to close). In PyCharm: Database → + → Data Source → PostgreSQL

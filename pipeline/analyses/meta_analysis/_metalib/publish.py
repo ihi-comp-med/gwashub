@@ -95,23 +95,42 @@ DATASET_COLUMNS = [
 ]
 
 
-def dataset_overlap(specs, z_max=2.0, warn_r=0.1, same_r=0.98, min_variants=1000):
+def sample_hash(chrom, pos):
+    """A number in [0, 1) per variant from its chromosome and position alone: the same variant gets the same number in
+    every dataset, so keeping those below a rate keeps the same variants everywhere (and a lower rate a subset)."""
+    code = chrom.astype(str).map(lambda c: 23 if c == "X" else 24 if c == "Y" else int(c) if c.isdigit() else 25)
+    k = code.to_numpy(np.uint64) * np.uint64(1_000_000_007) + pos.to_numpy(np.uint64)
+    with np.errstate(over="ignore"):  # multiplicative hashing: the overflow is the point
+        k = k * np.uint64(0x9E3779B97F4A7C15)
+    return (k >> np.uint64(11)).astype(np.float64) / float(2 ** 53)
+
+
+def dataset_overlap(specs, z_max=2.0, warn_r=0.1, same_r=0.98, min_variants=1000, max_variants=1_000_000):
     """Pairs of datasets whose Z-scores correlate across mostly-null variants (|Z| < z_max in both): shared samples
     (shared controls, one dataset inside another) or the same data uploaded twice. Fixed-effect meta-analysis assumes
     independent datasets, so overlap makes its results overconfident (EasyQC's meta-level check, Winkler et al. 2014).
     Returns ([{a, b, n_variants, z_correlation}], messages). Shared polygenic signal adds a little correlation too, so
-    this warns rather than judges."""
+    this warns rather than judges. A dataset with more than max_variants variants is sampled down to about that many
+    (sample_hash: the same variants in every dataset); a correlation from a million variants is as clear as from all
+    20 million, and comparing every pair of 15 full datasets took over an hour."""
     z = []
-    for s in specs:
+    for k, s in enumerate(specs, 1):
+        say(f"Overlap check: reading dataset {k} of {len(specs)}")
         df = pd.read_csv(s["path"], sep="\t", usecols=["chr", "pos", "ea", "oa", "beta", "se"], dtype={"chr": str})
         df = df[df["se"] > 0]
+        if len(df) > max_variants:
+            df = df[sample_hash(df["chr"], df["pos"]) < max_variants / len(df)]
         a1 = np.minimum(df["ea"], df["oa"])
         zz = np.where(df["ea"] == a1, 1, -1) * df["beta"] / df["se"]  # Z for the alphabetically first allele
         key = df["chr"] + ":" + df["pos"].astype(str) + ":" + a1 + ":" + np.maximum(df["ea"], df["oa"])
         z.append(pd.Series(zz.to_numpy(), index=key.to_numpy()).groupby(level=0).first())
     pairs, messages = [], []
+    n_pairs, done = len(specs) * (len(specs) - 1) // 2, 0
     for i in range(len(specs)):
         for j in range(i + 1, len(specs)):
+            done += 1
+            if done == 1 or done % 10 == 0 or done == n_pairs:
+                say(f"Overlap check: pair {done} of {n_pairs}")
             both = pd.concat([z[i], z[j]], axis=1, join="inner").dropna()
             both = both[(both.abs() < z_max).all(axis=1)]
             if len(both) < min_variants:
@@ -229,6 +248,7 @@ def main():
     say(f"{len(leads)} lead loci; writing the locus plots")
     region_files = regions.write_regions(res, leads, signals, a.resources, opts, a.out, work)
     __import__("shutil").rmtree(work, ignore_errors=True)
+    say(f"Forest plots: each dataset's effect at the {len(leads)} lead variants")
     forest = forest_data(leads, specs)
     if len(leads):
         leads = leads.assign(rsid=[f["rsid"] for f in forest])
@@ -239,6 +259,7 @@ def main():
     say("Manhattan and QQ plots")
     lam, _ = make_plots(res, a.out, gws=opts["gws"], title=f"Meta-analysis ({len(specs)} datasets, {a.title or a.method})")
 
+    say("Per-dataset table, README and summary")
     # Per-dataset table: the method's own rows if it gave them, else counts from the inputs.
     studies = mlog.get("studies")
     if not studies:

@@ -5,6 +5,9 @@
 
 One set of three stacks per environment: Network (VPC), Data (KMS, S3, Postgres) and App (sign-in,
 API, worker, Batch, website).
+
+`-c hibernate=1` (devtools/aws_hibernate.sh) removes everything that costs money while idle and keeps the data:
+see "Hibernating" in docs/AWS_FULL.md.
 """
 import json
 
@@ -23,11 +26,13 @@ images = app.node.try_get_context("pipeline_images")  # JSON {"gwashub/base": "s
 if not image_tag or not images:
     raise SystemExit("Pass -c image_tag=<tag> -c pipeline_images=<json> (devtools/aws_cdk_deploy.sh does this)")
 pipeline_images = json.loads(images) if isinstance(images, str) else images
+hibernate = str(app.node.try_get_context("hibernate") or "").lower() in ("1", "true", "yes")
 env = cdk.Environment(account=cfg.account, region=cfg.region)
 
-net = NetworkStack(app, f"Gwashub-{name}-Network", cfg=cfg, env=env)
-data = DataStack(app, f"Gwashub-{name}-Data", cfg=cfg, net=net, env=env)
-AppStack(app, f"Gwashub-{name}-App", cfg=cfg, net=net, data=data, image_tag=image_tag, pipeline_images=pipeline_images, env=env)
+net = NetworkStack(app, f"Gwashub-{name}-Network", cfg=cfg, hibernate=hibernate, env=env)
+data = DataStack(app, f"Gwashub-{name}-Data", cfg=cfg, net=net, hibernate=hibernate, env=env)
+AppStack(app, f"Gwashub-{name}-App", cfg=cfg, net=net, data=data, image_tag=image_tag, pipeline_images=pipeline_images,
+         hibernate=hibernate, env=env)
 for stack in app.node.children:
     cdk.Tags.of(stack).add("project", "gwashub")
     cdk.Tags.of(stack).add("environment", name)

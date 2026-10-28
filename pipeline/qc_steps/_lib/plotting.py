@@ -2,8 +2,10 @@
 
 Used by gwashub/plots (on a QC'd working file) and _metalib/publish.py (on meta_results.tsv.gz). make_plots writes:
 
-  manhattan.png    autosomes then X (Y and anything else left out), -log10 P against position, gws as a dashed line
-  qq.png           observed against expected -log10 P, with lambda_GC
+  manhattan.png    autosomes then X (Y and anything else left out), -log10 P against position, gws as a dashed line;
+                   every variant with P < 0.001 and a fixed random sample of up to 500,000 of the rest
+  qq.png           observed against expected -log10 P, with lambda_GC (computed from every variant); the strongest
+                   10,000 points and 20,000 spread evenly along the expected axis
   plot_data.json   for the website's interactive plots:
                      manhattan  {x, y (-log10 P), chr (1-23, 23 = X), pos, rsid?, ticks [{chr, x}], x_max}: every
                                 variant with P < 1e-3 plus a random sample of the rest up to max_points
@@ -39,6 +41,9 @@ def lambda_gc(p):
     return float(np.median(stats.chi2.isf(np.clip(p, 1e-300, 1), 1)) / stats.chi2.ppf(0.5, 1))
 
 
+PNG_NULL_POINTS = 500_000  # Manhattan PNG: variants with P >= 0.001 drawn at most (all of the stronger ones are)
+
+
 def qq_points(n, top=500, spread=1000):
     """Which of n ranked points (0 = strongest) the website's QQ plot gets: the `top` strongest, plus about `spread`
     spaced evenly along the expected -log10 P axis (ranks spaced geometrically). Ranks spaced evenly left a gap between
@@ -65,8 +70,14 @@ def make_plots(df, out_dir, gws=5e-8, max_points=6000, title=None):
         off += g["pos"].max() + 5_000_000
     df["x"] = df["pos"] + df["cn"].map(offsets)
 
+    # The PNG draws every variant with P < 0.001 and at most PNG_NULL_POINTS of the rest (a fixed random sample): the
+    # null band looks the same, and 20 million points took matplotlib many minutes.
+    null = df.index[df["p"] >= 1e-3]
+    drop = null.difference(pd.Index(np.random.default_rng(1).choice(null, PNG_NULL_POINTS, replace=False))) \
+        if len(null) > PNG_NULL_POINTS else null[:0]
+    drawn = df.drop(index=drop)
     fig, ax = plt.subplots(figsize=(11, 3.6), dpi=110)
-    for c, g in df.groupby("cn"):
+    for c, g in drawn.groupby("cn"):
         ax.scatter(g["x"], g["logp"], s=3, c=COLORS[c % 2], linewidths=0, rasterized=True)
     ax.axhline(-np.log10(gws), color="#c2410c", ls="--", lw=0.8)
     ax.set_xticks([t[1] for t in ticks], [("X" if t[0] == 23 else str(t[0])) for t in ticks], fontsize=7)
@@ -86,7 +97,8 @@ def make_plots(df, out_dir, gws=5e-8, max_points=6000, title=None):
     exp = -np.log10((np.arange(1, n + 1) - 0.5) / max(n, 1))
     lam = lambda_gc(df["p"])
     fig, ax = plt.subplots(figsize=(4, 4), dpi=110)
-    ax.scatter(exp, obs, s=3, c=COLORS[0], linewidths=0, rasterized=True)
+    shown = qq_points(n, top=10_000, spread=20_000)  # the strongest, then evenly along the axis (as the website's)
+    ax.scatter(exp[shown], obs[shown], s=3, c=COLORS[0], linewidths=0, rasterized=True)
     lim = max(exp.max() if n else 1, 1)
     ax.plot([0, lim], [0, lim], color="#c2410c", lw=0.8, ls="--")
     ax.set_xlabel("Expected −log10(P)")

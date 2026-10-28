@@ -6,6 +6,7 @@
 #   ./devtools/aws_cdk_deploy.sh            # dev (profile gwashub-dev)
 #   ./devtools/aws_cdk_deploy.sh prod       # prod (profile gwashub-prod)
 #   GWASHUB_IMAGE_TAG=<tag> ./devtools/aws_cdk_deploy.sh dev   # reuse an image already in ECR
+#   GWASHUB_HIBERNATE=1 ...                 # hibernate: use devtools/aws_hibernate.sh, which also stops the database
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ENV_NAME=${1:-dev}
@@ -15,7 +16,8 @@ ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 REGISTRY=$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
 REPO=gwashub/app
 TAG=${GWASHUB_IMAGE_TAG:-$(date -u +%Y%m%d-%H%M%S)}
-echo "Deploying $ENV_NAME to account $ACCOUNT ($AWS_REGION), image tag $TAG"
+HIBERNATE=${GWASHUB_HIBERNATE:-}
+echo "Deploying $ENV_NAME to account $ACCOUNT ($AWS_REGION), image tag $TAG${HIBERNATE:+ (hibernating)}"
 
 # ECR repositories are made here (not by CDK). Each keeps its 5 newest images (enough to roll back; the running
 # ones are always among them) and drops untagged layers after a day. Older images can be rebuilt from git.
@@ -31,7 +33,7 @@ ensure_repo() {
 echo "== website"
 (cd web && npx nuxi generate >/dev/null)
 # The site's files replace the bucket's (prune): never deploy an empty or half-written build.
-for f in index.html 200.html; do
+for f in index.html 200.html paused.html; do
   [ -f "web/.output/public/$f" ] || { echo "The website build has no $f: not deploying (rebuild with: cd web && npx nuxi generate)" >&2; exit 1; }
 done
 
@@ -74,8 +76,8 @@ for svc in ecs.amazonaws.com batch.amazonaws.com spot.amazonaws.com; do
   aws iam create-service-linked-role --aws-service-name $svc >/dev/null 2>&1 || true
 done
 cd infra
-aws cloudformation describe-stacks --stack-name CDKToolkit >/dev/null 2>&1 || npx --yes aws-cdk@2 bootstrap -c env="$ENV_NAME" -c image_tag="$TAG" -c pipeline_images="$PIPELINE_IMAGES" "aws://$ACCOUNT/$AWS_REGION"
-npx --yes aws-cdk@2 deploy --all -c env="$ENV_NAME" -c image_tag="$TAG" -c pipeline_images="$PIPELINE_IMAGES" --require-approval never --outputs-file "cdk-outputs-$ENV_NAME.json"
+aws cloudformation describe-stacks --stack-name CDKToolkit >/dev/null 2>&1 || npx --yes aws-cdk@2 bootstrap -c env="$ENV_NAME" -c image_tag="$TAG" -c pipeline_images="$PIPELINE_IMAGES" -c hibernate="$HIBERNATE" "aws://$ACCOUNT/$AWS_REGION"
+npx --yes aws-cdk@2 deploy --all -c env="$ENV_NAME" -c image_tag="$TAG" -c pipeline_images="$PIPELINE_IMAGES" -c hibernate="$HIBERNATE" --require-approval never --outputs-file "cdk-outputs-$ENV_NAME.json"
 URL=$(python3 -c "import json;d=json.load(open('cdk-outputs-$ENV_NAME.json'));print(d['Gwashub-$ENV_NAME-App']['OutSiteUrl'])")
 echo
 echo "Site: $URL"

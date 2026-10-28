@@ -3,6 +3,7 @@ const { data } = useApiGet<any>('/steps/default')
 const template = computed(() => (data.value?.template ?? []).map((k: string) => data.value.steps.find((s: any) => s.key === k)).filter(Boolean))
 const optional = computed(() => (data.value?.steps ?? []).filter((s: any) => !data.value.template.includes(s.key)))
 const logoSrc = '/brand/hermes-logo-full.png'
+const cvdkpSrc = '/brand/cvdkp_header_logo.svg' // white logo: shown on a navy tile
 const flow = [
   { icon: 'pi pi-upload', title: 'Upload', text: 'A cohort analyst uploads summary statistics with study metadata and maps the columns.' },
   { icon: 'pi pi-cog', title: 'QC', text: 'The project pipeline runs each step in order and records its verdict, metrics and outputs.' },
@@ -22,11 +23,16 @@ const onFail: Record<string, string> = {
       <div>
         <h1 class="page-title">About GWASHub</h1>
         <p class="lead">GWASHub collects GWAS summary statistics from contributing cohorts, checks them with the same
-          versioned QC pipeline, and prepares them for meta-analysis. It was built for the HERMES Consortium.</p>
+          versioned QC pipeline, and prepares them for meta-analysis. It is developed in collaboration with the HERMES Consortium and the Cardiovascular Disease Knowledge Portal.</p>
       </div>
-      <a href="https://hermesconsortium.org" target="_blank" rel="noopener" class="logo">
-        <img :src="logoSrc" width="240" height="91" alt="HERMES: Heart Failure Molecular Epidemiology for Therapeutic Targets">
-      </a>
+      <div class="logos">
+        <a href="https://hermesconsortium.org" target="_blank" rel="noopener" class="logo">
+          <img :src="logoSrc" width="240" height="91" alt="HERMES: Heart Failure Molecular Epidemiology for Therapeutic Targets">
+        </a>
+        <a href="https://cvd.hugeamp.org/" target="_blank" rel="noopener" class="cvdkp">
+          <img :src="cvdkpSrc" alt="Cardiovascular Disease Knowledge Portal">
+        </a>
+      </div>
     </div>
 
     <h2>How it works</h2>
@@ -89,7 +95,10 @@ const onFail: Record<string, string> = {
 .intro { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 32px; align-items: center; margin-bottom: 8px; }
 @media (max-width: 760px) { .intro { grid-template-columns: 1fr; } }
 .lead { font-size: 1.05rem; color: var(--gh-muted); margin: 0; }
+.logos { display: flex; flex-direction: column; gap: 10px; width: 262px; }
 .logo img { display: block; width: 240px; height: auto; border: 1px solid var(--gh-border); border-radius: 10px; padding: 10px; background: #fff; }
+.cvdkp { display: flex; justify-content: center; background: var(--gh-accent); border-radius: 10px; padding: 12px; }
+.cvdkp img { display: block; width: 150px; height: auto; }
 h2 { font-size: 1.1rem; margin: 36px 0 14px; }
 .flow { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
 .flow li { display: flex; gap: 12px; background: var(--gh-surface); border: 1px solid var(--gh-border); border-radius: 12px; padding: 14px; }

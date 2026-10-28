@@ -353,6 +353,28 @@ def test_dataset_overlap_is_named():
     assert r[("A", "B")] > 0.98 and 0.3 < r[("A", "C")] < 0.7 and abs(r[("A", "D")]) < 0.1
     text = " ".join(messages)
     assert "A and B look like the same data" in text and "A and C may share samples" in text and "A and D" not in text
+    # Sampled (large datasets are cut down to about max_variants): the same verdicts, correlations within noise.
+    with tempfile.TemporaryDirectory() as d:
+        for sp, (name, zz) in zip(specs, z.items()):
+            sp["path"] = os.path.join(d, f"{name}.tsv")
+            pd.DataFrame({"chr": "1", "pos": np.arange(n) + 1, "ea": "A", "oa": "G", "beta": zz * 0.01, "se": 0.01}).to_csv(sp["path"], sep="\t", index=False)
+        sampled, messages2 = dataset_overlap(specs, max_variants=2500, min_variants=500)
+    r2 = {(p["a"], p["b"]): p for p in sampled}
+    assert 1000 < r2[("A", "B")]["n_variants"] < 2500 and r2[("A", "B")]["z_correlation"] > 0.98
+    assert abs(r2[("A", "C")]["z_correlation"] - r[("A", "C")]) < 0.08 and abs(r2[("A", "D")]["z_correlation"]) < 0.1
+    assert [m.split(" (")[0] for m in messages2] == [m.split(" (")[0] for m in messages]
+
+
+def test_sample_hash_keeps_the_same_variants_in_every_dataset():
+    """The overlap check's sampling depends only on chromosome and position: identical across datasets, close to the
+    rate asked for, and a lower rate keeps a subset of a higher one (datasets of different sizes still overlap)."""
+    from _metalib.publish import sample_hash
+    chrom = pd.Series(np.repeat(["1", "2", "X"], 100_000))
+    pos = pd.Series(np.tile(np.arange(100_000) * 37 + 11, 3))
+    h = sample_hash(chrom, pos)
+    assert np.array_equal(h, sample_hash(chrom.copy(), pos.copy())) and ((h >= 0) & (h < 1)).all()
+    assert abs((h < 0.1).mean() - 0.1) < 0.005
+    assert set(np.flatnonzero(h < 0.05)) <= set(np.flatnonzero(h < 0.1))
 
 
 def test_a_failing_method_keeps_its_output_and_says_why(tmp_path, monkeypatch):

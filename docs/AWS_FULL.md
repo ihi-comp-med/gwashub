@@ -250,6 +250,35 @@ The AWS Organizations pages only work from the management account.
 | Logs | CloudWatch → Log groups → `/gwashub/dev/app` |
 | Users | Cognito → User pools → `gwashub-dev` |
 
+## Hibernating
+
+To bring the cost close to zero while GWASHub isn't needed (for example between funding), hibernate it. All data is
+kept and waking it brings everything back as it was.
+
+```bash
+./devtools/aws_hibernate.sh dev status    # awake or hibernating; jobs still waiting or running
+./devtools/aws_hibernate.sh dev sleep     # about 10 minutes; asks you to type the environment name
+./devtools/aws_hibernate.sh dev wake      # about 20 minutes
+```
+
+**Before sleeping:** sign in to AWS (above) and start Docker. Let QC runs and meta-analyses finish: `sleep` refuses while
+any job is waiting or running. Tell users first: until you wake it, every page shows the holding page
+(`web/public/paused.html`; to preview it, open `/paused.html` on the local site).
+
+| | While hibernating |
+|---|---|
+| Removed | NAT gateway and its address, load balancer, API and worker services, database jump host, CloudFront's `/api` route |
+| Stopped | Database, after a final snapshot (`gwashub-dev-hibernate-<time>`). AWS restarts a stopped database after 7 days, so a daily schedule (`gwashub-dev-keep-db-stopped`) stops it again |
+| Kept | All S3 files (uploads, results, resources), the database and its backups, Cognito users and MFA, images in ECR, secrets, the KMS key, queues, Batch (idle at zero), logs, the domain and website |
+| Cost | About $8 to $15 a month (S3 storage, database disk, secrets, key, DNS, ECR), against about $130 awake |
+
+How it works: `sleep` redeploys the running image with `GWASHUB_HIBERNATE=1` (`-c hibernate=1`; `infra/app.py`), which
+leaves those resources out of the stacks, then stops the database. `wake` deletes the schedule, starts the database,
+waits for it, and redeploys the same image without the flag. The subnets and every cross-stack export stay the same in
+both modes, so switching never replaces anything that holds data. While hibernating, `aws_admin.sh` and
+`aws_db_tunnel.sh` say so and stop (admin tasks need the NAT gateway). To wake with newer code, wake first, then deploy
+as usual.
+
 ## Before production
 
 The tasks, in order, with how to do each and what it costs, are in **`docs/PRODUCTION_ROADMAP.md`**: decisions,
@@ -265,4 +294,8 @@ baseline and CI/CD, deploying prod, the go-live checklist and running it.
   the AWS Pricing Calculator estimate https://calculator.aws/#/estimate?id=839531ca98d8b7c4c2ce0371716ae55a8fa7c9de.
   About $345 of it is fixed (Multi-AZ database, two NAT gateways, two API tasks, WAF, security services); the rest
   scales with S3 storage ($0.024 per GB a month), downloads (about $0.09 per GB) and Batch compute.
+- **dev, October 2026:** $117 of usage in 27 days (all covered by credits), about $130 a month: NAT gateway ~$35,
+  database ~$25, API and worker ~$22, Batch compute ~$20 (it varies with use), load balancer ~$17, public addresses ~$3,
+  S3 (360 GB) ~$9.
+- **Hibernating** (above) brings dev to about $8 to $15 a month.
 - The breakdown, the assumptions and the ways to spend less are in `docs/PRODUCTION_ROADMAP.md`.

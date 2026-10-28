@@ -24,7 +24,7 @@ light grey borders, simple line icons, small coloured tag pills. Colour code (wi
 corner): navy = website and API; teal (#1F9A8A) = compute; amber (#E8A33D) = data and files; grey = logging and audit;
 red-orange (#D9533B) = security; purple (#7A5BA8) = people. Arrows: solid = data flow; dashed = control or events;
 dotted = "is recorded in". Numbered black circles 1-7 mark the main QC flow. Every label must be spelled exactly as
-written here; do not invent services, numbers or features. Footer left: "GWASHub · HERMES Consortium"; footer right:
+written here; do not invent services, numbers or features. Footer left: "GWASHub · in collaboration with HERMES and the Cardiovascular Disease Knowledge Portal"; footer right:
 "Architecture as of October 2026".
 
 LAYOUT: four panels in the top two thirds (left: People and roles; centre-top: The building blocks; right-top:
@@ -125,7 +125,7 @@ monorepo: a Nuxt website, a FastAPI service, pipeline images, and AWS CDK for th
 engineering infographic: warm off-white background (#F7F5F0), dark navy text (#1E2A3A), Inter or a similar
 sans-serif, rounded white cards with thin borders, version numbers as small amber superscripts, code and paths in a
 monospace font. Every label must be spelled exactly as written here; do not invent tools, versions or numbers. Footer
-left: "GWASHub · HERMES Consortium"; footer right: "Stack as of October 2026, from the main branch".
+left: "GWASHub · in collaboration with HERMES and the Cardiovascular Disease Knowledge Portal"; footer right: "Stack as of October 2026, from the main branch".
 
 LAYOUT: a large left area "Layers, from the browser down" (about two thirds of the width) made of five rows; each row
 starts with a coloured label card, followed by four or five white cards. A right column with three panels: "Local or
