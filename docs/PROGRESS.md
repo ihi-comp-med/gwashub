@@ -15,6 +15,7 @@ deployment in `docs/AWS_FULL.md`.
 | Meta-analysis | `gwashub/gwama` (default), `gwashub/metal`, consortium methods by PR; shared post-processing: lead loci by PLINK 2 clumping, signals, locus plots with genes, forest plots, `datasets.tsv`, `README.txt` |
 | Reference files | `resources/catalog.yaml` and build scripts; all 37 real files (~26 GB, incl. dbSNP 157) on AWS dev |
 | AWS | Live in gwashub-dev (`docs/AWS_FULL.md`); prod configured, not deployed. Can hibernate (near-zero cost, data kept): `devtools/aws_hibernate.sh`, not yet used |
+| Shared host (Broad) | A second deployment target, built and tested but not deployed (`docs/SHARED_HOST.md`): GWASHub on the Broad's existing EC2 host, a new database on their MySQL server and their nginx proxy, with a cut-down stack `Gwashub-<env>-Shared` (S3, KMS, Cognito, Batch, SQS; about $5 a month fixed). MySQL 8.0 and 8.4 are supported alongside Postgres and SQLite (migrations, UTC timestamps, reconnects after an idle drop; the API tests run on MySQL 8.0, 8.4 and Postgres 16 with `devtools/test_db.sh`). `devtools/shared_host_setup.sh`, `shared_host_deploy.sh` (with `rollback`) and `shared_host_admin.sh`; `devtools/shared_host.py` renders the env file, units and nginx block and checks the site (the dev sign-in must not answer). Reference files go up with `devtools/aws_upload_resources.py` |
 | Validation | All four tests pass on gwashub-dev: GWAMA defaults and options and METAL, each vs the program run by hand, and QC against planted problems (`docs/VALIDATION_PLAN.md`, `validation/`) |
 | Tests | About 155, all passing (`.venv/bin/python -m pytest`; step tests need the images from `./devtools/build_images.sh`) |
 
@@ -153,6 +154,8 @@ whatever the pipeline. A QC run is four Batch jobs (one per change of image).
 - **Revalidate GWAMA.** It now runs one chromosome at a time (memory), with genomic control per dataset applied by the
   wrapper; checked only on synthetic data so far. Validation tests 1 to 3 must be run again, plus a new one and a
   full-size run: `docs/VALIDATION_PLAN.md`, "Revalidation needed".
+
+- **Shared host (Broad):** the Broad's values in `SHARED_HOSTS["broad"]` (`infra/gwashub_infra/config.py`, empty until they are collected: the list is in `docs/SHARED_HOST.md`), then the first deployment and smoke test: the shared IAM role's size and who manages it, MySQL and nginx set up, a browser upload through a presigned URL (the host-only condition on the S3 grants may need relaxing), a QC run on Batch, the reference files.
 
 - Production: the plan, in order, with costs, is `docs/PRODUCTION_ROADMAP.md` (WAF, domains, isolated
   consortium steps, malware scanning, alarms, CI/CD, SES for invitations).
