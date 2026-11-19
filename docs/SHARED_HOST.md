@@ -18,13 +18,18 @@ rights in the Broad AWS account. The environment is called `broad` below; its se
 - **data-registry must not notice.** GWASHub changes none of data-registry's code, packages, systemd units, nginx
   blocks or database. It runs as its own Linux user in its own folder, on its own port, with memory and CPU limits on both services.
 - **The dev sign-in can never come up.** `GWASHUB_AUTH` defaults to `dev`, which lets anyone in by typing an email address. The
-  wrapper that starts both services (`infra/shared_host/gwashub-run`) sets `GWASHUB_AUTH=cognito` after it reads the env
-  file, so a missing, broken or hand-edited file can't turn it on; the units don't start without the env file; and every
-  deploy checks that `/api/auth/login` and `/api/auth/users` don't answer.
+  wrapper that starts both services (`infra/shared_host/gwashub-run`) reads the env file as data and never runs it: every line
+  must be `KEY='value'` (blank lines and lines starting with `#` aside), each value is passed to the service exactly as written,
+  a `GWASHUB_AUTH` line is ignored with a warning, and any other line stops the wrapper before anything runs (the message gives
+  the line's number, never its content). The wrapper then sets `GWASHUB_AUTH=cognito` itself, so neither the env file, however
+  it is edited, nor the caller's environment can turn the dev sign-in on. The units don't start without the env file, and
+  every deploy checks that `/api/auth/mode` says `cognito` and that `/api/auth/login` and `/api/auth/users` don't answer.
 - **Secrets reach the host only through the deploy.** The deploy reads them from Secrets Manager with *your* AWS
-  credentials and writes them into `/etc/gwashub/env` (mode 0600, owned by `gwashub`) over SSH, on stdin. The host's role has no
-  Secrets Manager access at all: any process on the host can use that role, so if it could read the session key (which
-  can forge a sign-in as anyone) the 0600 file would be pointless. Rotating a secret means redeploying.
+  credentials and writes them into `/etc/gwashub/env` (mode 0600, owned by `gwashub`) over SSH, on stdin. The host's role gets
+  no Secrets Manager access from GWASHub, and each secret's own resource policy denies that role every Secrets Manager action,
+  so a policy on the shared role that isn't GWASHub's can't grant it either. Any process on the host can use that role, so if
+  it could read the session key (which can forge a sign-in as anyone) the 0600 file would be pointless. Rotating a secret
+  means redeploying.
 - **Files still never pass through the API.** Browsers upload to S3 in parts with presigned URLs, as in `docs/AWS_FULL.md`,
   so nginx only carries small requests (the bulk-upload manifest, JSON).
 - **Region: us-east-1.** The Broad's account and network are there, so cohort data is stored in the US. The production
@@ -37,7 +42,7 @@ rights in the Broad AWS account. The environment is called `broad` below; its se
 |---|---|
 | Website and API | One uvicorn process on the shared host, systemd unit `gwashub-api`. The API serves the built website itself (`GWASHUB_WEB_DIR`), so nginx proxies one upstream |
 | Worker | `python -m gwashub_api.worker` on the same host, systemd unit `gwashub-worker`: reads Batch job events from SQS and records results |
-| Database | Database `gwashub` on the existing MySQL server, with its own MySQL user that has rights on that database only. `utf8mb4`, collation `utf8mb4_0900_as_cs` (case-sensitive, as on Postgres). Over TLS, verified against the RDS CA bundle |
+| Database | Database `gwashub` on the existing MySQL server, with its own MySQL user that has rights on that database only. `utf8mb4`, collation `utf8mb4_0900_as_cs` (case-sensitive, as on Postgres): the migrations, and so both services, refuse a database whose collation isn't case-sensitive. Over TLS, verified against the RDS CA bundle |
 | Domain and TLS | A new server block on the existing nginx proxy, with its own certificate, proxying every path to `<host private IP>:<api_port>` |
 | Sign-in | A new Cognito user pool `gwashub-broad` (invite-only, MFA for everyone), on a Cognito prefix domain. Sign-in returns only to `site_url` |
 | Files | Three S3 buckets (uploads, results, resources): KMS-encrypted, versioned, private, TLS only. The uploads bucket's CORS rule names `site_url` |
@@ -45,7 +50,7 @@ rights in the Broad AWS account. The environment is called `broad` below; its se
 | Job events | EventBridge to SQS (with a dead-letter queue) to the worker |
 | Pipeline images | ECR repositories `gwashub-images/<owner>/<image>` in the Broad account, made by the deploy; job definitions pinned by digest. There is no `gwashub/app` image: the API runs from a virtualenv |
 | Logs | Batch jobs: CloudWatch log group `/gwashub/broad/app`. API and worker: journald on the host |
-| Secrets | Secrets Manager: `gwashub/broad/session`, `gwashub/broad/cognito-client`, `gwashub/broad/db` |
+| Secrets | Secrets Manager: `gwashub/broad/session`, `gwashub/broad/cognito-client`, `gwashub/broad/db`. Each one's resource policy denies the host's role |
 
 The stack is `Gwashub-broad-Shared` (`infra/gwashub_infra/shared_host_stack.py`). It creates no VPC, NAT gateway, database,
 load balancer, container service, website bucket or jump host, and has no hibernate mode (idle cost is already about $5). Besides the
@@ -57,7 +62,7 @@ policy**, `gwashub-broad-host`, to the host's existing instance role (see "One-o
 | Path | What |
 |---|---|
 | user `gwashub` | No login shell. Owns everything below; runs both services |
-| `/opt/gwashub/releases/<tag>` | One folder per deploy, named `<UTC yyyymmdd-hhmmss>-<git short sha>`: the committed code, the built website (`web/`) and a virtualenv (`.venv/`), about 1 GB. The current release and the 2 before it are kept |
+| `/opt/gwashub/releases/<tag>` | One folder per deploy, named `<UTC yyyymmdd-hhmmss>-<git short sha>`: the committed code, the built website (`web/`) and a virtualenv (`.venv/`), about 1 GB. The current release and the 2 before it are kept, so there are 4 (about 4 GB) during a deploy, until the oldest is removed |
 | `/opt/gwashub/current` | Symlink to the live release |
 | `/opt/gwashub/data` | Scratch space, home and plot cache for the services |
 | `/opt/gwashub/rds-global-bundle.pem` | The RDS CA bundle the database connection verifies against |
@@ -66,21 +71,23 @@ policy**, `gwashub-broad-host`, to the host's existing instance role (see "One-o
 
 ## The facts to collect
 
-None of these are in any repository; the Broad operators know them. Each goes into one field of `SHARED_HOSTS["broad"]`. The
-AWS CLI commands use the profile and region you deploy with (`AWS_PROFILE=gwashub-broad`, `--region us-east-1`).
+None of these are in any repository; the Broad operators know them. Each goes into one field of `SHARED_HOSTS["broad"]`.
+
+**Every AWS CLI command in this guide names `--region us-east-1`** (IAM ignores it), so a different default region in your
+shell or profile can't send it elsewhere. Set the profile first, in each shell: `export AWS_PROFILE=gwashub-broad`.
 
 | Fact | How to find it | Field |
 |---|---|---|
-| The Broad account ID, and whether any service control policy blocks Batch, Cognito, ECR, KMS, SQS, EventBridge or Secrets Manager in us-east-1 | `aws sts get-caller-identity --query Account --output text`; ask whoever manages the organisation about SCPs | `account`, `region` (`us-east-1`) |
-| The shared host: instance ID, private IP, security group, VPC | `aws ec2 describe-instances --instance-ids i-... --query 'Reservations[0].Instances[0].[PrivateIpAddress,SecurityGroups[].GroupId,VpcId,Placement.AvailabilityZone,InstanceType,IamInstanceProfile.Arn]'` | `host_instance_id`, `host_private_ip`, `host_security_group_id`, `vpc_id` |
-| Its instance role, and whether the role is attached to any other machine | `aws iam get-instance-profile --instance-profile-name <name from the ARN> --query 'InstanceProfile.Roles[].RoleName'`; `aws ec2 describe-iam-instance-profile-associations --query 'IamInstanceProfileAssociations[].[InstanceId,IamInstanceProfile.Arn]'` | `host_role_name` |
-| The host's size and headroom (memory, CPUs, free disk: about 3 GB for GWASHub's releases), its Python (3.12 needed) and Amazon Linux version | `shared_host_setup.sh` prints all of them (below); `systemctl status` of data-registry's services (`dr-api-prd` on 443 and `dr-api-dev` on 8000 when this was written) shows what they use | `api_memory`, `api_cpu`, `worker_memory`, `worker_cpu` (defaults `1536M`, `100%`, `512M`, `50%`: leave data-registry what it needs) |
+| The Broad account ID, and whether any service control policy blocks Batch, Cognito, ECR, KMS, SQS, EventBridge, Secrets Manager, Lambda (CDK's custom resources), IAM, EC2, S3 or CloudWatch Logs in us-east-1 | `aws sts get-caller-identity --query Account --output text --region us-east-1`; ask whoever manages the organisation about SCPs | `account`, `region` (`us-east-1`) |
+| The shared host: instance ID, private IP, security group, VPC | `aws ec2 describe-instances --instance-ids i-... --region us-east-1 --query 'Reservations[0].Instances[0].[PrivateIpAddress,SecurityGroups[].GroupId,VpcId,Placement.AvailabilityZone,InstanceType,IamInstanceProfile.Arn,MetadataOptions.HttpEndpoint]'` (the last must be `enabled`: the scripts ask the host's instance metadata service which machine it is) | `host_instance_id`, `host_private_ip`, `host_security_group_id`, `vpc_id` |
+| Its instance role, and whether the role is attached to any other machine | `aws iam get-instance-profile --instance-profile-name <name from the ARN> --region us-east-1 --query 'InstanceProfile.Roles[].RoleName'`; `aws ec2 describe-iam-instance-profile-associations --region us-east-1 --query 'IamInstanceProfileAssociations[].[InstanceId,IamInstanceProfile.Arn]'` | `host_role_name` |
+| The host's size and headroom (memory, CPUs, free disk: about 4 GB for GWASHub's releases, as a deploy holds 4 of them), its Python (3.12 needed) and Amazon Linux version | `shared_host_setup.sh` prints all of them (below); `systemctl status` of data-registry's services (`dr-api-prd` on 443 and `dr-api-dev` on 8000 when this was written) shows what they use | `api_memory`, `api_cpu`, `worker_memory`, `worker_cpu` (defaults `1536M`, `100%`, `512M`, `50%`: leave data-registry what it needs) |
 | The nginx machine: its address, how it reaches the host, how certificates are issued there | Ask. It must reach the host's private IP on `api_port` | `nginx_cidr` (one address, `/32`); the certificate and key paths for the nginx block |
 | The address for GWASHub and who manages its DNS | Ask | `site_url` (`https://...`, no trailing slash) |
-| Free address space in the VPC, and its internet gateway | `aws ec2 describe-vpcs`; `aws ec2 describe-subnets --filters Name=vpc-id,Values=<vpc>` shows what's taken; `aws ec2 describe-internet-gateways --filters Name=attachment.vpc-id,Values=<vpc>` | `batch_subnet_cidrs` (one range per zone; a /24 each is plenty), `internet_gateway_id` |
-| Zones that offer the Batch machine families (`m7g`, `r7g`, `m7i`, `r7i`) | `aws ec2 describe-instance-type-offerings --location-type availability-zone --filters Name=instance-type,Values=m7g.large,r7g.large,m7i.large,r7i.large --query 'InstanceTypeOfferings[].[Location,InstanceType]' --output text`: pick two or three zones that list all four | `availability_zones` (same order as `batch_subnet_cidrs`) |
+| Free address space in the VPC, and its internet gateway | `aws ec2 describe-vpcs --region us-east-1`; `aws ec2 describe-subnets --region us-east-1 --filters Name=vpc-id,Values=<vpc>` shows what's taken; `aws ec2 describe-internet-gateways --region us-east-1 --filters Name=attachment.vpc-id,Values=<vpc>` | `batch_subnet_cidrs` (one range per zone; a /24 each is plenty), `internet_gateway_id` |
+| Zones that offer the Batch machine families (`m7g`, `r7g`, `m7i`, `r7i`) | `aws ec2 describe-instance-type-offerings --region us-east-1 --location-type availability-zone --filters Name=instance-type,Values=m7g.large,r7g.large,m7i.large,r7i.large --query 'InstanceTypeOfferings[].[Location,InstanceType]' --output text`: pick two or three zones that list all four | `availability_zones` (same order as `batch_subnet_cidrs`) |
 | Spare EC2 quota for Batch: Spot and On-Demand vCPUs in us-east-1 (a job takes up to 16 vCPU and 128 GiB) | Service Quotas console: "Running On-Demand Standard instances" and "All Standard Spot Instance Requests" | `batch_max_vcpus` (default 64: the cap of each of the four compute environments, so Spot and On-Demand can each reach 2 x 64 vCPUs at once) |
-| The MySQL server: its exact version, whether it accepts TLS, who can create a database and user on it, and its DNS name | `aws rds describe-db-instances --query 'DBInstances[].[DBInstanceIdentifier,Endpoint.Address,EngineVersion]' --output table` | `db_host`, `db_port` (default 3306) |
+| The MySQL server: its exact version, whether it accepts TLS, who can create a database and user on it, and its DNS name | `aws rds describe-db-instances --region us-east-1 --query 'DBInstances[].[DBInstanceIdentifier,Endpoint.Address,EngineVersion]' --output table` | `db_host`, `db_port` (default 3306) |
 | A port on the host nothing else uses (not 443 or 8000) | `shared_host_setup.sh` checks it | `api_port` |
 
 **`db_host` must be the MySQL server's own DNS name** (the endpoint the RDS console shows), **not an IP address and not a
@@ -130,14 +137,14 @@ The stack attaches an inline policy, `gwashub-broad-host`, to the **existing rol
 Before the first deploy, look at what is on it:
 
 ```bash
-aws iam list-role-policies --role-name <host_role_name>
-for p in $(aws iam list-role-policies --role-name <host_role_name> --query 'PolicyNames[]' --output text); do
-  aws iam get-role-policy --role-name <host_role_name> --policy-name "$p" --query PolicyDocument --output json \
+aws iam list-role-policies --role-name <host_role_name> --region us-east-1
+for p in $(aws iam list-role-policies --role-name <host_role_name> --region us-east-1 --query 'PolicyNames[]' --output text); do
+  aws iam get-role-policy --role-name <host_role_name> --policy-name "$p" --region us-east-1 --query PolicyDocument --output json \
     | python3 -c 'import json,sys; print(len(json.dumps(json.load(sys.stdin), separators=(",", ":"))), "characters")'
 done
 ```
 
-Check two things:
+Check three things:
 
 1. **The size.** IAM allows 10,240 characters in total across a role's inline policies. GWASHub's is about 3,000. If the
    existing ones plus 3,000 come near 10,240, the stack update fails; the fix is a change to the code (a managed policy
@@ -146,8 +153,21 @@ Check two things:
    check that it will not remove an inline policy it didn't create. Terraform's `inline_policy` blocks on `aws_iam_role` are exclusive,
    for example: the next apply deletes everything not listed. Tell the people who own that code that
    `gwashub-broad-host` is GWASHub's and must stay. After any change to that role, check the policy is still there
-   (`aws iam get-role-policy --role-name <host_role_name> --policy-name gwashub-broad-host`). If it has gone, GWASHub's S3, Batch and SQS
-   calls fail with AccessDenied in the logs; find out what removed it before putting it back.
+   (`aws iam get-role-policy --role-name <host_role_name> --policy-name gwashub-broad-host --region us-east-1`). If it has gone, GWASHub's S3,
+   Batch and SQS calls fail with AccessDenied in the logs; find out what removed it before putting it back.
+3. **What it already reaches in Secrets Manager and KMS.** Record the answers:
+
+   ```bash
+   aws iam get-role --role-name <host_role_name> --region us-east-1 --query Role.Arn --output text
+   aws iam list-attached-role-policies --role-name <host_role_name> --region us-east-1
+   aws iam simulate-principal-policy --region us-east-1 --policy-source-arn <the role ARN above> \
+     --action-names secretsmanager:GetSecretValue kms:Decrypt --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output table
+   ```
+
+   `allowed` means a policy that isn't GWASHub's already gives the role that action. Each GWASHub secret's own resource policy
+   denies the role every Secrets Manager action, which wins over any allow, so it still can't read them; but tell the role's owners
+   what you found. That deny names the role as `arn:aws:iam::<account>:role/<host_role_name>`: if the ARN `get-role` prints has a
+   path between `role/` and the name, the deny wouldn't match it, so stop and ask.
 
 ### 2. Prepare the host
 
@@ -155,9 +175,12 @@ Check two things:
 GWASHUB_SSH_TARGET=ec2-user@<host> ./devtools/shared_host_setup.sh broad
 ```
 
-Safe to repeat. It changes only the `gwashub` user, `/opt/gwashub` and `/etc/gwashub`, and reads the rest: it creates the
-user and folders, downloads the RDS CA bundle, and checks the host is fit: Python 3.12 can make a virtualenv with pip, the
-API port is free (or already `gwashub-api`'s), and it prints the OS, systemd version, memory, disk and CPUs. Use those to
+Safe to repeat. It changes only the `gwashub` user, `/opt/gwashub` and `/etc/gwashub`, and reads the rest. Before it changes anything
+it checks that `GWASHUB_SSH_TARGET` is the configured host: it asks the machine for its instance ID through the EC2 instance
+metadata service (IMDSv2, `http://169.254.169.254`, from the host itself) and stops unless that is `host_instance_id`. The deploy and
+the rollback do the same. If the metadata service can't be reached the scripts stop; they don't fall back to the IP address, as private
+addresses repeat across VPCs. Then it creates the user and folders, downloads the RDS CA bundle, and checks the host is fit: Python
+3.12 can make a virtualenv with pip, the API port is free (or already `gwashub-api`'s), and it prints the OS, systemd version, memory, disk and CPUs. Use those to
 confirm `api_memory` and the other limits are fair to data-registry. If it stops, it says what to install or change.
 
 ### 3. The first deploy: it stops at the migrations, on purpose
@@ -182,7 +205,7 @@ password is GWASHub's, in the secret `gwashub/broad/db` (a JSON document; the pa
 inside the SQL quotes as it is). Fetch it with your own AWS credentials, and hand it over without pasting it into chat or email:
 
 ```bash
-aws secretsmanager get-secret-value --secret-id gwashub/broad/db --query SecretString --output text
+aws secretsmanager get-secret-value --secret-id gwashub/broad/db --region us-east-1 --query SecretString --output text
 ```
 
 ```sql
@@ -192,7 +215,9 @@ GRANT ALL PRIVILEGES ON gwashub.* TO 'gwashub'@'<host_private_ip>';
 ```
 
 `<host_private_ip>` is the `host_private_ip` from `config.py`, the address the server sees the host connect from. The user has rights on
-the `gwashub` database only: none on data-registry's. The host already reaches the MySQL server, so its network path needs nothing new.
+the `gwashub` database only: none on data-registry's. The collation matters: GWASHub treats names that differ only in case as different
+(as on Postgres), and the migrations refuse a database whose collation isn't case-sensitive (`utf8mb4` with a collation ending in `_cs`
+or `_bin`), naming the one they found. The host already reaches the MySQL server, so its network path needs nothing new.
 
 ### 5. nginx, the certificate and DNS
 
@@ -246,10 +271,10 @@ if the AWS credentials are for another account than `config.py`'s, or if `git st
 untracked ones**. The release is named after `HEAD` and contains `git archive HEAD`, but the website is built from your
 working folder, so anything uncommitted could end up in the site under a commit that doesn't contain it. An untracked file under `web/` is
 the clearest case: it goes into the website build and into no commit. So commit or stash your changes, and put files that must stay
-out of git, such as agent working files like `docs/superpowers/`, in `.git/info/exclude` (it is local, and not committed):
+out of git, such as local working files (for example agent notes), in `.git/info/exclude` (it is local, and not committed):
 
 ```bash
-echo 'docs/superpowers/' >> .git/info/exclude
+echo '<folder or file>' >> .git/info/exclude   # one line for each
 git status --porcelain      # must print nothing
 ```
 
@@ -260,7 +285,7 @@ git status --porcelain      # must print nothing
 | # | Step | Notes |
 |---|---|---|
 | 1 | Checks | `shared_host.py preflight`: right AWS account, clean git tree |
-| 2 | The host | SSH and `sudo -n` work; `/opt/gwashub/releases` exists (the setup ran) |
+| 2 | The host | SSH and `sudo -n` work; the machine is the configured host (its instance ID, from IMDSv2, is `host_instance_id`); `/opt/gwashub/releases` exists (the setup ran) |
 | 3 | Website | `npx nuxi generate`; fails unless `index.html`, `200.html` and `paused.html` were built |
 | 4 | Pipeline images | Logs in to ECR, builds and pushes each image from `pipeline/images/` not already in ECR at this tag, and records its digest |
 | 5 | Infrastructure | `cdk deploy Gwashub-broad-Shared`; saves the outputs in `infra/cdk-outputs-broad.json` (git-ignored). Creates the service-linked roles ECS, Batch and Spot need (a no-op once they exist), and bootstraps CDK if the account has no `CDKToolkit` stack |
@@ -270,7 +295,7 @@ git status --porcelain      # must print nothing
 | 9 | Migrations | `python -m gwashub_api.migrate` from the new release |
 | 10 | Switch | `current` now points at the new release; both services restart, and the deploy waits until both are up and `/api/health` answers on the host |
 | 11 | Limits | `shared_host.py limits-ok`: the memory limit is actually in force for both units |
-| 12 | The site | `shared_host.py check-site`: `/api/health` answers through nginx, and `/api/auth/users` and `/api/auth/login` do **not** |
+| 12 | The site | `shared_host.py check-site`: `/api/health` answers through nginx, `/api/auth/mode` says `cognito`, and `/api/auth/users` and `/api/auth/login` do **not** answer |
 | 13 | Old releases | Keeps the new one and 2 before it; deletes the rest |
 
 At the end it prints the site address and the rollback command.
@@ -289,11 +314,13 @@ At the end it prints the site address and the rollback command.
   finished them set `version_num` to the new revision; then deploy again. A failed deploy never restores the database.
 - **Know which migrations a deploy brings.** The release name ends with the commit's short sha, so compare with what is live:
   `ssh <host> readlink /opt/gwashub/current`, then `git log --oneline <sha>..HEAD -- api/migrations`. Before a deploy that has some,
-  ask whoever runs the MySQL server for a snapshot or confirm a recent backup.
+  ask whoever runs the MySQL server for a snapshot or confirm a recent backup, and know that once it is live `rollback` can't take you
+  back past it (below).
 - **A failure between steps 6 and 10** removes the unfinished release folder, so it can't take the place of a good release the prune
-  would keep. The stack, the env file and the units stay as they are.
+  would keep; the host first checks that `current` doesn't point at it (if the switch in step 10 happened but SSH reported a failure, the
+  release stays and the rollback command is printed). The stack, the env file and the units stay as they are.
 - **A failure after step 10** (the services don't come up, the memory limits aren't in force, or the site check fails) leaves the new release
-  live and prints the rollback command.
+  live and prints the rollback command, which refuses if that release added a migration (below).
 - **Docker keeps an ECR token.** Step 4 runs `aws ecr get-login-password | docker login`, which writes a short-lived ECR token (about 12
   hours) into `~/.docker/config.json` unless a credential helper is configured. On a laptop that others can use, or
   that is backed up, configure the Amazon ECR credential helper, or log out when you are done:
@@ -307,10 +334,14 @@ At the end it prints the site address and the rollback command.
 GWASHUB_SSH_TARGET=ec2-user@<host> ./devtools/shared_host_deploy.sh broad rollback
 ```
 
-Points `current` at the newest release older than the one now live (one with its virtualenv and wrapper intact), restarts both
-services, waits for them, and runs the site check. Run it again to go back another release. It restores **code only**:
+First it checks that `GWASHUB_SSH_TARGET` is the configured host (as the deploy does). Then it points `current` at the newest release
+older than the one now live (one with its virtualenv and wrapper intact), restarts both services, waits for them, and runs the site check.
+Run it again to go back another release. It restores **code only**:
 
-- **Migrations are not rolled back**, so the previous release has to work with the newer database. Keep migrations additive.
+- **Migrations are not rolled back, so a rollback is only possible when the live release added none.** If the live release has a file
+  in `api/migrations/versions/` that the previous one lacks, `rollback` names them and changes nothing: that migration has been applied,
+  the older code doesn't know the database's revision (Alembic stops with "Can't locate revision"), and both services would fail to
+  start. Fix forward instead: deploy a corrected commit.
 - The stack, the images, the env file and the units stay as the last deploy wrote them.
 - Only the current release and 2 older ones exist, so you can go back at most 2 releases. To go forward again, deploy.
 
@@ -349,7 +380,7 @@ infra/.venv/bin/python -m pytest infra/tests
 | `render-env broad` | The env file, on screen only. **It holds secrets**: don't paste it anywhere or redirect it to a file |
 | `render-unit broad api` (or `worker`) | A systemd unit |
 | `render-nginx broad --cert P --key P` | The nginx server block |
-| `check-site broad` | The site is healthy and the dev sign-in is not there. Needs your laptop to reach `site_url` |
+| `check-site broad` | The site is healthy, says its sign-in is Cognito's (`/api/auth/mode`), and the dev sign-in is not there. Needs your laptop to reach `site_url` |
 | `preflight broad` | The AWS account and the clean tree |
 | `prune broad <current> <releases...>` | Which release folders to delete |
 | `limits-ok broad` | Reads `systemctl show` output on stdin; fails if a unit has no memory limit in force |
@@ -449,7 +480,7 @@ except KMS requires the call to come from the shared host's instance:
 | SQS | Receive and delete on GWASHub's events queue |
 | Cognito | `AdminCreateUser` on the `gwashub-broad` user pool (the invite commands) |
 | KMS | Encrypt and decrypt with GWASHub's key, **only through S3** (`kms:ViaService`): S3 calls KMS for the caller, and the instance condition may not reach those calls |
-| Secrets Manager | Nothing |
+| Secrets Manager | Nothing; and each of GWASHub's three secrets denies the role every Secrets Manager action in its own resource policy, which wins over an allow from any other policy on the role |
 
 Two things to know:
 
@@ -497,6 +528,7 @@ downloads after the first 100 GB a month. For comparison, `docs/AWS_FULL.md`'s d
 | Batch size | `batch_max_vcpus`, `batch_volume_gb`, `batch_spot`, `meta_on_demand` | Commit, deploy |
 | The session key or Cognito client secret | Secrets Manager | Deploy. A new session key signs everyone out |
 | The database password | The MySQL user and `gwashub/broad/db` together | Deploy |
+| The MySQL server's address or port | `db_host`, `db_port` | Avoid it unless the server itself moves. Both are in the database secret's template, so the stack update (step 5) makes CloudFormation generate a **new password**, and step 7 puts it in the env file; the MySQL user still has the old one, so step 9 fails and a restart of either service can't connect. Then, with the new password from `gwashub/broad/db` (step 4's command), run `ALTER USER 'gwashub'@'<host_private_ip>' IDENTIFIED BY '<new password>';` on the server and deploy again |
 
 ## When something goes wrong
 
@@ -506,13 +538,18 @@ downloads after the first 100 GB a month. For comparison, `docs/AWS_FULL.md`'s d
 | `The AWS credentials are for account … but broad deploys to account …` | Wrong profile: set `AWS_PROFILE` |
 | `Cannot SSH to … without prompts` | Needs a key (no passphrase prompt; an agent works) and a route to the host |
 | `sudo on … needs a password: it must work with 'sudo -n'` | Passwordless sudo on the host |
+| `… is instance i-…, not broad's host i-…` | `GWASHUB_SSH_TARGET` reaches a different machine: correct it. Nothing was changed there |
+| `Could not read the instance ID of … from the EC2 instance metadata service` | The metadata service is off on the host, or something there blocks `169.254.169.254` (a firewall rule, a proxy). The scripts need it to tell which machine they reached; ask the host's owners |
+| `Not rolling back: … added database migrations that … lacks` | The live release's migrations are applied and the older code can't run on them. Fix forward: deploy a corrected commit |
 | `… /releases is missing on the host: run ./devtools/shared_host_setup.sh broad first` | Run the setup |
 | Setup: `Port N is already in use on the host, and not by gwashub-api` | Choose another `api_port` |
 | Setup: `/usr/bin/python3.12 is missing` | Install Python 3.12 with its venv and pip on the host |
 | Step 9 fails | The first time: expected (above). Otherwise read the error: MySQL access (the user, `REQUIRE SSL`, the host IP in the grant), a certificate error (`db_host` is an IP or a CNAME), or a failed migration (above) |
+| `The MySQL database has character set … and collation …` | The database wasn't created as in step 4. While it is still empty (the first deploy), `ALTER DATABASE gwashub CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs;` fixes it; if it has tables, stop and ask, as they keep the old collation |
+| `gwashub-run: line N of /etc/gwashub/env is not KEY='value'` | A hand edit broke the env file, and neither service starts. Deploy again to rewrite it, or fix line N: `KEY='value'`, no spaces around `=`, and no single quote inside the value |
 | `gwashub-api and gwashub-worker are not both up and answering` | The deploy prints the journal. Usual causes: the database unreachable, a bad value in the env file, the port taken |
 | `A service has no MemoryMax or MemoryLimit in force` | systemd isn't applying the limits (Amazon Linux 2's systemd ignores `MemoryMax`; the units set `MemoryLimit` too). Check `systemctl show gwashub-api -p MemoryMax -p MemoryLimit` |
-| `/api/auth/users answered 200 …` or `/api/auth/login answered …` | The dev sign-in may be on. It shouldn't be possible: stop the API now (`sudo systemctl stop gwashub-api`) and find out why before anything else |
+| `/api/auth/mode answered …`, `/api/auth/users answered 200 …` or `/api/auth/login answered …` | The dev sign-in may be on. It shouldn't be possible: stop the API now (`sudo systemctl stop gwashub-api`) and find out why before anything else |
 | `/api/health answered 502` or could not reach the site | nginx, DNS or the certificate; from the nginx machine, `curl http://<host_private_ip>:<api_port>/api/health` |
 | Cognito shows `redirect_mismatch` | Users must use exactly `site_url`; Cognito returns only there |
 | Browser upload refused | See "First smoke test" |
