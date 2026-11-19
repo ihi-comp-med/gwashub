@@ -7,6 +7,8 @@ Create Date: 2026-10-03 15:02:48.844535
 from alembic import op
 import sqlalchemy as sa
 
+from gwashub_api.dbtypes import migration_datetime
+
 
 revision = '4c5f0db45437'
 down_revision = None
@@ -25,7 +27,7 @@ def upgrade():
     sa.Column('ancestries', sa.JSON(), nullable=False),
     sa.Column('sexes', sa.JSON(), nullable=False),
     sa.Column('meta_defaults', sa.JSON(), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('created_at', migration_datetime(), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_table('user',
@@ -55,7 +57,7 @@ def upgrade():
     sa.Column('on_fail', sa.String(length=20), nullable=False),
     sa.Column('resources', sa.JSON(), nullable=False),
     sa.Column('added_by', sa.Integer(), nullable=True),
-    sa.Column('added_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('added_at', migration_datetime(), nullable=False),
     sa.ForeignKeyConstraint(['added_by'], ['user.id'], ),
     sa.ForeignKeyConstraint(['project_id'], ['project.id'], ),
     sa.PrimaryKeyConstraint('id'),
@@ -82,7 +84,7 @@ def upgrade():
     sa.Column('upload_id', sa.String(length=300), nullable=False),
     sa.Column('status', sa.String(length=20), nullable=False),
     sa.Column('review', sa.JSON(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('created_at', migration_datetime(), nullable=False),
     sa.ForeignKeyConstraint(['project_id'], ['project.id'], ),
     sa.ForeignKeyConstraint(['uploaded_by'], ['user.id'], ),
     sa.PrimaryKeyConstraint('id')
@@ -109,8 +111,8 @@ def upgrade():
     sa.Column('batch_job_id', sa.String(length=64), nullable=False),
     sa.Column('error', sa.Text(), nullable=True),
     sa.Column('created_by', sa.Integer(), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('created_at', migration_datetime(), nullable=False),
+    sa.Column('finished_at', migration_datetime(), nullable=True),
     sa.Column('lambda_gc', sa.Float(), nullable=True),
     sa.ForeignKeyConstraint(['created_by'], ['user.id'], ),
     sa.ForeignKeyConstraint(['project_id'], ['project.id'], ),
@@ -125,7 +127,7 @@ def upgrade():
     sa.Column('resolved', sa.JSON(), nullable=False),
     sa.Column('note', sa.Text(), nullable=False),
     sa.Column('created_by', sa.Integer(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('created_at', migration_datetime(), nullable=False),
     sa.ForeignKeyConstraint(['created_by'], ['user.id'], ),
     sa.ForeignKeyConstraint(['project_id'], ['project.id'], ),
     sa.PrimaryKeyConstraint('id'),
@@ -144,7 +146,7 @@ def upgrade():
     sa.Column('source', sa.Text(), nullable=False),
     sa.Column('storage_path', sa.Text(), nullable=False),
     sa.Column('added_by', sa.Integer(), nullable=True),
-    sa.Column('added_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('added_at', migration_datetime(), nullable=False),
     sa.ForeignKeyConstraint(['added_by'], ['user.id'], ),
     sa.ForeignKeyConstraint(['project_id'], ['project.id'], ),
     sa.PrimaryKeyConstraint('id'),
@@ -161,8 +163,8 @@ def upgrade():
     sa.Column('run_dir', sa.Text(), nullable=False),
     sa.Column('batch_job_id', sa.String(length=64), nullable=False),
     sa.Column('error', sa.Text(), nullable=True),
-    sa.Column('started_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('started_at', migration_datetime(), nullable=True),
+    sa.Column('finished_at', migration_datetime(), nullable=True),
     sa.ForeignKeyConstraint(['dataset_id'], ['dataset.id'], ),
     sa.ForeignKeyConstraint(['pipeline_version_id'], ['pipeline_version.id'], ),
     sa.PrimaryKeyConstraint('id')

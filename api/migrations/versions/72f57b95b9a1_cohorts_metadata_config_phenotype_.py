@@ -7,6 +7,8 @@ Create Date: 2026-10-04 09:47:02.014697
 from alembic import op
 import sqlalchemy as sa
 
+from gwashub_api.dbtypes import column_default, migration_datetime
+
 
 revision = '72f57b95b9a1'
 down_revision = '07884c0aa7db'
@@ -22,7 +24,7 @@ def upgrade():
     sa.Column('name', sa.String(length=200), nullable=False),
     sa.Column('meta', sa.JSON(), nullable=False),
     sa.Column('created_by', sa.Integer(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('created_at', migration_datetime(), nullable=False),
     sa.ForeignKeyConstraint(['created_by'], ['user.id'], ),
     sa.ForeignKeyConstraint(['project_id'], ['project.id'], ),
     sa.PrimaryKeyConstraint('id'),
@@ -31,7 +33,7 @@ def upgrade():
     op.add_column('dataset', sa.Column('cohort_id', sa.Integer(), nullable=True))
     op.create_index(op.f('ix_dataset_cohort_id'), 'dataset', ['cohort_id'], unique=False)
     op.create_foreign_key(None, 'dataset', 'cohort', ['cohort_id'], ['id'])
-    op.add_column('project', sa.Column('phenotype_descriptions', sa.JSON(), nullable=False, server_default='{}'))  # existing projects: none yet
+    op.add_column('project', sa.Column('phenotype_descriptions', sa.JSON(), nullable=False, server_default=column_default('{}', op.get_context().dialect.name)))  # existing projects: none yet
     op.add_column('project', sa.Column('metadata_config', sa.JSON(), nullable=True))
     # ### end Alembic commands ###
 

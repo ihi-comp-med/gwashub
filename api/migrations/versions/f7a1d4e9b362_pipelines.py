@@ -7,6 +7,8 @@ Create Date: 2026-10-07 00:30:00.000000
 from alembic import op
 import sqlalchemy as sa
 
+from gwashub_api.dbtypes import column_default, migration_datetime
+
 
 revision = 'f7a1d4e9b362'
 down_revision = 'e5f2c8a17d39'
@@ -19,10 +21,10 @@ def upgrade():
                     sa.Column('id', sa.Integer(), nullable=False),
                     sa.Column('project_id', sa.String(length=50), nullable=False),
                     sa.Column('name', sa.String(length=100), nullable=False),
-                    sa.Column('description', sa.Text(), nullable=False, server_default=''),
+                    sa.Column('description', sa.Text(), nullable=False, server_default=column_default('', op.get_context().dialect.name)),
                     sa.Column('is_default', sa.Boolean(), nullable=False, server_default=sa.false()),
                     sa.Column('created_by', sa.Integer(), nullable=True),
-                    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+                    sa.Column('created_at', migration_datetime(), nullable=False),
                     sa.ForeignKeyConstraint(['project_id'], ['project.id']),
                     sa.ForeignKeyConstraint(['created_by'], ['user.id']),
                     sa.PrimaryKeyConstraint('id'),

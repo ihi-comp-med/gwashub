@@ -7,6 +7,8 @@ Create Date: 2026-10-06 23:30:00.000000
 from alembic import op
 import sqlalchemy as sa
 
+from gwashub_api.dbtypes import column_default
+
 
 revision = 'e5f2c8a17d39'
 down_revision = 'd1e7a3b95c20'
@@ -16,7 +18,7 @@ depends_on = None
 
 def upgrade():
     with op.batch_alter_table('project', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('metadata_custom', sa.JSON(), server_default='[]', nullable=False))
+        batch_op.add_column(sa.Column('metadata_custom', sa.JSON(), server_default=column_default('[]', op.get_context().dialect.name), nullable=False))
 
 
 def downgrade():
