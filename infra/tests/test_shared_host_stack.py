@@ -179,6 +179,22 @@ def test_host_cannot_read_secrets(template):
     assert not [a for a in actions if a.lower().startswith("secretsmanager:")]
 
 
+HOST_ROLE_ARN = {"Fn::Join": ["", ["arn:", {"Ref": "AWS::Partition"}, ":iam::111111111111:role/dr-api-host"]]}
+
+
+def test_each_secret_denies_the_host_role(template):
+    """The shared role may already reach Secrets Manager through a policy that isn't GWASHub's: each secret's own
+    resource policy denies that role everything, whatever else it is granted."""
+    secrets = resources(template, "AWS::SecretsManager::Secret")
+    assert len(secrets) == 3
+    policies = [r["Properties"] for r in resources(template, "AWS::SecretsManager::ResourcePolicy").values()]
+    assert sorted(p["SecretId"]["Ref"] for p in policies) == sorted(secrets)
+    for p in policies:
+        assert p["ResourcePolicy"]["Statement"] == [{
+            "Effect": "Deny", "Action": "secretsmanager:*", "Principal": {"AWS": "*"}, "Resource": "*",
+            "Condition": {"ArnEquals": {"aws:PrincipalArn": HOST_ROLE_ARN}}}]
+
+
 def test_host_port_open_only_to_nginx(template):
     template.has_resource_properties("AWS::EC2::SecurityGroupIngress",
         {"GroupId": "sg-0host", "IpProtocol": "tcp", "FromPort": 8410, "ToPort": 8410, "CidrIp": "10.0.0.12/32"})

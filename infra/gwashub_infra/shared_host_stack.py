@@ -1,4 +1,4 @@
-"""GWASHub on a host, a MySQL server and a web proxy that already exist (docs/superpowers/specs/2026-11-18-shared-host-deployment-design.md).
+"""GWASHub on a host, a MySQL server and a web proxy that already exist (docs/SHARED_HOST.md).
 
 One stack, Gwashub-<name>-Shared. It creates only what those hosts can't supply: the file store (KMS key and three
 buckets), Cognito sign-in, Batch and the job-events queue, the secrets, a policy on the host's existing instance role,
@@ -33,18 +33,27 @@ class SharedHostStack(cdk.Stack):
 
         # ---------- secrets ----------
         # Created here, read only by the deploy (with the deployer's own AWS credentials) to write the host's env file.
-        # The host's role gets no access to them: see the policy below.
-        sm.Secret(self, "SessionSecret", secret_name=f"gwashub/{n}/session", description="GWASHub session-cookie signing key",
-                  generate_secret_string=sm.SecretStringGenerator(password_length=64, exclude_punctuation=True))
-        sm.Secret(self, "DbSecret", secret_name=f"gwashub/{n}/db", description="GWASHub's login on the shared MySQL server",
-                  generate_secret_string=sm.SecretStringGenerator(
-                      secret_string_template=json.dumps({"username": "gwashub", "dbname": "gwashub", "host": cfg.db_host,
-                                                         "port": cfg.db_port}),
-                      generate_string_key="password", password_length=32, exclude_punctuation=True))
+        # The host's role gets no access to them: its policy below has no secretsmanager: action, and each secret's
+        # resource policy (after sign-in, which makes the third) denies that role everything, so a policy on the shared
+        # role that isn't GWASHub's can't grant it either.
+        session_secret = sm.Secret(self, "SessionSecret", secret_name=f"gwashub/{n}/session",
+                                   description="GWASHub session-cookie signing key",
+                                   generate_secret_string=sm.SecretStringGenerator(password_length=64, exclude_punctuation=True))
+        db_secret = sm.Secret(self, "DbSecret", secret_name=f"gwashub/{n}/db", description="GWASHub's login on the shared MySQL server",
+                              generate_secret_string=sm.SecretStringGenerator(
+                                  secret_string_template=json.dumps({"username": "gwashub", "dbname": "gwashub",
+                                                                     "host": cfg.db_host, "port": cfg.db_port}),
+                                  generate_string_key="password", password_length=32, exclude_punctuation=True))
 
         # ---------- sign-in ----------
         signin = parts.sign_in(self, cfg, cfg.site_url)
         parts.uploads_cors(self, files.uploads, cfg.site_url)
+
+        host_role = iam.Role.from_role_name(self, "HostRole", cfg.host_role_name)
+        for secret in (session_secret, db_secret, signin.client_secret):
+            secret.add_to_resource_policy(iam.PolicyStatement(
+                effect=iam.Effect.DENY, actions=["secretsmanager:*"], principals=[iam.AnyPrincipal()], resources=["*"],
+                conditions={"ArnEquals": {"aws:PrincipalArn": host_role.role_arn}}))
 
         # ---------- network for Batch ----------
         # The VPC has no NAT gateway, so Batch machines need public addresses to reach ECR, S3 and Batch. They take
@@ -74,11 +83,10 @@ class SharedHostStack(cdk.Stack):
         # process on the host (and on other hosts sharing the role) can use that role, so every statement is tied to
         # this one instance; the KMS statement can't be (S3 calls KMS for the caller, and the instance key may not
         # reach those calls), so it allows only calls made through S3, which is itself gated to the host.
-        # No secretsmanager: action at all: the secrets reach the host only through the deploy.
+        # No secretsmanager: action at all: the secrets reach the host only through the deploy (and deny the role, above).
         on_host = {"StringEquals": {"ec2:SourceInstanceARN": f"arn:aws:ec2:{cfg.region}:{cfg.account}:instance/{cfg.host_instance_id}"}}
         buckets = [files.uploads, files.results, files.resources]
-        policy = iam.Policy(self, "HostPolicy", policy_name=f"gwashub-{n}-host",
-                            roles=[iam.Role.from_role_name(self, "HostRole", cfg.host_role_name)])
+        policy = iam.Policy(self, "HostPolicy", policy_name=f"gwashub-{n}-host", roles=[host_role])
         policy.add_statements(
             iam.PolicyStatement(
                 actions=["s3:GetObject*", "s3:GetBucket*", "s3:List*", "s3:PutObject", "s3:PutObjectTagging",
