@@ -4,6 +4,10 @@
     python devtools/aws_upload_resources.py dev genes_b38.tsv.gz     # just these
     ./devtools/aws_admin.sh dev add-resources s3://.../manifest.json # printed at the end: registers them
 
+On a shared-host environment (its infra/cdk-outputs-<env>.json has a Gwashub-<env>-Shared stack) the bucket is that stack's
+OutResourcesBucket and the printed command is ./devtools/shared_host_admin.sh <env> add-resources ...; set AWS_REGION to the
+environment's region.
+
 The website's upload dialog isn't practical for tens of GB, so this copies straight to S3 from this machine
 (AWS_PROFILE gwashub-<env>). Each file goes to resources/shared/<key>/<sha256 prefix>/<key>, so a file already
 there is skipped and a rebuilt file gets its own path. Titles, builds and sources come from resources/catalog.yaml.
@@ -25,10 +29,24 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILT_DIR = os.path.join(ROOT, "local", "resources")
 
 
-def resources_bucket(env: str) -> str:
+def stack_outputs(env: str) -> dict:
+    """Every stack's outputs in infra/cdk-outputs-<env>.json (written by the deploy script)."""
     with open(os.path.join(ROOT, "infra", f"cdk-outputs-{env}.json")) as f:
-        data = json.load(f)[f"Gwashub-{env}-Data"]
-    return next(v for k, v in data.items() if k.startswith("ExportsOutputRefResources"))
+        return json.load(f)
+
+
+def resources_bucket(env: str) -> str:
+    """The resources bucket: an output of the one shared-host stack, or an export of the Data stack."""
+    outputs = stack_outputs(env)
+    if f"Gwashub-{env}-Shared" in outputs:
+        return outputs[f"Gwashub-{env}-Shared"]["OutResourcesBucket"]
+    return next(v for k, v in outputs[f"Gwashub-{env}-Data"].items() if k.startswith("ExportsOutputRefResources"))
+
+
+def admin_command(env: str) -> str:
+    """How to run an admin command: over SSH on a shared host, otherwise as a one-off ECS task."""
+    shared = f"Gwashub-{env}-Shared" in stack_outputs(env)
+    return f"./devtools/shared_host_admin.sh {env}" if shared else f"./devtools/aws_admin.sh {env}"
 
 
 def manifest_entries(keys: list[str] | None) -> list[dict]:
@@ -84,7 +102,7 @@ def main(argv: list[str]):
     s3.put_object(Bucket=bucket, Key=mk, Body=json.dumps({"resources": entries}, indent=1).encode(),
                   ContentType="application/json")
     print(f"Uploaded. Register them (after the new image is deployed):\n"
-          f"  ./devtools/aws_admin.sh {env} add-resources s3://{bucket}/{mk}")
+          f"  {admin_command(env)} add-resources s3://{bucket}/{mk}")
 
 
 if __name__ == "__main__":

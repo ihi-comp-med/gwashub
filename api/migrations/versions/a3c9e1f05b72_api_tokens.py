@@ -7,6 +7,8 @@ Create Date: 2026-10-07 10:00:00.000000
 from alembic import op
 import sqlalchemy as sa
 
+from gwashub_api.dbtypes import migration_datetime
+
 
 revision = 'a3c9e1f05b72'
 down_revision = 'f7a1d4e9b362'
@@ -22,10 +24,10 @@ def upgrade():
                     sa.Column('name', sa.String(length=100), nullable=False),
                     sa.Column('token_hash', sa.String(length=64), nullable=False),
                     sa.Column('prefix', sa.String(length=12), nullable=False),
-                    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-                    sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
-                    sa.Column('revoked_at', sa.DateTime(timezone=True), nullable=True),
-                    sa.Column('last_used_at', sa.DateTime(timezone=True), nullable=True),
+                    sa.Column('created_at', migration_datetime(), nullable=False),
+                    sa.Column('expires_at', migration_datetime(), nullable=False),
+                    sa.Column('revoked_at', migration_datetime(), nullable=True),
+                    sa.Column('last_used_at', migration_datetime(), nullable=True),
                     sa.ForeignKeyConstraint(['user_id'], ['user.id']),
                     sa.ForeignKeyConstraint(['project_id'], ['project.id']),
                     sa.PrimaryKeyConstraint('id'),

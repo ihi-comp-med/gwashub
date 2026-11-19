@@ -16,6 +16,7 @@ pick-a-user sign-in) and **on AWS** (S3, Postgres, AWS Batch, Cognito sign-in wi
 | `docs/PROGRESS.md` | Where it stands: what's built, decisions, known behaviour, what's not done |
 | `docs/AWS_FULL.md` | **The AWS deployment**: why it's built that way, what runs where, deploying, admin commands, the console, costs |
 | `docs/PRODUCTION_ROADMAP.md` | **The road to production**: the domain plan, the tasks in order (how, effort, cost), go-live checks, running it, costs |
+| `docs/SHARED_HOST.md` | **GWASHub on the Broad's existing host, MySQL server and nginx** (about $5 a month fixed): what to collect, one-off setup, deploying and rolling back, admin commands, what's dropped |
 | `docs/AWS_ACCOUNT_SETUP.md` | The AWS accounts: what exists, what's open, how to rebuild them |
 | `docs/AWS_CREDITS_PROPOSAL.md` | The AWS Cloud Credit for Research proposal (October 2026): USD 7,500 for production's first year |
 | `docs/VALIDATION_PLAN.md` | The four validation tests and their results (`validation/` holds them; the site's Validation page shows them) |
@@ -79,9 +80,10 @@ resources/           reference files: catalog.yaml (where each comes from), buil
 client/              gwashub_upload.py: the bulk upload script (standard library only) and its tests
 practice/            synthetic files for the site's Practice project (files.json: what to enter for each)
 images/app/          the site image (API and worker)
-infra/               AWS CDK app: Network, Data and App stacks (docs/AWS_FULL.md)
+infra/               AWS CDK app: Network, Data and App stacks (docs/AWS_FULL.md); the Shared stack for a shared host (docs/SHARED_HOST.md)
 devtools/            dev.sh, build_images.sh, synth.py (synthetic data), seed.py, e2e.py, run_demo.py; AWS: aws_cdk_deploy.sh,
-                     aws_admin.sh, aws_hibernate.sh, aws_upload_resources.py, aws_db_tunnel.sh, aws_bookmarks.py
+                     aws_admin.sh, aws_hibernate.sh, aws_upload_resources.py, aws_db_tunnel.sh, aws_bookmarks.py; shared host:
+                     shared_host_setup.sh, shared_host_deploy.sh, shared_host_admin.sh, shared_host.py
 docs/                PROGRESS (where it stands), AWS guides, validation plan, bulk upload design; images/ (posters; prompts in IMAGE_PROMPTS.md)
 local/               git-ignored: synthetic/ (fake data + resources), app/ (dev DB, uploads, runs), runs/
 ```

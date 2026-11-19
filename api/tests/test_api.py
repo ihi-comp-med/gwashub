@@ -14,15 +14,14 @@ def client(synth_small, tmp_path_factory):
     data = tmp_path_factory.mktemp("api")
     os.environ.update({"GWASHUB_DATA_DIR": str(data / "local"), "GWASHUB_SHARED_RESOURCES": synth_small["resources"],
                        "GWASHUB_INLINE_JOBS": "1", "MPLCONFIGDIR": "/tmp/gwashub-mpl"})
-    if os.environ.get("GWASHUB_TEST_DB_URL"):  # e.g. a throwaway Postgres: tables are dropped first
+    if os.environ.get("GWASHUB_TEST_DB_URL"):  # a throwaway Postgres or MySQL (devtools/test_db.sh): emptied first
         os.environ["GWASHUB_DB_URL"] = os.environ["GWASHUB_TEST_DB_URL"]
     from gwashub_api import config, db
     config.settings.cache_clear()
     db.reset_engine()
     if os.environ.get("GWASHUB_TEST_DB_URL"):
-        from sqlalchemy import text
-        with db.engine().begin() as conn:
-            conn.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public"))
+        from devtools.testdb import reset_database
+        reset_database(db.engine())
         db.reset_engine()
     seed = importlib.import_module("devtools.seed")
     seed.main()

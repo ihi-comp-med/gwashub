@@ -9,36 +9,20 @@ stopped database by itself after 7 days.
 import aws_cdk as cdk
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_iam as iam
-from aws_cdk import aws_kms as kms
 from aws_cdk import aws_rds as rds
-from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_scheduler as scheduler
 from aws_cdk import aws_secretsmanager as sm
 from constructs import Construct
+
+from . import parts
 
 
 class DataStack(cdk.Stack):
     def __init__(self, scope: Construct, id: str, *, cfg, net, hibernate: bool = False, **kwargs):
         super().__init__(scope, id, **kwargs)
-        self.key = kms.Key(self, "Key", alias=f"alias/gwashub-{cfg.name}", enable_key_rotation=True,
-                           description="GWASHub files and database", removal_policy=cdk.RemovalPolicy.RETAIN)
-
-        def bucket(name: str, extra_rules=()):
-            return s3.Bucket(
-                self, name, encryption=s3.BucketEncryption.KMS, encryption_key=self.key, bucket_key_enabled=True,
-                block_public_access=s3.BlockPublicAccess.BLOCK_ALL, enforce_ssl=True, versioned=True,
-                object_ownership=s3.ObjectOwnership.BUCKET_OWNER_ENFORCED, removal_policy=cdk.RemovalPolicy.RETAIN,
-                lifecycle_rules=[
-                    s3.LifecycleRule(id="abort-incomplete-uploads", abort_incomplete_multipart_upload_after=cdk.Duration.days(7)),
-                    s3.LifecycleRule(id="expire-old-versions", noncurrent_version_expiration=cdk.Duration.days(cfg.noncurrent_version_days)),
-                    *extra_rules,
-                ])
-
-        # Raw uploads: cheaper storage class once they're 90 days old (still instant to read).
-        self.uploads = bucket("Uploads", [s3.LifecycleRule(id="older-uploads-to-glacier-ir", transitions=[
-            s3.Transition(storage_class=s3.StorageClass.GLACIER_INSTANT_RETRIEVAL, transition_after=cdk.Duration.days(90))])])
-        self.results = bucket("Results")
-        self.resources = bucket("Resources")
+        self.files = parts.file_store(self, cfg)
+        self.key, self.uploads, self.results, self.resources = (
+            self.files.key, self.files.uploads, self.files.results, self.files.resources)
 
         self.db_sg = ec2.SecurityGroup(self, "DbSg", vpc=net.vpc, description="GWASHub Postgres", allow_all_outbound=False)
         self.db_sg.add_ingress_rule(net.app_sg, ec2.Port.tcp(5432), "GWASHub API, worker and admin tasks")
