@@ -141,12 +141,36 @@ def test_host_policy_grants_what_the_task_roles_had(template):
         return [r for s in stmts if action in as_list(s["Action"]) for r in as_list(s["Resource"])]
 
     assert len(resources_of("s3:GetObject*")) == 6  # three buckets and their objects
-    assert len(resources_of("batch:SubmitJob")) == 4 + 2  # four queues and two job definitions
+    assert len(resources_of("batch:SubmitJob")) == 4 + 1  # four queues and the job definitions by name
     assert resources_of("batch:DescribeJobs") == ["*"]
     assert len(resources_of("batch:TerminateJob")) == 1
     assert len(resources_of("sqs:ReceiveMessage")) == 1
     assert len(resources_of("cognito-idp:AdminCreateUser")) == 1
     assert len(resources_of("kms:Decrypt")) == 1
+
+
+def test_submit_job_is_scoped_to_gwashub_job_definitions(template):
+    """The account is shared: the host may submit GWASHub's job definitions only, never any other in the account."""
+    stmts = statements(template)
+    for action in ("batch:SubmitJob", "batch:TagResource"):
+        rs = [r for s in stmts if action in as_list(s["Action"]) for r in as_list(s["Resource"])]
+        queues = [r for r in rs if isinstance(r, dict) and r.get("Fn::GetAtt", [None, None])[1] == "JobQueueArn"]
+        definitions = [r for r in rs if r not in queues]
+        assert len(queues) == 4
+        assert len(definitions) == 1, definitions
+        assert json.dumps(definitions[0]) == json.dumps(
+            {"Fn::Join": ["", ["arn:", {"Ref": "AWS::Partition"}, ":batch:us-east-1:111111111111:job-definition/gwashub-example-*"]]})
+    # nothing in the policy reaches every job definition in the account, and only DescribeJobs is on "*"
+    for s in stmts:
+        for r in as_list(s["Resource"]):
+            assert not json.dumps(r).endswith('job-definition/*"'), r
+            if r == "*":
+                assert as_list(s["Action"]) == ["batch:DescribeJobs"]
+
+
+def test_job_definition_names_start_with_the_scoped_prefix(template):
+    names = [r["Properties"]["JobDefinitionName"] for r in resources(template, "AWS::Batch::JobDefinition").values()]
+    assert names and all(n.startswith("gwashub-example-") for n in names)
 
 
 def test_host_cannot_read_secrets(template):

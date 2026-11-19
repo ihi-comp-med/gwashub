@@ -84,10 +84,13 @@ class SharedHostStack(cdk.Stack):
                 actions=["s3:GetObject*", "s3:GetBucket*", "s3:List*", "s3:PutObject", "s3:PutObjectTagging",
                          "s3:DeleteObject*", "s3:Abort*"],
                 resources=[*(b.bucket_arn for b in buckets), *(b.arn_for_objects("*") for b in buckets)], conditions=on_host),
+            # The account is shared, so job definitions are matched by GWASHub's name prefix (parts.batch_jobs names them
+            # gwashub-<name>-<image>), with or without a revision. parts.unversioned would match every one in the account.
             iam.PolicyStatement(
                 actions=["batch:SubmitJob", "batch:TagResource"],
                 resources=[*(q.job_queue_arn for q in jobs.queues),
-                           *(parts.unversioned(jd.job_definition_arn) for jd in jobs.job_defs.values())], conditions=on_host),
+                           self.format_arn(service="batch", resource="job-definition", resource_name=f"gwashub-{n}-*")],
+                conditions=on_host),
             iam.PolicyStatement(actions=["batch:DescribeJobs"], resources=["*"], conditions=on_host),
             # Stop QC (jobs.stop_qc): terminate a run's job, waiting or running; job ARNs aren't known in advance
             iam.PolicyStatement(actions=["batch:TerminateJob"], conditions=on_host,
