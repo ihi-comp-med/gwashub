@@ -18,6 +18,7 @@ MIGRATIONS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 LOCK_ID = 7412001  # Postgres advisory lock
 LOCK_NAME = "gwashub_migrate"  # MySQL named lock
 LOCK_TIMEOUT = 600  # seconds to wait for the MySQL lock
+MYSQL_COLLATION = "utf8mb4_0900_as_cs"  # the collation a MySQL database is created with (docs/SHARED_HOST.md)
 
 
 def config(connection=None) -> Config:
@@ -40,11 +41,29 @@ def upgrade():
     with engine().connect() as conn:
         _acquire_lock(conn)
         try:
+            # Only once the lock is held: on MySQL the check's read fixes what this transaction sees, and it must see what
+            # a migration that ran while this one waited has made.
+            if conn.dialect.name == "mysql":
+                _check_mysql_collation(conn)
             command.upgrade(config(conn), "head")
             conn.commit()
         finally:
             _release_lock(conn)
             conn.commit()
+
+
+def _check_mysql_collation(conn) -> None:
+    """GWASHub compares names case-sensitively, as Postgres does ("UKB" and "ukb" are two cohorts). On MySQL that holds
+    only if the database was created with a case-sensitive utf8mb4 collation; the server's usual default
+    (utf8mb4_0900_ai_ci) isn't one. Refuse to touch a database that isn't."""
+    row = conn.execute(text("SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA "
+                            "WHERE SCHEMA_NAME = DATABASE()")).first()
+    charset, collation = row if row is not None else (None, None)
+    if charset != "utf8mb4" or not collation or not collation.endswith(("_cs", "_bin")):
+        raise RuntimeError(
+            f"The MySQL database has character set {charset} and collation {collation}; GWASHub needs character set "
+            f"utf8mb4 and the case-sensitive collation {MYSQL_COLLATION} (or another utf8mb4 collation ending in _cs or "
+            f"_bin). Create the database with CHARACTER SET utf8mb4 COLLATE {MYSQL_COLLATION}.")
 
 
 def _acquire_lock(conn) -> None:

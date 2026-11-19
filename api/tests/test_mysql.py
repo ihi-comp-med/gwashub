@@ -81,10 +81,38 @@ def test_concurrent_migrations():
         t.start()
     for t in threads:
         t.join(timeout=300)
+    assert not [t for t in threads if t.is_alive()], "a migration was still running after 300 s"
     assert errors == []
     head = ScriptDirectory.from_config(migrate.config()).get_current_head()
     with db.engine().connect() as conn:
         assert conn.execute(text("SELECT version_num FROM alembic_version")).scalars().all() == [head]
+
+
+def test_refuses_a_database_with_a_case_insensitive_collation():
+    """A database made with the server's usual default (utf8mb4_0900_ai_ci) would treat "UKB" and "ukb" as the same name:
+    the migrations must refuse it, naming the collation found and the one needed, and create nothing."""
+    from gwashub_api import config, db, migrate
+    other = "gwashub_test_ci"
+    root = sa.create_engine(TEST_URL)
+    try:
+        with root.begin() as conn:
+            conn.execute(text(f"DROP DATABASE IF EXISTS {other}"))
+            conn.execute(text(f"CREATE DATABASE {other} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"))
+        os.environ["GWASHUB_DB_URL"] = sa.make_url(TEST_URL).set(database=other).render_as_string(hide_password=False)
+        config.settings.cache_clear()
+        db.reset_engine()
+        with pytest.raises(RuntimeError, match="utf8mb4_0900_ai_ci") as e:
+            migrate.upgrade()
+        assert "utf8mb4_0900_as_cs" in str(e.value)
+        with db.engine().connect() as conn:
+            assert conn.execute(text("SHOW TABLES")).all() == []
+    finally:
+        os.environ["GWASHUB_DB_URL"] = TEST_URL
+        config.settings.cache_clear()
+        db.reset_engine()
+        with root.begin() as conn:
+            conn.execute(text(f"DROP DATABASE IF EXISTS {other}"))
+        root.dispose()
 
 
 def test_datetime_round_trip_keeps_microseconds_and_utc(migrated):
@@ -124,6 +152,8 @@ def test_reconnects_after_server_drops_connection():
                 if not conn.execute(text("SELECT 1 FROM information_schema.processlist WHERE id = :id"), {"id": cid}).first():
                     break
                 time.sleep(0.1)
+            else:
+                pytest.fail(f"connection {cid} was still in the process list 5 s after KILL")
     finally:
         killer.dispose()
     with db.SessionLocal() as s:
