@@ -497,3 +497,28 @@ def test_cli_check_site_and_preflight_exit_codes(monkeypatch, capsys):
     monkeypatch.setattr(sh, "caller_account", lambda region: "111111111111")
     monkeypatch.setattr(sh, "git_status", lambda: "")
     assert sh.main(["preflight", "example"]) == 0
+
+
+# ---------- the reference-file upload script (devtools/aws_upload_resources.py) ----------
+
+def write_outputs(root: Path, env: str, stacks: dict) -> None:
+    (root / "infra").mkdir()
+    (root / "infra" / f"cdk-outputs-{env}.json").write_text(json.dumps(stacks))
+
+
+def test_resources_bucket_for_shared_host(monkeypatch, tmp_path):
+    from devtools import aws_upload_resources as upload
+    write_outputs(tmp_path, "x", {"Gwashub-x-Shared": {"OutResourcesBucket": "resources-b", "OutUploadsBucket": "uploads-b"}})
+    monkeypatch.setattr(upload, "ROOT", str(tmp_path))
+    assert upload.resources_bucket("x") == "resources-b"
+    assert upload.admin_command("x") == "./devtools/shared_host_admin.sh x"
+
+
+def test_resources_bucket_for_three_stack_env(monkeypatch, tmp_path):
+    from devtools import aws_upload_resources as upload
+    write_outputs(tmp_path, "x", {"Gwashub-x-Data": {"ExportsOutputRefUploads1ABC": "uploads-b",
+                                                     "ExportsOutputRefResourcesBucket2DEF": "resources-b"},
+                                  "Gwashub-x-App": {"OutSiteUrl": "https://x.example.org"}})
+    monkeypatch.setattr(upload, "ROOT", str(tmp_path))
+    assert upload.resources_bucket("x") == "resources-b"
+    assert upload.admin_command("x") == "./devtools/aws_admin.sh x"
