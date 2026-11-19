@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from gwashub_api.db import Base
+from gwashub_api.dbtypes import UTCDateTime
 
 
 def now():
@@ -39,7 +40,7 @@ class Project(Base):
     ancestries: Mapped[list] = mapped_column(JSON, default=lambda: ["EUR", "AFR", "EAS", "SAS", "AMR", "Multi"])
     sexes: Mapped[list] = mapped_column(JSON, default=lambda: ["Combined", "Female", "Male"])
     meta_defaults: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
     members: Mapped[list["Membership"]] = relationship(back_populates="project", cascade="all, delete-orphan")
 
 
@@ -69,7 +70,7 @@ class Resource(Base):
     source: Mapped[str] = mapped_column(Text, default="Uploaded")
     storage_path: Mapped[str] = mapped_column(Text)
     added_by: Mapped[int | None] = mapped_column(ForeignKey("user.id"), nullable=True)
-    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    added_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
 
 
 class Pipeline(Base):
@@ -83,7 +84,7 @@ class Pipeline(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("user.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
 
 
 class PipelineVersion(Base):
@@ -99,7 +100,7 @@ class PipelineVersion(Base):
     resolved: Mapped[list] = mapped_column(JSON, default=list)  # pinned sources/resources at save time
     note: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[int | None] = mapped_column(ForeignKey("user.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
     pipeline: Mapped["Pipeline | None"] = relationship()
 
 
@@ -113,7 +114,7 @@ class Cohort(Base):
     name: Mapped[str] = mapped_column(String(200))
     meta: Mapped[dict] = mapped_column(JSON, default=dict)  # cohort-level fields of metadata_schema.py
     created_by: Mapped[int | None] = mapped_column(ForeignKey("user.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
 
 
 class ApiToken(Base):
@@ -126,10 +127,10 @@ class ApiToken(Base):
     name: Mapped[str] = mapped_column(String(100))
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)  # sha256 hex of the token
     prefix: Mapped[str] = mapped_column(String(12))  # the token's first characters, to recognise it in lists
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     user: Mapped[User] = relationship()
 
 
@@ -167,7 +168,7 @@ class Dataset(Base):
     # A corrected file being uploaded in place of this one: {path, upload_id, file_name, file_size}; the dataset keeps
     # its current file until the upload completes.
     replacement: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
     runs: Mapped[list["QCRun"]] = relationship(back_populates="dataset", order_by="QCRun.id", cascade="all, delete-orphan")
     uploader: Mapped[User] = relationship()
     cohort_ref: Mapped["Cohort | None"] = relationship()
@@ -190,8 +191,8 @@ class QCRun(Base):
     # attempt, max_attempts, previous (why earlier attempts ended), at}. Shown while it runs (jobs.batch_note).
     batch_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     dataset: Mapped[Dataset] = relationship(back_populates="runs")
     pipeline_version: Mapped[PipelineVersion] = relationship()
 
@@ -213,6 +214,6 @@ class MetaAnalysis(Base):
     batch_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[int] = mapped_column(ForeignKey("user.id"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     lambda_gc: Mapped[float | None] = mapped_column(Float, nullable=True)

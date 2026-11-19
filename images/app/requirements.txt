@@ -12,5 +12,7 @@ boto3
 httpx
 pyjwt[crypto]
 psycopg[binary]
+pymysql  # MySQL
+cryptography  # PyMySQL needs it for MySQL 8 sign-in (caching_sha2_password)
 alembic
 openpyxl  # bulk upload manifests (.xlsx): the template and reading uploads

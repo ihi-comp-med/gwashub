@@ -19,14 +19,19 @@ def engine():
     if _engine is None:
         s = settings()
         os.makedirs(s.data_dir, exist_ok=True)
-        _engine = create_engine(s.db_url, connect_args={"check_same_thread": False} if s.db_url.startswith("sqlite") else {})
-        if s.db_url.startswith("sqlite"):
+        if s.is_sqlite:
+            _engine = create_engine(s.db_url, connect_args={"check_same_thread": False})
+
             @event.listens_for(_engine, "connect")
             def _pragmas(conn, _):
                 cur = conn.cursor()
                 cur.execute("PRAGMA journal_mode=WAL")
                 cur.execute("PRAGMA foreign_keys=ON")
                 cur.close()
+        else:
+            # A server may close an idle connection (MySQL's wait_timeout, a restart): test it before use and retire it
+            # well inside the server's timeout, so the next request reconnects instead of failing.
+            _engine = create_engine(s.db_url, pool_pre_ping=True, pool_recycle=1800)
         _Session = sessionmaker(_engine, expire_on_commit=False)
     return _engine
 

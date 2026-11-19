@@ -14,6 +14,8 @@ boto3
 botocore[crt]  # devtools that use `aws login` credentials (aws_upload_resources.py)
 pyjwt[crypto]
 psycopg[binary]
+pymysql  # MySQL
+cryptography  # PyMySQL needs it for MySQL 8 sign-in (caching_sha2_password)
 alembic
 openpyxl  # bulk upload manifests (.xlsx): the template and reading uploads
 moto[s3]

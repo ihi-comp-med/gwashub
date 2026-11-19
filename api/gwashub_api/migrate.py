@@ -14,7 +14,10 @@ from sqlalchemy import text
 from gwashub_api.db import engine
 
 MIGRATIONS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "migrations")
-LOCK_ID = 7412001  # Postgres advisory lock: the API and the worker may start at the same time
+# The API and the worker may start at the same time: whichever takes the lock runs the migrations, the other waits.
+LOCK_ID = 7412001  # Postgres advisory lock
+LOCK_NAME = "gwashub_migrate"  # MySQL named lock
+LOCK_TIMEOUT = 600  # seconds to wait for the MySQL lock
 
 
 def config(connection=None) -> Config:
@@ -35,13 +38,29 @@ def upgrade():
         alembic_log.addHandler(handler)
         alembic_log.setLevel(logging.INFO)
     with engine().connect() as conn:
-        conn.execute(text("SELECT pg_advisory_lock(:id)"), {"id": LOCK_ID})
+        _acquire_lock(conn)
         try:
             command.upgrade(config(conn), "head")
             conn.commit()
         finally:
-            conn.execute(text("SELECT pg_advisory_unlock(:id)"), {"id": LOCK_ID})
+            _release_lock(conn)
             conn.commit()
+
+
+def _acquire_lock(conn) -> None:
+    if conn.dialect.name == "mysql":
+        got = conn.execute(text("SELECT GET_LOCK(:name, :timeout)"), {"name": LOCK_NAME, "timeout": LOCK_TIMEOUT}).scalar()
+        if got != 1:  # 0 = timed out, NULL = error
+            raise RuntimeError(f"Timed out after {LOCK_TIMEOUT} s waiting for the migration lock")
+    else:
+        conn.execute(text("SELECT pg_advisory_lock(:id)"), {"id": LOCK_ID})
+
+
+def _release_lock(conn) -> None:
+    if conn.dialect.name == "mysql":
+        conn.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": LOCK_NAME})
+    else:
+        conn.execute(text("SELECT pg_advisory_unlock(:id)"), {"id": LOCK_ID})
 
 
 def main(argv=None):
