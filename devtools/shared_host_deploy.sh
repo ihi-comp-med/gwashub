@@ -236,4 +236,5 @@ fi
 
 echo
 echo "Deployed $TAG to $ENV_NAME: $(cfg site_url)"
-echo "Previous release, if needed: GWASHUB_SSH_TARGET=$GWASHUB_SSH_TARGET ./devtools/shared_host_deploy.sh $ENV_NAME rollback"
+echo "Previous release, if needed (refused if $TAG added a migration):" \
+  "GWASHUB_SSH_TARGET=$GWASHUB_SSH_TARGET ./devtools/shared_host_deploy.sh $ENV_NAME rollback"
