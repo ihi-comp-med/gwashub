@@ -25,8 +25,8 @@ DEFAULT_PLATFORM = "linux/arm64"  # AWS Graviton; an image.yaml may say linux/am
 # What a Batch job gets unless its steps ask for more (step.yaml `compute:`); a job takes the largest request
 # among its steps.
 DEFAULT_COMPUTE = {"vcpus": 2, "memory_gb": 8}
-# The most one job can ask for: the largest Batch instances are 4xlarge (16 vCPU, 128 GiB; infra/gwashub_infra/
-# app_stack.py), less what ECS keeps for itself. A bigger request would never start.
+# The most one job can ask for: the largest Batch instances are 4xlarge (16 vCPU, 128 GiB; the compute environments'
+# instance families in infra/gwashub_infra/parts.py), less what ECS keeps for itself. A bigger request would never start.
 MAX_COMPUTE = {"vcpus": 16, "memory_gb": 120}
 
 
