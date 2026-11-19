@@ -17,6 +17,8 @@ from devtools import shared_host as sh
 
 ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = ROOT / "infra" / "shared_host" / "gwashub-run"
+DEPLOY = ROOT / "devtools" / "shared_host_deploy.sh"
+COMMON = ROOT / "devtools" / "lib" / "shared_host_common.sh"
 
 CFG = sh.SharedHostConfig(
     name="example", account="111111111111", region="us-east-1", site_url="https://gwashub.example.org",
@@ -215,6 +217,83 @@ def test_wrapper_does_not_run_anything_when_the_env_file_is_missing_or_broken(tm
     assert not marker.exists()
 
 
+@pytest.mark.parametrize("line", ["export() { :; }", "readonly GWASHUB_AUTH=dev", "set +e", "$(touch {marker})",
+                                  "GWASHUB_AUTH=dev", "FOO='x'; touch {marker}", "FOO='x' # comment", " FOO='x'",
+                                  "FOO=\"x\"", "FOO='it'\\''s'"])
+def test_wrapper_refuses_a_line_that_is_not_key_value(tmp_path, line):
+    """The env file is read as data, never run: shell code in it stops the wrapper before anything runs."""
+    release = make_release(tmp_path)
+    marker = tmp_path / "ran"
+    env_file = tmp_path / "env"
+    env_file.write_text(f"# settings\n\nA='1'\n{line.replace('{marker}', str(marker))}\nB='2'\n")
+    out = run_wrapper(release, env_file, "python", "-c", f"open({str(marker)!r}, 'w').close()")
+    assert out.returncode == 1
+    assert not marker.exists()
+    assert "line 4" in out.stderr and out.stdout == ""
+
+
+def test_wrapper_reports_a_bad_line_by_number_only(tmp_path):
+    """A bad line may hold a secret: the message names its number only."""
+    release = make_release(tmp_path)
+    env_file = tmp_path / "env"
+    env_file.write_text("A='1'\nGWASHUB_SECRET=hunter2-not-quoted\n")
+    out = run_wrapper(release, env_file, "python", "-c", "print('ran')")
+    assert out.returncode == 1 and out.stdout == ""
+    assert "line 2" in out.stderr
+    assert "hunter2" not in out.stderr and "GWASHUB_SECRET" not in out.stderr
+
+
+def test_wrapper_takes_values_literally(tmp_path):
+    release = make_release(tmp_path)
+    marker = tmp_path / "ran"
+    values = {"A": f"back\\slash $HOME ${{HOME}} `id` $(touch {marker}) \"q\" ; & | * ? # ! ~", "B": "tab\there", "C": "",
+              "D": "=a=b="}
+    env_file = tmp_path / "env"
+    env_file.write_text(sh.render_env(values))
+    code = "import os, json; print(json.dumps({k: os.environ[k] for k in 'ABCD'}))"
+    out = run_wrapper(release, env_file, "python", "-c", code)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout) == values
+    assert not marker.exists()
+
+
+def test_wrapper_skips_comments_and_blank_lines(tmp_path):
+    release = make_release(tmp_path)
+    env_file = tmp_path / "env"
+    env_file.write_text("# a comment with 'quotes' and $(id)\n\n   \nA='1'\n#B='2'\n")
+    out = run_wrapper(release, env_file, "python", "-c", "import os; print(os.environ['A'], 'B' in os.environ)")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == "1 False\n"
+
+
+def test_wrapper_ignores_auth_in_the_env_file_with_a_warning(tmp_path):
+    release = make_release(tmp_path)
+    env_file = tmp_path / "env"
+    env_file.write_text("A='1'\nGWASHUB_AUTH='dev'\n")
+    out = run_wrapper(release, env_file, "python", "-c", "import os; print(os.environ['GWASHUB_AUTH'])")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == "cognito\n"
+    assert "GWASHUB_AUTH" in out.stderr and "line 2" in out.stderr
+
+
+def test_env_file_cannot_change_the_wrapper_itself(tmp_path):
+    """Settings named like the wrapper's own variables reach the command as settings, and change nothing in the wrapper:
+    the release, the command, the parser's state."""
+    release = make_release(tmp_path)
+    marker = tmp_path / "ran"
+    names = ["RELEASE", "here", "command_name", "env_file", "line", "number", "key", "value", "line_re", "settings",
+             "IFS", "PATH", "BASH_ENV", "PYTHONPATH"]
+    values = {n: f"a[$(touch {marker})]" for n in names}
+    env_file = tmp_path / "env"
+    env_file.write_text(sh.render_env(values) + "LAST='still read'\n")
+    code = "import os; print(os.getcwd()); print(os.environ['LAST']); print(os.environ['RELEASE']); print(os.environ['PYTHONPATH'])"
+    out = run_wrapper(release, env_file, "python", "-c", code)
+    assert out.returncode == 0, out.stderr
+    real = release.resolve()
+    assert out.stdout.splitlines() == [str(real), "still read", values["RELEASE"], f"{real}:{real}/api"]
+    assert not marker.exists()
+
+
 def test_wrapper_needs_a_command(tmp_path):
     release = make_release(tmp_path)
     env_file = tmp_path / "env"
@@ -290,13 +369,15 @@ def test_render_nginx_refuses_paths_that_would_break_the_config(bad):
 
 # ---------- checks ----------
 
-def site(health=(200, {"ok": True}), users=(404, {"detail": "Not Found"}), login=(405, {"detail": "Method Not Allowed"})):
-    """A fake site answering the three requests check_site makes."""
+def site(health=(200, {"ok": True}), mode=(200, {"mode": "cognito", "banner": ""}), users=(404, {"detail": "Not Found"}),
+         login=(405, {"detail": "Method Not Allowed"})):
+    """A fake site answering the four requests check_site makes."""
     seen = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append((request.method, request.url.path))
-        answers = {("GET", "/api/health"): health, ("GET", "/api/auth/users"): users, ("POST", "/api/auth/login"): login}
+        answers = {("GET", "/api/health"): health, ("GET", "/api/auth/mode"): mode, ("GET", "/api/auth/users"): users,
+                   ("POST", "/api/auth/login"): login}
         status, body = answers.get((request.method, request.url.path), (404, {}))
         return httpx.Response(status, json=body)
     return httpx.Client(transport=httpx.MockTransport(handler)), seen
@@ -305,7 +386,16 @@ def site(health=(200, {"ok": True}), users=(404, {"detail": "Not Found"}), login
 def test_check_site_passes_cognito_site():
     client, seen = site()
     assert sh.check_site("https://gwashub.example.org", client) == []
-    assert ("POST", "/api/auth/login") in seen
+    assert ("GET", "/api/auth/mode") in seen and ("POST", "/api/auth/login") in seen
+
+
+@pytest.mark.parametrize("mode", [(200, {"mode": "dev", "banner": ""}), (200, {"banner": ""}), (200, ["cognito"]),
+                                  (404, {"detail": "Not Found"}), (500, {"mode": "cognito"})])
+def test_check_site_needs_the_site_to_say_cognito(mode):
+    """The positive check: the site itself says its sign-in is Cognito's."""
+    client, _ = site(mode=mode)
+    problems = sh.check_site("https://gwashub.example.org", client)
+    assert len(problems) == 1 and "/api/auth/mode" in problems[0]
 
 
 def test_check_site_accepts_404_from_login_too():
@@ -332,18 +422,20 @@ def test_check_site_flags_a_sick_site():
         assert len(problems) == 1 and "/api/health" in problems[0]
 
 
-def test_check_site_flags_a_non_json_health_page():
+def test_check_site_flags_non_json_pages():
     client = httpx.Client(transport=httpx.MockTransport(
-        lambda r: httpx.Response(404 if "auth" in r.url.path else 200, text="<html>nginx welcome</html>")))
+        lambda r: httpx.Response(404 if r.url.path in ("/api/auth/users", "/api/auth/login") else 200,
+                                 text="<html>nginx welcome</html>")))
     problems = sh.check_site("https://gwashub.example.org", client)
-    assert len(problems) == 1 and "/api/health" in problems[0]
+    assert len(problems) == 2
+    assert "/api/health" in problems[0] and "/api/auth/mode" in problems[1]
 
 
 def test_check_site_reports_an_unreachable_site():
     def refuse(request):
         raise httpx.ConnectError("refused", request=request)
     problems = sh.check_site("https://gwashub.example.org", httpx.Client(transport=httpx.MockTransport(refuse)))
-    assert len(problems) == 3 and all("refused" in p for p in problems)
+    assert len(problems) == 4 and all("refused" in p for p in problems)
 
 
 def test_check_site_does_not_follow_redirects():
@@ -394,6 +486,7 @@ def test_check_site_against_real_app_in_dev_mode(real_app):
     client = real_app("dev")
     problems = sh.check_site("http://testserver", client)
     assert any("/api/auth/users" in p for p in problems), problems
+    assert any("/api/auth/mode" in p and "'dev'" in p for p in problems), problems
 
 
 # ---------- deploy guards ----------
@@ -441,6 +534,164 @@ def test_limits_in_force_needs_every_unit_limited():
     assert sh.limits_in_force(limited + "\n" + limited) is True
     assert sh.limits_in_force(limited + "\n" + unlimited) is False
     assert sh.limits_in_force(unlimited + "\n" + limited) is False
+
+
+# ---------- the deploy script's pieces that run on the host ----------
+
+def heredoc(script: Path, opener: str) -> str:
+    """The body of the here-document opened on the line `opener` of a shell script: what it sends to the host's shell."""
+    lines = script.read_text().splitlines(keepends=True)
+    start = next(i for i, line in enumerate(lines) if line.strip() == opener) + 1
+    end = next(i for i in range(start, len(lines)) if lines[i].rstrip("\n") == "EOF")
+    return "".join(lines[start:end])
+
+
+OLDER, OLD, NEW = "20261101-100000-aaaaaaa", "20261102-100000-bbbbbbb", "20261103-100000-ccccccc"
+
+
+def make_host(tmp_path: Path, releases: dict[str, list[str]], current: str | None) -> Path:
+    """A stand-in for /opt/gwashub: release folders (each with its wrapper, virtualenv and these migration files) and current."""
+    prefix = tmp_path / "opt-gwashub"
+    for name, migrations in releases.items():
+        release = prefix / "releases" / name
+        for path in (release / "infra" / "shared_host" / "gwashub-run", release / ".venv" / "bin" / "python"):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("#!/bin/sh\n")
+            path.chmod(0o755)
+        versions = release / "api" / "migrations" / "versions"
+        (versions / "__pycache__").mkdir(parents=True)
+        for m in migrations:
+            (versions / m).write_text("")
+    (prefix / "releases").mkdir(parents=True, exist_ok=True)
+    if current:
+        (prefix / "current").symlink_to(f"releases/{current}")
+    return prefix
+
+
+def roll_back(prefix: Path) -> subprocess.CompletedProcess:
+    """previous_release's script, as the rollback runs it on the host (as root, with /opt/gwashub as $1)."""
+    script = heredoc(DEPLOY, """remote sudo bash -s -- "$PREFIX" <<'EOF'""")
+    return subprocess.run(["bash", "-s", "--", str(prefix)], input=script, capture_output=True, text=True)
+
+
+def test_rollback_goes_to_the_newest_older_release(tmp_path):
+    prefix = make_host(tmp_path, {OLDER: ["a1.py"], OLD: ["a1.py", "b2.py"], NEW: ["a1.py", "b2.py"]}, NEW)
+    out = roll_back(prefix)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == OLD + "\n"
+    assert os.readlink(prefix / "current") == f"releases/{OLD}"
+
+
+def test_rollback_refuses_when_the_live_release_added_a_migration(tmp_path):
+    """The live release's migrations have been applied and are never rolled back: the older code would meet a database at
+    a revision it doesn't know, and both services would fail to start. So nothing changes, and the message says why."""
+    prefix = make_host(tmp_path, {OLD: ["a1.py"], NEW: ["a1.py", "c3_new_table.py", "d4_more.py"]}, NEW)
+    out = roll_back(prefix)
+    assert out.returncode != 0 and out.stdout == ""
+    assert "c3_new_table.py" in out.stderr and "d4_more.py" in out.stderr and "a1.py" not in out.stderr
+    assert "fix forward" in out.stderr.lower()
+    assert os.readlink(prefix / "current") == f"releases/{NEW}"
+
+
+def test_rollback_needs_an_older_release(tmp_path):
+    prefix = make_host(tmp_path, {NEW: ["a1.py"]}, NEW)
+    out = roll_back(prefix)
+    assert out.returncode != 0 and os.readlink(prefix / "current") == f"releases/{NEW}"
+
+
+def remove_unfinished(prefix: Path, tag: str) -> subprocess.CompletedProcess:
+    """What the deploy runs on the host (as gwashub, with /opt/gwashub and the tag) when it fails before going live."""
+    script = heredoc(DEPLOY, """remote sudo -u gwashub bash -s -- "$PREFIX" "$TAG" <<'EOF' || rc=$?""")
+    return subprocess.run(["bash", "-s", "--", str(prefix), tag], input=script, capture_output=True, text=True)
+
+
+@pytest.mark.parametrize("current", [OLD, None])
+def test_failed_deploy_removes_its_unfinished_release(tmp_path, current):
+    prefix = make_host(tmp_path, {OLD: [], NEW: []}, current)
+    out = remove_unfinished(prefix, NEW)
+    assert out.returncode == 0, out.stderr
+    assert not (prefix / "releases" / NEW).exists() and (prefix / "releases" / OLD).exists()
+
+
+def test_failed_deploy_never_removes_the_live_release(tmp_path):
+    """ln can switch current on the host while ssh still reports a failure: the release current points at stays."""
+    prefix = make_host(tmp_path, {OLD: [], NEW: []}, NEW)
+    out = remove_unfinished(prefix, NEW)
+    assert out.returncode == 3
+    assert (prefix / "releases" / NEW).exists()
+
+
+# ---------- the check that the SSH target is the configured host (devtools/lib/shared_host_common.sh) ----------
+
+FAKE_SSH = """#!/usr/bin/env bash
+# ssh [options] target command: run the command here
+exec bash -c "${!#}"
+"""
+
+FAKE_CURL = """#!/usr/bin/env bash
+# The instance metadata service (IMDSv2) of an instance FAKE_INSTANCE_ID; unreachable if that is empty.
+[ -n "${FAKE_INSTANCE_ID:-}" ] || { echo "curl: (7) Failed to connect to 169.254.169.254 port 80" >&2; exit 7; }
+all=" $* "
+if [[ $all == *" -X PUT "* && $all == *" X-aws-ec2-metadata-token-ttl-seconds: "* \
+      && $all == *" http://169.254.169.254/latest/api/token "* ]]; then
+  printf 'TOKEN-1'
+elif [[ $all == *" X-aws-ec2-metadata-token: TOKEN-1 "* && $all == *" http://169.254.169.254/latest/meta-data/instance-id "* ]]; then
+  printf '%s' "$FAKE_INSTANCE_ID"
+else
+  echo "curl: (22) The requested URL returned error: 401" >&2
+  exit 22
+fi
+"""
+
+FAKE_PYTHON = """#!/usr/bin/env bash
+# cfg's .venv/bin/python -c CODE ENV FIELD, for an environment whose host is i-0123456789abcdef0
+case "$4" in
+  region) echo us-east-1 ;;
+  host_instance_id) echo i-0123456789abcdef0 ;;
+  *) echo "unexpected field $4" >&2; exit 1 ;;
+esac
+"""
+
+
+def check_host_identity(tmp_path: Path, instance_id: str) -> subprocess.CompletedProcess:
+    """check_host_identity from shared_host_common.sh, with ssh running the command here, curl standing in for the host's
+    metadata service, and the configuration's python answering for an environment whose host is i-0123456789abcdef0."""
+    bin_dir, work = tmp_path / "bin", tmp_path / "work"
+    for path, text in ((bin_dir / "ssh", FAKE_SSH), (bin_dir / "curl", FAKE_CURL), (work / ".venv" / "bin" / "python", FAKE_PYTHON)):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        path.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GWASHUB_SSH_TARGET": "ec2-user@host.example",
+           "FAKE_INSTANCE_ID": instance_id}
+    script = f"set -euo pipefail; ENV_NAME=example; source {COMMON}; check_host_identity; echo checked"
+    return subprocess.run(["bash", "-c", script], cwd=work, env=env, capture_output=True, text=True)
+
+
+def test_host_identity_passes_on_the_configured_instance(tmp_path):
+    out = check_host_identity(tmp_path, "i-0123456789abcdef0")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.endswith("checked\n") and "i-0123456789abcdef0" in out.stdout
+
+
+def test_host_identity_refuses_another_instance(tmp_path):
+    out = check_host_identity(tmp_path, "i-0fedcba9876543210")
+    assert out.returncode != 0 and "checked" not in out.stdout
+    assert "i-0fedcba9876543210" in out.stderr and "i-0123456789abcdef0" in out.stderr
+    assert "GWASHUB_SSH_TARGET" in out.stderr
+
+
+def test_host_identity_refuses_when_the_metadata_service_cannot_be_reached(tmp_path):
+    """No fallback to the IP address: private addresses repeat across VPCs."""
+    out = check_host_identity(tmp_path, "")
+    assert out.returncode != 0 and "checked" not in out.stdout
+    assert "metadata service" in out.stderr and "i-0123456789abcdef0" in out.stderr
+
+
+@pytest.mark.parametrize("script", ["shared_host_setup.sh", "shared_host_deploy.sh"])
+def test_scripts_check_the_host_identity(script):
+    text = (ROOT / "devtools" / script).read_text()
+    calls = [line for line in text.splitlines() if line.strip() == "check_host_identity"]
+    assert len(calls) == (2 if script == "shared_host_deploy.sh" else 1)  # deploy: the deploy and the rollback
 
 
 # ---------- the command line ----------

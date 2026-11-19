@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prepare the shared host for GWASHub (docs/SHARED_HOST.md): the gwashub user, its folders, the RDS CA bundle, and a check that
 # the host is fit for it. Run once, then whenever wanted: every step is safe to repeat. It changes only the gwashub user,
-# /opt/gwashub and /etc/gwashub, and only reads the rest.
+# /opt/gwashub and /etc/gwashub, and only reads the rest. It first checks that GWASHUB_SSH_TARGET is the configured host.
 #
 #   GWASHUB_SSH_TARGET=ec2-user@<host> ./devtools/shared_host_setup.sh broad
 #
@@ -15,6 +15,7 @@ API_PORT=$(cfg api_port)
 
 echo "Setting up the shared host for $ENV_NAME ($GWASHUB_SSH_TARGET), API port $API_PORT"
 remote sudo -n true || die "Cannot SSH to $GWASHUB_SSH_TARGET without prompts, or sudo there needs a password"
+check_host_identity
 
 # The script runs as root on the host; the API port is its $1.
 remote sudo bash -s -- "$API_PORT" <<'EOF'

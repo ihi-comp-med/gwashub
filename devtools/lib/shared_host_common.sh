@@ -27,3 +27,25 @@ export AWS_PROFILE=${AWS_PROFILE:-gwashub-$ENV_NAME} AWS_REGION=$CONFIG_REGION A
 remote() {
   ssh -o BatchMode=yes -o ConnectTimeout=15 "$GWASHUB_SSH_TARGET" "cd /opt/gwashub 2>/dev/null; $(printf '%q ' "$@")"
 }
+
+# check_host_identity: stop unless the machine at $GWASHUB_SSH_TARGET is the environment's host (host_instance_id). Run it
+# before anything is written there: a wrong target would otherwise get the gwashub user, a release, and the env file with
+# its secrets. The machine is asked for its instance ID by the EC2 instance metadata service (IMDSv2), on the machine
+# itself. There is no fallback: its IP address proves nothing, as private addresses repeat across VPCs.
+check_host_identity() {
+  local want got
+  want=$(cfg host_instance_id)
+  if ! got=$(remote bash -s <<'EOF'
+imds=http://169.254.169.254/latest
+token=$(curl -fsS --noproxy '*' --max-time 5 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' "$imds/api/token") &&
+  curl -fsS --noproxy '*' --max-time 5 -H "X-aws-ec2-metadata-token: $token" "$imds/meta-data/instance-id"
+EOF
+  ); then
+    die "Could not read the instance ID of $GWASHUB_SSH_TARGET from the EC2 instance metadata service (IMDSv2, on the host:" \
+      "http://169.254.169.254), so there is no telling whether it is $ENV_NAME's host $want. It must be that EC2 instance," \
+      "with the metadata service on. Nothing was changed there."
+  fi
+  [ "$got" = "$want" ] || die "$GWASHUB_SSH_TARGET is instance ${got:-(none)}, not $ENV_NAME's host $want" \
+    "(host_instance_id in infra/gwashub_infra/config.py): check GWASHUB_SSH_TARGET. Nothing was changed there."
+  echo "  $GWASHUB_SSH_TARGET is $want, the host in $ENV_NAME's configuration"
+}

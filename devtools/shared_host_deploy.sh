@@ -6,8 +6,9 @@
 #   GWASHUB_SSH_TARGET=ec2-user@<host> ./devtools/shared_host_deploy.sh broad            # deploy HEAD
 #   GWASHUB_SSH_TARGET=ec2-user@<host> ./devtools/shared_host_deploy.sh broad rollback   # back to the previous release
 #
-# Deploying needs a clean git tree and the environment's AWS account (AWS_PROFILE, default gwashub-<env>). Migrations are NOT
-# rolled back by a rollback: the previous release must work with the newer database.
+# Deploying needs a clean git tree and the environment's AWS account (AWS_PROFILE, default gwashub-<env>). Both modes first check
+# that GWASHUB_SSH_TARGET is the configured host. A rollback restores code only, never the database: it refuses when the live
+# release added a migration the previous one lacks (that release would not start on the upgraded database); fix forward then.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ENV_NAME=${1:?usage: shared_host_deploy.sh ENV [rollback]}
@@ -48,15 +49,18 @@ EOF
 }
 
 # previous_release: point current at the newest release older than the one now live, and print its name. Nothing changes
-# if there is none.
+# if there is none, or if the live release added a migration the older one lacks: that migration has been applied, and
+# the older code would meet a database at a revision it doesn't know, so neither service would start.
 previous_release() {
-  remote sudo bash -s <<'EOF'
+  remote sudo bash -s -- "$PREFIX" <<'EOF'
 set -euo pipefail
+shopt -s nullglob
 export LC_ALL=C  # release names compare as plain text
-link=$(readlink /opt/gwashub/current) || { echo "/opt/gwashub/current is not a symlink: nothing has been deployed" >&2; exit 1; }
+prefix=$1
+link=$(readlink "$prefix/current") || { echo "$prefix/current is not a symlink: nothing has been deployed" >&2; exit 1; }
 current=${link##*/}
 previous=
-for dir in /opt/gwashub/releases/*/; do
+for dir in "$prefix"/releases/*/; do
   name=$(basename "$dir")
   [[ $name =~ ^[0-9]{8}-[0-9]{6}-[0-9a-f]+$ ]] || continue
   [[ $name < $current ]] || continue
@@ -64,16 +68,27 @@ for dir in /opt/gwashub/releases/*/; do
   if [[ -z $previous || $name > $previous ]]; then previous=$name; fi
 done
 [ -n "$previous" ] || { echo "There is no usable release older than $current to roll back to" >&2; exit 1; }
-ln -sfn "releases/$previous" /opt/gwashub/current
+added=
+for f in "$prefix/releases/$current/api/migrations/versions/"*.py; do
+  [ -e "$prefix/releases/$previous/api/migrations/versions/${f##*/}" ] || added="$added ${f##*/}"
+done
+if [ -n "$added" ]; then
+  echo "Not rolling back: $current added database migrations that $previous lacks:$added" >&2
+  echo "They have been applied, migrations are never rolled back, and $previous would not start on that database." >&2
+  echo "Fix forward instead: deploy a corrected commit. Nothing was changed." >&2
+  exit 1
+fi
+ln -sfn "releases/$previous" "$prefix/current"
 echo "$previous"
 EOF
 }
 
 if [ "$MODE" = rollback ]; then
   echo "Rolling $ENV_NAME back to the previous release."
-  echo "WARNING: database migrations are not rolled back; the previous release must work with the current schema."
+  echo "Database migrations are not rolled back: this refuses if the live release added one."
   remote true || die "Cannot SSH to $GWASHUB_SSH_TARGET without prompts"
   remote sudo -n true || die "sudo on $GWASHUB_SSH_TARGET needs a password: it must work with 'sudo -n'"
+  check_host_identity
   PREVIOUS=$(previous_release)
   echo "current -> releases/$PREVIOUS"
   restart_and_wait
@@ -94,12 +109,26 @@ on_exit() {
   [ "$code" -ne 0 ] || return 0
   if [ "$LIVE" = 1 ]; then
     echo >&2
-    echo "The deploy failed after $TAG went live. To go back to the previous release (migrations are not rolled back):" >&2
+    echo "The deploy failed after $TAG went live. To go back to the previous release (refused if $TAG added a migration):" >&2
     echo "  GWASHUB_SSH_TARGET=$GWASHUB_SSH_TARGET ./devtools/shared_host_deploy.sh $ENV_NAME rollback" >&2
   elif [ "$RELEASE_STARTED" = 1 ]; then
     # Not live and not finished: remove it, so it does not take the place of a good release the prune keeps for rollback.
-    echo "The deploy failed before $TAG went live: removing the unfinished release $RELEASE_DIR" >&2
-    remote sudo -u gwashub rm -rf "$RELEASE_DIR" || echo "Could not remove $RELEASE_DIR: remove it by hand" >&2
+    # Unless current points at it after all (ln can succeed on the host while ssh reports a failure): the host checks.
+    local rc=0
+    remote sudo -u gwashub bash -s -- "$PREFIX" "$TAG" <<'EOF' || rc=$?
+[ "$(readlink "$1/current")" != "releases/$2" ] || exit 3
+rm -rf "$1/releases/$2"
+EOF
+    if [ "$rc" = 0 ]; then
+      echo "The deploy failed before $TAG went live: removed the unfinished release $RELEASE_DIR" >&2
+    elif [ "$rc" = 3 ]; then
+      echo "The deploy failed, but $PREFIX/current points at $TAG after all, so it was left in place. To go back to the" \
+        "previous release (refused if $TAG added a migration):" >&2
+      echo "  GWASHUB_SSH_TARGET=$GWASHUB_SSH_TARGET ./devtools/shared_host_deploy.sh $ENV_NAME rollback" >&2
+    else
+      echo "The deploy failed before $TAG went live, and its unfinished release $RELEASE_DIR could not be removed: remove it" \
+        "by hand, unless $PREFIX/current points at it" >&2
+    fi
   fi
 }
 trap on_exit EXIT
@@ -107,9 +136,10 @@ trap on_exit EXIT
 echo "== 1. checks: AWS account and git tree"
 shared_host preflight "$ENV_NAME"
 
-echo "== 2. the host: SSH, sudo, setup"
+echo "== 2. the host: SSH, sudo, which machine it is, setup"
 remote true || die "Cannot SSH to $GWASHUB_SSH_TARGET without prompts"
 remote sudo -n true || die "sudo on $GWASHUB_SSH_TARGET needs a password: it must work with 'sudo -n'"
+check_host_identity
 remote test -d "$PREFIX/releases" || die "$PREFIX/releases is missing on the host: run ./devtools/shared_host_setup.sh $ENV_NAME first"
 
 echo "== 3. website"

@@ -226,9 +226,10 @@ def render_nginx(cfg: SharedHostConfig, cert_path: str, key_path: str) -> str:
 def check_site(base_url: str, client: httpx.Client | None = None) -> list[str]:
     """The problems with the site at base_url: it must be healthy, and the development sign-in must not be there.
 
-    In a cognito-mode API /api/auth/users and POST /api/auth/login answer 404 (the real app: api/gwashub_api/main.py). The
-    dev-mode list of users answers 200, so that is the decisive check; the login check is a second line (in dev mode it
-    answers 200, or 404 for an unknown address, or 422 for a bad body)."""
+    The site must say so itself: GET /api/auth/mode answers {"mode": "cognito", ...} (the real app: api/gwashub_api/main.py).
+    And the development sign-in's endpoints must not answer: in a cognito-mode API /api/auth/users and POST /api/auth/login
+    answer 404. The dev-mode list of users answers 200, so that is the decisive one; the login check is a second line (in
+    dev mode it answers 200, or 404 for an unknown address, or 422 for a bad body)."""
     base = base_url.rstrip("/")
     own = client is None
     client = client or httpx.Client(timeout=20)
@@ -241,15 +242,23 @@ def check_site(base_url: str, client: httpx.Client | None = None) -> list[str]:
             problems.append(f"{path}: could not reach {base}: {type(e).__name__}: {e}")
             return None
 
+    def json_object(r: httpx.Response) -> dict:
+        try:
+            body = r.json()
+        except ValueError:
+            return {}
+        return body if isinstance(body, dict) else {}
+
     try:
         r = ask("GET", "/api/health")
+        if r is not None and (r.status_code != 200 or json_object(r).get("ok") is not True):
+            problems.append(f"/api/health answered {r.status_code}, expected 200 with {{\"ok\": true}}")
+        r = ask("GET", "/api/auth/mode")
         if r is not None:
-            try:
-                body = r.json()
-            except ValueError:
-                body = None
-            if r.status_code != 200 or not isinstance(body, dict) or body.get("ok") is not True:
-                problems.append(f"/api/health answered {r.status_code}, expected 200 with {{\"ok\": true}}")
+            mode = json_object(r).get("mode")
+            if r.status_code != 200 or mode != "cognito":
+                problems.append(f"/api/auth/mode answered {r.status_code} with mode {mode!r}, expected 200 with mode 'cognito': "
+                                "the development sign-in may be on")
         r = ask("GET", "/api/auth/users")
         if r is not None and r.status_code != 404:
             problems.append(f"/api/auth/users answered {r.status_code}, expected 404: the development sign-in may be on")
