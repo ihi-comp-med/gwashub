@@ -110,6 +110,8 @@ is not in it: that is `GWASHUB_SSH_TARGET`, set in your shell and never in git.
 - **Docker**, running: the deploy builds the pipeline images, most for arm64 and `vcf` and `ldsc` for x86-64, so on a laptop of the
   other architecture Docker builds them under emulation (slow the first time).
 - **Node.js** (the deploy runs `npx nuxi generate` for the website and `npx aws-cdk@2` for the stack) and **Python 3**.
+- **The website's dependencies**: run `cd web && npm install` once before the first deploy, and again after the web dependencies change.
+  The deploy doesn't install them (`web/node_modules` is git-ignored, so a fresh checkout has none), and without them step 3, the website build, fails.
 - The repository's virtualenv: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`. The deploy also makes
   `infra/.venv` from `infra/requirements.txt` if it is missing; that is what runs the CDK app.
 - **SSH to the host with a key and no prompts** (the scripts use `BatchMode`), and passwordless sudo there (`sudo -n`):
